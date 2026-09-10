@@ -4,8 +4,10 @@
     python3 portable/tools/name_trap.py                 # the whole WinMain spine
     python3 portable/tools/name_trap.py -- --stages      # InitSession step by step
     python3 portable/tools/name_trap.py --resmount       # (-- is optional)
+    python3 portable/tools/name_trap.py --table          # what the table holds
+    python3 portable/tools/name_trap.py --at 0x2e9f1c    # explain one call site
 
-The port has three ways of dying and only one of them says so by itself:
+The port has four ways of dying and only one of them says so by itself:
 
 * **A generated trap.** `gen_link.py` gives every Win32 import and every
   unwritten body a real C body that prints `TRAP <dll> <symbol> from <callers>`
@@ -18,10 +20,28 @@ The port has three ways of dying and only one of them says so by itself:
   TRAP and not an undefined symbol, and at emcc's link-time `-O2` wasm-opt
   INLINES that one-instruction body into its callers, so all that reaches node
   is `RuntimeError: unreachable at wasm-function[26]`.
+* **An indirect call whose target's type is not the call site's.** A function
+  pointer cast to a type the body does not have: `screen.c`'s tables, the
+  geometry vtable, every `void Foo()`-in-a-table row of the census. wasm checks
+  the type AT THE CALL, so this one survives a completely clean wasm-ld run --
+  the type is an immediate on the `call_indirect` instruction, not a property of
+  a symbol, and there is no declaration for the linker to compare. node reports
+  `RuntimeError: function signature mismatch` and NOTHING else: no index, no
+  caller, no types. The static half of this file supplies all three, from the
+  byte offset V8 puts in the innermost wasm frame -- `wasm-function[N]:0xOFF`,
+  where 0xOFF is the instruction's offset in the module file, exactly the number
+  llvm-objdump prints. That offset names one `call_indirect`, whose type
+  immediate is the type the slot was expected to hold; the module's element
+  segment says what is in the table; and gen_link's re-pointed words say which of
+  those functions the game can actually have stored, which is what keeps the
+  candidate list short. Binaryen's `directize` can also rewrite such a call into
+  a plain trap before the runtime sees it, in which case the message is
+  `unreachable` instead -- `--indirect` forces the same report.
+
 * **A real fault** (out-of-bounds, a null vtable call): also `RuntimeError`, but
   with a game function at the top of the stack rather than a mismatch stub.
 
-Telling the second from the third is the whole job, and it needs a link that
+Telling these apart is the whole job, and it needs a link that
 wasm-opt did not touch: `legoland_headless_debug` (portable/cmake/headless.cmake)
 is `legoland_headless` with `-O0 -g2` at LINK time only, so the stub survives as
 a real function with its name. The game objects are shared with the optimised
@@ -41,6 +61,7 @@ Exit code: 0 if the run finished without a trap, 1 if a trap was named,
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -51,11 +72,502 @@ import linkreport as lr  # noqa: E402
 
 # `    at legoland_headless_debug.wasm.InitSession (wasm://wasm/...:0x1234)`
 # The module prefix is the executable name; the symbol may contain `:` and `$`.
-FRAME_RE = re.compile(r'^\s*at\s+(?P<mod>[\w.-]+?)\.wasm\.(?P<sym>\S+)\s*\(')
+# The trailing `wasm-function[N]:0xOFF` is what makes an indirect-call trap
+# nameable: V8's 0xOFF is the instruction's byte offset in the MODULE FILE, the
+# same number llvm-objdump prints, so it points at one exact `call_indirect`.
+FRAME_RE = re.compile(r'^\s*at\s+(?P<mod>[\w.-]+?)\.wasm\.(?P<sym>\S+)\s*\('
+                      r'(?:[^)]*?wasm-function\[(?P<idx>\d+)\]:'
+                      r'(?P<off>0x[0-9a-fA-F]+))?')
 JS_FRAME_RE = re.compile(r'^\s*at\s+(?P<sym>[\w.<>$]+)\s*\(?(?P<where>\S*)')
 TRAP_RE = re.compile(r'^TRAP (?P<dll>\S+) (?P<sym>\S+) from (?P<from>.*)$')
 ERR_RE = re.compile(r'^(?:\w+\.)*(?P<kind>RuntimeError|Error|Aborted)\b.*$')
 MISMATCH_RE = re.compile(r'^signature_mismatch:(?P<callee>.+)$')
+
+# The runtime face of a `call_indirect` whose target's type is not the type the
+# call site encodes. V8 says nothing else: no index, no caller, no types --
+# which is the whole reason for the static half below.
+#
+#   RuntimeError: function signature mismatch
+#   RuntimeError: null function or function signature mismatch
+#
+# `unreachable` is in here too because binaryen's `directize` pass can rewrite a
+# constant-index `call_indirect` whose types disagree into a trap before the
+# runtime ever sees the indirect call (docs/lanes/scope-port-m2.md section 4), so
+# the same defect reaches node under two different messages.
+INDIRECT_ERR_RE = re.compile(r'\b(?:null function or )?function signature '
+                             r'mismatch\b')
+
+# `     33b: 11 03 00     	call_indirect	 3`  and  `000002d4 <Other>:`
+OD_INSN_RE = re.compile(r'^\s*(?P<off>[0-9a-f]+):\s+(?P<bytes>(?:[0-9a-f]{2} )+)'
+                        r'\s*(?P<text>\S.*?)\s*$')
+OD_FUNC_RE = re.compile(r'^(?P<off>[0-9a-f]{8})\s+<(?P<name>[^>]*)>:\s*$')
+OD_CALLI_RE = re.compile(r'^call_indirect\s+(?P<type>\d+)')
+# The re-pointed words gen_link writes: `(unsigned int)(__UINTPTR_TYPE__)&Name`
+# inside `unsigned int g_some_table[N] = { ... }`.
+GEN_ARRAY_RE = re.compile(r'unsigned int (?P<name>\w+)\[(?P<n>\d+)\]\s*=')
+GEN_REF_RE = re.compile(r'&(?P<name>[A-Za-z_]\w*)')
+
+
+# ---------------------------------------------------------------------------
+# The LINKED module: types, function types, names, and the indirect table.
+#
+# linkreport.wasm_object_sigs reads OBJECT files, where the "linking" custom
+# section carries a symbol table. A linked module has no symbol table at all:
+# the only names in it come from the `name` custom section, which is why
+# --profiling-funcs (or -g2) is not optional for this report. Everything here is
+# read straight out of the binary -- five sections, no dependencies.
+# ---------------------------------------------------------------------------
+
+def _leb(b, i):
+    r = s = 0
+    while True:
+        x = b[i]
+        i += 1
+        r |= (x & 0x7f) << s
+        if not x & 0x80:
+            return r, i
+        s += 7
+
+
+def _skip_expr(b, i):
+    """Step over a constant expression (an element segment's offset)."""
+    depth = 0
+    while i < len(b):
+        op = b[i]
+        i += 1
+        if op == 0x0b and depth == 0:          # end
+            return i
+        if op in (0x02, 0x03, 0x04):           # block / loop / if
+            depth += 1
+            i += 1
+        elif op == 0x0b:
+            depth -= 1
+        elif op in (0x41, 0x23, 0x20, 0x21, 0x22, 0x24, 0xd2):  # i32.const etc.
+            _, i = _leb(b, i)
+        elif op == 0x42:                       # i64.const
+            _, i = _leb(b, i)
+        elif op == 0x43:                       # f32.const
+            i += 4
+        elif op == 0x44:                       # f64.const
+            i += 8
+        elif op == 0xd0:                       # ref.null
+            i += 1
+    return i
+
+
+class Module(object):
+    """The pieces of a linked wasm module this report needs."""
+
+    def __init__(self, path):
+        with open(path, 'rb') as f:
+            b = f.read()
+        self.path = path
+        self.ok = b[:4] == b'\0asm'
+        self.types = []            # [(params, results)]
+        self.fn_types = []         # type index per function, in index space order
+        self.names = {}            # function index -> name
+        self.table = {}            # table slot -> function index
+        self.n_imports = 0
+        if not self.ok:
+            return
+        i = 8
+        while i < len(b):
+            sid = b[i]
+            i += 1
+            size, i = _leb(b, i)
+            end = i + size
+            try:
+                if sid == 1:
+                    self._types(b, i)
+                elif sid == 2:
+                    self._imports(b, i)
+                elif sid == 3:
+                    n, i2 = _leb(b, i)
+                    for _ in range(n):
+                        t, i2 = _leb(b, i2)
+                        self.fn_types.append(t)
+                elif sid == 9:
+                    self._elements(b, i)
+                elif sid == 0:
+                    nl, j = _leb(b, i)
+                    if b[j:j + nl] == b'name':
+                        self._names(b, j + nl, end)
+            except (IndexError, ValueError):
+                pass               # a section this reader does not understand
+            i = end
+
+    def _types(self, b, i):
+        n, i = _leb(b, i)
+        for _ in range(n):
+            if b[i] != 0x60:
+                break
+            i += 1
+            np, i = _leb(b, i)
+            params = list(b[i:i + np])
+            i += np
+            nr, i = _leb(b, i)
+            results = list(b[i:i + nr])
+            i += nr
+            self.types.append((params, results))
+
+    def _imports(self, b, i):
+        n, i = _leb(b, i)
+        imported_fns = []
+        for _ in range(n):
+            ml, i = _leb(b, i)
+            i += ml
+            fl, i = _leb(b, i)
+            field = b[i:i + fl].decode('utf-8', 'replace')
+            i += fl
+            kind = b[i]
+            i += 1
+            if kind == 0:
+                t, i = _leb(b, i)
+                imported_fns.append((field, t))
+            elif kind == 1:        # table
+                i += 1
+                flags = b[i]
+                i += 1
+                _, i = _leb(b, i)
+                if flags & 1:
+                    _, i = _leb(b, i)
+            elif kind == 2:        # memory
+                flags = b[i]
+                i += 1
+                _, i = _leb(b, i)
+                if flags & 1:
+                    _, i = _leb(b, i)
+            elif kind == 3:        # global
+                i += 2
+            elif kind == 4:        # tag
+                i += 1
+                _, i = _leb(b, i)
+            else:
+                break
+        # Imports come first in the function index space, so their type indices
+        # have to be at the head of fn_types for func_type() to be right.
+        self.n_imports = len(imported_fns)
+        self.fn_types = [t for _n, t in imported_fns]
+        for k, (nm, _t) in enumerate(imported_fns):
+            self.names[k] = nm
+
+    def _elements(self, b, i):
+        n, i = _leb(b, i)
+        for _ in range(n):
+            flags, i = _leb(b, i)
+            base = 0
+            if flags in (0, 2, 4, 6):           # active: has an offset expr
+                if flags in (2, 6):
+                    _, i = _leb(b, i)           # table index
+                j = _skip_expr(b, i)
+                # The offset is `i32.const <base>` in every module emcc emits.
+                if b[i] == 0x41:
+                    base, _ = _leb(b, i + 1)
+                i = j
+            elif flags in (1, 5):
+                pass
+            if flags in (1, 2, 5, 6):
+                i += 1                          # elem kind / reftype
+            cnt, i = _leb(b, i)
+            if flags in (4, 5, 6, 7):           # vector of expressions
+                for k in range(cnt):
+                    if b[i] == 0xd2:            # ref.func
+                        f, i = _leb(b, i + 1)
+                        self.table[base + k] = f
+                    i = _skip_expr(b, i)
+            else:                               # vector of function indices
+                for k in range(cnt):
+                    f, i = _leb(b, i)
+                    self.table[base + k] = f
+
+    def _names(self, b, i, end):
+        while i < end:
+            sub = b[i]
+            i += 1
+            sz, i = _leb(b, i)
+            stop = i + sz
+            if sub == 1:                        # function names
+                cnt, i = _leb(b, i)
+                for _ in range(cnt):
+                    idx, i = _leb(b, i)
+                    nl, i = _leb(b, i)
+                    self.names[idx] = b[i:i + nl].decode('utf-8', 'replace')
+                    i += nl
+            i = stop
+
+    def func_type(self, idx):
+        if 0 <= idx < len(self.fn_types) and self.fn_types[idx] < len(self.types):
+            return self.types[self.fn_types[idx]]
+        return None
+
+    def func_name(self, idx):
+        return self.names.get(idx, 'wasm-function[%d]' % idx)
+
+    def type_text(self, t):
+        return lr.sig_text(self.types[t]) if 0 <= t < len(self.types) else '?'
+
+
+def objdump():
+    """llvm-objdump from the Emscripten install, which is the one that reads the
+    wasm emcc just wrote. $LL_OBJDUMP overrides."""
+    if os.environ.get('LL_OBJDUMP'):
+        return os.environ['LL_OBJDUMP']
+    em = shutil.which('em-config')
+    if em:
+        try:
+            root = subprocess.run([em, 'LLVM_ROOT'], capture_output=True,
+                                  text=True).stdout.strip()
+            cand = os.path.join(root, 'llvm-objdump')
+            if os.path.exists(cand):
+                return cand
+        except OSError:
+            pass
+    return shutil.which('llvm-objdump')
+
+
+def disassemble(wasm):
+    """(instructions, owner) -- `instructions` maps a module byte offset to the
+    instruction text, `owner` maps it to the enclosing function's name."""
+    od = objdump()
+    if not od:
+        return None, None
+    try:
+        out = subprocess.run([od, '-d', wasm], capture_output=True,
+                             text=True).stdout
+    except OSError:
+        return None, None
+    insns, owner, cur = {}, {}, '?'
+    for line in out.splitlines():
+        m = OD_FUNC_RE.match(line)
+        if m:
+            cur = m.group('name')
+            continue
+        m = OD_INSN_RE.match(line)
+        if m:
+            off = int(m.group('off'), 16)
+            insns[off] = m.group('text')
+            owner[off] = cur
+    return insns, owner
+
+
+def data_fn_refs(build_dir):
+    """Every function whose ADDRESS the rebuilt globals hold: name -> [(global,
+    word index)], read out of gen_link's own output.
+
+    This is the set of functions the game reaches through a `call_indirect`, and
+    it is what turns "some table slot had the wrong type" into a short list of
+    named candidates: a function nothing stores in .data cannot be in a slot the
+    game loaded from .data."""
+    refs = {}
+    for sub in ('gen', 'gen-browser'):
+        path = os.path.join(build_dir, sub, 'globals.c')
+        if not os.path.exists(path):
+            continue
+        array, word = None, 0
+        with open(path, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                m = GEN_ARRAY_RE.search(line)
+                if m:
+                    array, word = m.group('name'), 0
+                    continue
+                if array is None:
+                    continue
+                if line.strip() in ('};', '}'):
+                    array = None
+                    continue
+                for hit in GEN_REF_RE.finditer(line):
+                    refs.setdefault(hit.group('name'), set()).add(
+                        (array, word + line[:hit.start()].count(',')))
+                word += line.count(',')
+        # The first file that exists is enough; both closures are generated from
+        # the same plan and gen-browser only drops host stubs.
+        if refs:
+            break
+    return {k: sorted(v) for k, v in refs.items()}
+
+
+def type_distance(want, have):
+    """How far `have` is from `want`, so the nearest candidate sorts first.
+
+    A different arity or a different return type means a different table; the
+    interesting case is the same shape with one parameter retyped, which is what
+    a float passed as its bit pattern, or a struct flattened into ints, looks
+    like on wasm (docs/lanes/scope-port-m2.md sections 2 and 3)."""
+    if want is None or have is None:
+        return 99
+    wp, wr = want
+    hp, hr = have
+    d = 0 if wr == hr else 8
+    d += abs(len(wp) - len(hp)) * 4
+    d += sum(1 for x, y in zip(wp, hp) if x != y)
+    return d
+
+
+def explain_indirect(wasm, frames, offset, build_dir, limit=12):
+    """Name a `call_indirect` type mismatch: the caller, the type the call site
+    encodes, and the functions that could be in the slot with another type."""
+    mod = Module(wasm)
+    if not mod.ok:
+        print(f'   ({wasm} is not a wasm module)')
+        return
+    insns, owner = disassemble(wasm)
+    if insns is None:
+        print('   (llvm-objdump is not available: set $LL_OBJDUMP to the one in'
+              ' the Emscripten install to get the call site)')
+        return
+
+    site = None
+    if offset is not None:
+        # V8 reports the offset of the trapping instruction itself; accept a
+        # small window anyway, because a trap attributed to a folded call can
+        # land on the instruction before it.
+        for off in sorted(o for o in insns if o <= offset)[::-1][:4]:
+            m = OD_CALLI_RE.match(insns[off])
+            if m:
+                site = (off, int(m.group('type')))
+                break
+    if site is None:
+        print('   (no call_indirect at the offset the stack reported; the frame'
+              ' may have been inlined -- relink the harness at -O0, which'
+              ' legoland_headless_debug already does)')
+        return
+
+    off, tidx = site
+    caller = owner.get(off, frames[0] if frames else '?')
+    want = mod.types[tidx] if tidx < len(mod.types) else None
+    print(f'\n== INDIRECT CALL TYPE MISMATCH')
+    print(f'   caller      {caller}   (module offset 0x{off:x})')
+    print(f'   call site   call_indirect type {tidx} = {mod.type_text(tidx)}')
+    print('   The slot the game loaded held a function of a DIFFERENT wasm type,')
+    print('   so the call trapped. wasm-ld cannot warn about this: the type is')
+    print('   encoded at the call site, not in a symbol declaration.')
+
+    # Where the index came from: the instructions just before the call name the
+    # data address of the callback table, which is the game global to look at.
+    before = [o for o in sorted(insns) if o < off][-8:]
+    # Only the constants big enough to be addresses: a `i32.const 2` feeding the
+    # i32.shl that scales the index is not a table base.
+    consts = []
+    for o in before:
+        if insns[o].startswith('i32.const'):
+            try:
+                v = int(insns[o].split()[-1])
+            except ValueError:
+                continue
+            if v >= 1024:
+                consts.append(v)
+    if before:
+        print('\n== the call site, in order')
+        for o in before:
+            print(f'   {o:#8x}  {insns[o]}')
+        print(f'   {off:#8x}  {insns[off]}        <-- trapped here')
+    if consts:
+        print('   the constants above are linear-memory addresses, so the'
+              ' callback table')
+        print('   the index came out of is at '
+              + ' or '.join(f'0x{v:x} ({v})' for v in consts[-3:])
+              + ' -- grep gen/globals.c')
+        print('   for the rebuilt global whose words land there.')
+
+    # The candidates: functions whose address the rebuilt globals hold (so the
+    # game really can have put them in a slot) whose real type is not `want`.
+    # Without that filter the list is the whole table; with it, it is the set of
+    # functions a STATIC game callback table can reach.
+    stored = data_fn_refs(build_dir)
+    by_name = {}
+    for idx in sorted(set(mod.table.values())):
+        by_name.setdefault(mod.func_name(idx), idx)
+    bad, other = [], []
+    for name, idx in sorted(by_name.items()):
+        t = mod.func_type(idx)
+        if t is None or want is None or t == want:
+            continue
+        (bad if name in stored else other).append(
+            (name, lr.sig_text(t), stored.get(name, []), t))
+    if bad:
+        # Ranked by how CLOSE the real type is to the expected one, because that
+        # is the shape of the real defect: PORT-M2's geometry vtable expected
+        # `(i32, i32, i32) -> void` and the slots held `(i32, f32, i32) -> void`
+        # -- same arity, one parameter retyped. A candidate with a different
+        # arity is a different table, and alphabetical order buries the answer
+        # under 200 rows of unrelated callbacks.
+        bad.sort(key=lambda row: (type_distance(want, row[3]), row[0]))
+        print(f'\n== candidate targets: {len(bad)} function(s) whose address a'
+              f' rebuilt global holds and whose real type is not'
+              f' {mod.type_text(tidx)},')
+        print('   nearest type first (same arity and return, fewest parameters'
+              ' retyped)')
+        rows = bad
+    else:
+        print(f'\n== candidate targets: no function the rebuilt globals store'
+              f' has a type other than {mod.type_text(tidx)}, so the slot was'
+              f' written at RUNTIME')
+        print('   (LLIDB_RegisterNewElement and the screen tables do that).'
+              ' Falling back to every table entry of the wrong type:')
+        rows = other
+    for row in rows[:limit]:
+        name, text, where = row[0], row[1], row[2]
+        slots = ', '.join(f'{g}[{w}]' for g, w in where[:3]) or '(runtime)'
+        print(f'   {name:<34s} {text:<30s} stored in {slots}')
+    if len(rows) > limit:
+        print(f'   ... and {len(rows) - limit} more (--table for the census)')
+
+    # The table, not the function, is the work item: one global holds a whole
+    # family of bodies the call site is typed wrongly for, and fixing the
+    # declaration of that global fixes every slot in it at once.
+    tables = {}
+    for row in bad:
+        for g, _w in row[2]:
+            tables.setdefault(g, {}).setdefault(row[1], 0)
+            tables[g][row[1]] += 1
+    if tables:
+        print('\n== by callback table: the global holding the wrong-typed'
+              ' bodies is what to re-declare')
+        ranked = sorted(tables.items(),
+                        key=lambda kv: -sum(kv[1].values()))
+        for g, kinds in ranked[:8]:
+            shapes = ', '.join(f'{k} x{v}' for k, v in
+                               sorted(kinds.items(), key=lambda kv: -kv[1])[:3])
+            print(f'   {g:<34s} {shapes}')
+        if len(ranked) > 8:
+            print(f'   ... and {len(ranked) - 8} more globals')
+        print('   (the name is the BLOCK\'s head symbol: gen_link emits one'
+              ' block per object and')
+        print('    the rest as offset aliases, so gen/manifest.md\'s'
+              ' interior-alias table says')
+        print('    which declared name the slot really belongs to.)')
+    print('\n   The fix is a typed-callback pass in the DECLARING game file: the')
+    print('   table must be declared with the signature the bodies in it have,')
+    print('   under `#ifdef LEGOLAND_PORTABLE`, re-gated with audit.py and')
+    print('   relocs.py. gen/manifest.md\'s "Cast forwarders" table is the same')
+    print('   defect class seen statically.')
+
+
+def table_census(wasm, build_dir):
+    """Every distinct wasm type in the indirect table, with how many slots hold
+    it -- the map of what a `call_indirect` can land on."""
+    mod = Module(wasm)
+    if not mod.ok:
+        print(f'name_trap: {wasm} is not a wasm module', file=sys.stderr)
+        return 2
+    stored = data_fn_refs(build_dir)
+    counts, examples = {}, {}
+    for slot, idx in sorted(mod.table.items()):
+        t = mod.func_type(idx)
+        key = lr.sig_text(t) if t else '?'
+        counts[key] = counts.get(key, 0) + 1
+        if key not in examples:
+            examples[key] = f'{mod.func_name(idx)} (slot {slot})'
+    print(f'== {os.path.basename(wasm)}: {len(mod.table)} table slots, '
+          f'{len(counts)} distinct signatures, {len(mod.types)} types')
+    for key in sorted(counts, key=lambda k: -counts[k]):
+        print(f'   {counts[key]:6d}  {key:<34s} e.g. {examples[key]}')
+    in_data = sum(1 for idx in set(mod.table.values())
+                  if mod.func_name(idx) in stored)
+    print(f'   {in_data} of the table\'s distinct functions have their address'
+          f' in a rebuilt global (gen_link\'s re-pointed words), so those are'
+          f' the ones a game callback table can reach.')
+    return 0
 
 
 def build(build_dir, target, quiet):
@@ -157,8 +669,10 @@ def report(stdout, stderr, status, trace_tail):
               'define it.')
         return 1
 
-    # The stack: the first error line, then its `at ...` frames.
-    err, frames = None, []
+    # The stack: the first error line, then its `at ...` frames. `sites` keeps
+    # the (function index, module offset) V8 puts in each wasm frame, which is
+    # what pins an indirect-call trap to one instruction.
+    err, frames, sites = None, [], []
     for i, ln in enumerate(lines):
         m = ERR_RE.match(ln.strip())
         if m and not frames:
@@ -167,6 +681,8 @@ def report(stdout, stderr, status, trace_tail):
                 f = FRAME_RE.match(tail)
                 if f:
                     frames.append(f.group('sym'))
+                    sites.append((int(f.group('idx')) if f.group('idx') else None,
+                                  int(f.group('off'), 16) if f.group('off') else None))
                 elif tail.strip().startswith('at '):
                     frames.append('[js] ' + (JS_FRAME_RE.match(tail).group('sym')
                                              if JS_FRAME_RE.match(tail) else '?'))
@@ -196,10 +712,25 @@ def report(stdout, stderr, status, trace_tail):
         print(f'\n== PROTOTYPE CONFLICT, live: '
               f'signature_mismatch:{callee} <- {caller}')
         return callee
+
+    # A `call_indirect` whose target's type is not the call site's. V8 says only
+    # "function signature mismatch"; the offset in the innermost wasm frame is
+    # what turns that into a named work item.
+    if INDIRECT_ERR_RE.search(err):
+        off = next((o for _i, o in sites if o is not None), None)
+        print('\n== INDIRECT CALL, not a prototype conflict: the type is at the'
+              ' CALL SITE')
+        return ('indirect', wasm, off)
+
     print(f'\n== not a prototype conflict: the innermost named frame is '
           f'{wasm[0]}, a real body.')
     print('   A fault inside it (a null vtable slot, an out-of-bounds store, '
           'an LL_UNPORTED_ASM stub compiled to a trap).')
+    print('   If it should have been an indirect call, re-run with --indirect:'
+          ' binaryen\'s directize can rewrite a constant-index call_indirect'
+          ' whose')
+    print('   types disagree into a plain trap, which arrives as `unreachable`'
+          ' rather than `function signature mismatch`.')
     return 1
 
 
@@ -224,9 +755,37 @@ def main():
     ap.add_argument('--timeout', type=float, default=180.0)
     ap.add_argument('--raw', action='store_true',
                     help="also print the harness's whole output")
+    # ---- the indirect-call half, which can also run on its own -------------
+    ap.add_argument('--indirect', action='store_true',
+                    help='explain the trap as a call_indirect type mismatch '
+                         'even when the message did not say so (binaryen can '
+                         'turn one into a plain `unreachable`)')
+    ap.add_argument('--at', default=None,
+                    help='a module byte offset (0x...) to explain, instead of '
+                         'running anything: the number in a `wasm-function[N]:'
+                         '0xOFF` frame')
+    ap.add_argument('--wasm', default=None,
+                    help='the .wasm to read for --at / --table (default: the '
+                         "--target's)")
+    ap.add_argument('--table', action='store_true',
+                    help='print the indirect table\'s type census and exit: '
+                         'every signature a call_indirect can land on, and how '
+                         'many slots hold it')
     ap.add_argument('args', nargs=argparse.REMAINDER,
                     help='passed to the harness (a leading -- is stripped)')
     a = ap.parse_args()
+
+    wasm = a.wasm or os.path.join(a.build, a.target + '.wasm')
+    if a.table:
+        return table_census(wasm, a.build)
+    if a.at is not None:
+        # Explain one call site without running the game: the workflow for a
+        # trap someone else reported, or for a page that died in the browser.
+        if not os.path.exists(wasm):
+            print(f'name_trap: {wasm} does not exist', file=sys.stderr)
+            return 2
+        explain_indirect(wasm, [], int(a.at, 0), a.build)
+        return 1
 
     if not a.no_build and not build(a.build, a.target, a.raw):
         return 2
@@ -267,6 +826,20 @@ def main():
               'audit.py and relocs.py. The definition is right: it is the one '
               'the matcher validated against the original bytes.')
         return 1
+    if isinstance(r, tuple):
+        _kind, frames, off = r
+        explain_indirect(wasm, frames, off, a.build)
+        return 1
+    if a.indirect and r == 1:
+        # Asked for explicitly: the trap arrived as something other than
+        # "function signature mismatch" but the caller believes it is one.
+        off = None
+        for ln in stderr.splitlines():
+            m = FRAME_RE.match(ln)
+            if m and m.group('off'):
+                off = int(m.group('off'), 16)
+                break
+        explain_indirect(wasm, [], off, a.build)
     return r
 
 
