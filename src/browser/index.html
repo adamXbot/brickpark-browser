@@ -1,0 +1,66 @@
+<!doctype html>
+<!-- LEGOLAND portable build -- the Emscripten shell page (scope PORT-B).
+     Used as emcc's --shell-file, so {{{ SCRIPT }}} is where the generated
+     loader is substituted. The canvas id MUST be "canvas": ll_canvas.js looks
+     it up by that id when ddraw.c's SetDisplayMode opens the display. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEGOLAND (portable, wasm32)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #14161a; color: #d7dae0;
+         font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  header { padding: 10px 14px; border-bottom: 1px solid #2a2f37; }
+  h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .04em; }
+  #status { color: #9aa3b2; }
+  #wrap { display: flex; flex-wrap: wrap; gap: 14px; padding: 14px; align-items: flex-start; }
+  /* image-rendering: pixelated keeps the 640x480 surface crisp when the
+     browser scales it; the game's art is 1:1 pixel work. */
+  canvas { background: #000; image-rendering: pixelated;
+           border: 1px solid #2a2f37; max-width: 100%; }
+  #log { flex: 1 1 320px; min-width: 280px; height: 480px; overflow: auto;
+         white-space: pre-wrap; background: #0e1014; border: 1px solid #2a2f37;
+         padding: 8px; color: #9aa3b2; }
+  .err { color: #ff8e8e; }
+</style>
+</head>
+<body>
+<header>
+  <h1>LEGOLAND &mdash; portable wasm32 host shim</h1>
+  <div id="status">loading the runtime&hellip;</div>
+</header>
+<div id="wrap">
+  <canvas id="canvas" width="640" height="480" tabindex="0"></canvas>
+  <div id="log"></div>
+</div>
+<script>
+  var statusEl = document.getElementById('status');
+  var logEl = document.getElementById('log');
+  function logLine(text, cls) {
+    var d = document.createElement('div');
+    if (cls) d.className = cls;
+    d.textContent = text;
+    logEl.appendChild(d);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    print: function (t) { logLine(t); },
+    printErr: function (t) { logLine(t, 'err'); },
+    setStatus: function (t) { if (t) statusEl.textContent = t; },
+    // ll_canvas.js calls these.
+    llStatus: function (t) { statusEl.textContent = t; },
+    llFrame: function (n) {
+      if (n % 30 === 0) statusEl.textContent = 'running — ' + n + ' frames presented';
+    }
+  };
+  // The canvas needs focus for keydown; ll_canvas.js listens on window, but
+  // clicking the page first is what browsers want before they deliver keys.
+  window.addEventListener('load', function () { Module.canvas.focus(); });
+  Module.canvas.addEventListener('click', function () { Module.canvas.focus(); });
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>
