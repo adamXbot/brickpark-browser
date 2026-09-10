@@ -129,6 +129,241 @@ PRIM_SIZES = {
 }
 
 
+# ---- the libc prototypes the game's CRT aliases reach -----------------------
+#
+# A CRT name the game aliases is not defined by any translation unit in the
+# tree: the body comes out of libc, so **libc's prototype is the only correct
+# one**. Taking the declaration from the ALIAS instead was the port's last
+# wasm-ld signature mismatch (docs/lanes/scope-port-m2.md section 5):
+# `DebugPrint` is a second name for 0x0049e5c5 = `printf`, spelled
+# `void DebugPrint(const char*)` by logflume2.c, and the alias machinery wrote
+#
+#     extern void printf(unsigned int);            /* the ALIAS's signature */
+#     void DebugPrint(unsigned int a0) { printf(a0); }
+#
+# against libc's `(i32, i32) -> i32`. wasm-ld then resolved every call through
+# that declaration -- including the game's own `printf` calls from
+# bigrender.c / printlist.c / unref7.c -- to a trapping stub.
+#
+# Each row is `(return type, fixed parameter types, variadic?)` in C, exactly as
+# the C library declares it. The wasm signature follows from the row: one i32
+# per pointer or int, f32/f64/i64 for the wider scalars, and -- for a variadic
+# callee -- ONE extra i32, because that is how clang lowers `...` on wasm32 (the
+# varargs arrive through a single pointer).
+#
+# Only the names the game actually reaches need a row; `crt_proto` falls back to
+# the old behaviour with a manifest note for anything missing, so a new alias
+# target shows up in the report instead of silently mis-declaring itself.
+CRT_PROTOS = {
+    # stdio
+    'printf':    ('int',    ('const char*',), True),
+    'fprintf':   ('int',    ('void*', 'const char*'), True),
+    'sprintf':   ('int',    ('char*', 'const char*'), True),
+    'vsprintf':  ('int',    ('char*', 'const char*', 'void*'), False),
+    'vfprintf':  ('int',    ('void*', 'const char*', 'void*'), False),
+    'sscanf':    ('int',    ('const char*', 'const char*'), True),
+    'fopen':     ('void*',  ('const char*', 'const char*'), False),
+    'fclose':    ('int',    ('void*',), False),
+    'fread':     ('unsigned int', ('void*', 'unsigned int', 'unsigned int',
+                                   'void*'), False),
+    'fwrite':    ('unsigned int', ('const void*', 'unsigned int',
+                                   'unsigned int', 'void*'), False),
+    'fseek':     ('int',    ('void*', 'long', 'int'), False),
+    'ftell':     ('long',   ('void*',), False),
+    'fflush':    ('int',    ('void*',), False),
+    'fgets':     ('char*',  ('char*', 'int', 'void*'), False),
+    'fputs':     ('int',    ('const char*', 'void*'), False),
+    'remove':    ('int',    ('const char*',), False),
+    'rename':    ('int',    ('const char*', 'const char*'), False),
+    # stdlib
+    'malloc':    ('void*',  ('unsigned int',), False),
+    'calloc':    ('void*',  ('unsigned int', 'unsigned int'), False),
+    'realloc':   ('void*',  ('void*', 'unsigned int'), False),
+    'free':      ('void',   ('void*',), False),
+    'rand':      ('int',    (), False),
+    'srand':     ('void',   ('unsigned int',), False),
+    'abs':       ('int',    ('int',), False),
+    'atoi':      ('int',    ('const char*',), False),
+    'atol':      ('long',   ('const char*',), False),
+    'atof':      ('double', ('const char*',), False),
+    'strtol':    ('long',   ('const char*', 'char**', 'int'), False),
+    'strtoul':   ('unsigned long', ('const char*', 'char**', 'int'), False),
+    'strtod':    ('double', ('const char*', 'char**'), False),
+    'exit':      ('void',   ('int',), False),
+    'abort':     ('void',   (), False),
+    'getenv':    ('char*',  ('const char*',), False),
+    'qsort':     ('void',   ('void*', 'unsigned int', 'unsigned int',
+                             'void*'), False),
+    'bsearch':   ('void*',  ('const void*', 'const void*', 'unsigned int',
+                             'unsigned int', 'void*'), False),
+    # string / memory
+    'strlen':    ('unsigned int', ('const char*',), False),
+    'strcpy':    ('char*',  ('char*', 'const char*'), False),
+    'strncpy':   ('char*',  ('char*', 'const char*', 'unsigned int'), False),
+    'strcat':    ('char*',  ('char*', 'const char*'), False),
+    'strncat':   ('char*',  ('char*', 'const char*', 'unsigned int'), False),
+    'strcmp':    ('int',    ('const char*', 'const char*'), False),
+    'strncmp':   ('int',    ('const char*', 'const char*', 'unsigned int'), False),
+    'strchr':    ('char*',  ('const char*', 'int'), False),
+    'strrchr':   ('char*',  ('const char*', 'int'), False),
+    'strstr':    ('char*',  ('const char*', 'const char*'), False),
+    'strtok':    ('char*',  ('char*', 'const char*'), False),
+    'strdup':    ('char*',  ('const char*',), False),
+    'strcasecmp':  ('int',  ('const char*', 'const char*'), False),
+    'strncasecmp': ('int',  ('const char*', 'const char*', 'unsigned int'), False),
+    'memset':    ('void*',  ('void*', 'int', 'unsigned int'), False),
+    'memcpy':    ('void*',  ('void*', 'const void*', 'unsigned int'), False),
+    'memmove':   ('void*',  ('void*', 'const void*', 'unsigned int'), False),
+    'memcmp':    ('int',    ('const void*', 'const void*', 'unsigned int'), False),
+    'memchr':    ('void*',  ('const void*', 'int', 'unsigned int'), False),
+    # ctype
+    'toupper':   ('int',    ('int',), False),
+    'tolower':   ('int',    ('int',), False),
+    # the MSVC spellings the game uses; these have real bodies in
+    # portable/src/hostwin/msvcrt.c, so `crt_proto` only reaches them if that
+    # file ever stops defining one -- the row keeps the declaration honest.
+    '_stricmp':  ('int',    ('const char*', 'const char*'), False),
+    '_strnicmp': ('int',    ('const char*', 'const char*', 'unsigned int'), False),
+    '_strdup':   ('char*',  ('const char*',), False),
+    '_strupr':   ('char*',  ('char*',), False),
+    '_strlwr':   ('char*',  ('char*',), False),
+    # math (f64 in, f64 out: the only rows where the wasm types are not all i32)
+    'sqrt':      ('double', ('double',), False),
+    'sin':       ('double', ('double',), False),
+    'cos':       ('double', ('double',), False),
+    'tan':       ('double', ('double',), False),
+    'atan':      ('double', ('double',), False),
+    'atan2':     ('double', ('double', 'double'), False),
+    'pow':       ('double', ('double', 'double'), False),
+    'exp':       ('double', ('double',), False),
+    'log':       ('double', ('double',), False),
+    'log10':     ('double', ('double',), False),
+    'fabs':      ('double', ('double',), False),
+    'fmod':      ('double', ('double', 'double'), False),
+    'floor':     ('double', ('double',), False),
+    'ceil':      ('double', ('double',), False),
+}
+
+# wasm value types, as linkreport reads them out of the type section.
+W_I32, W_I64, W_F32, W_F64 = 0x7f, 0x7e, 0x7d, 0x7c
+
+# Every C type not in here is one i32 on wasm32: `long`, `unsigned long`, every
+# pointer, `int`, `unsigned int`, `char` after promotion.
+C_TO_WASM = {'double': W_F64, 'float': W_F32,
+             'long long': W_I64, 'unsigned long long': W_I64,
+             '__int64': W_I64}
+
+
+def crt_proto(name):
+    """libc's own prototype for `name`, or None when this table has no row."""
+    return CRT_PROTOS.get(name)
+
+
+def crt_wasm_sig(proto):
+    """The wasm signature libc's definition of a `CRT_PROTOS` row really has.
+
+    A variadic callee gets ONE extra i32 parameter: clang lowers `...` on
+    wasm32 by writing the variable arguments to a buffer and passing its
+    address, so `int printf(const char*, ...)` is `(i32, i32) -> i32` -- which
+    is exactly what wasm-ld printed for libc's printf.o."""
+    cret, cparams, variadic = proto
+    params = [C_TO_WASM.get(p.strip(), W_I32) for p in cparams]
+    if variadic:
+        params.append(W_I32)
+    results = () if cret == 'void' else (C_TO_WASM.get(cret.strip(), W_I32),)
+    return (tuple(params), results)
+
+
+def c_cast(ctype, expr):
+    """`expr` (always a wasm scalar: `unsigned int`, `double`, ...) as `ctype`.
+
+    A pointer needs the integer to go through `__UINTPTR_TYPE__` first, or
+    clang warns about an int-to-pointer conversion of the wrong width."""
+    t = ctype.strip()
+    if t.endswith('*'):
+        return f'({t})(__UINTPTR_TYPE__)({expr})'
+    return f'({t})({expr})'
+
+
+def crt_alias(alias, real, sig, proto):
+    """A forwarder from a game name onto a libc function, typed from LIBC.
+
+    `sig` is the signature the game's callers emitted for `alias` -- that one is
+    not negotiable, it is what the call sites encode. `proto` is libc's
+    prototype for `real`. The two are bridged at the C level with per-argument
+    casts, never with a cast of the function pointer: a cast call lowers to
+    `call_indirect`, and binaryen's `directize` pass turns a constant-index
+    `call_indirect` back into a direct call whose argument types then do not
+    match, so the module fails validation 400 functions away
+    (docs/lanes/scope-port-m2.md section 4).
+
+    Two shapes, and telling them apart is the whole subtlety:
+
+    * The alias is spelled variadic too (its wasm signature has one more
+      parameter than libc's fixed count, and that last parameter IS the varargs
+      pointer clang already handed it). `Format` -> `sprintf` is this: the
+      pointer must be passed STRAIGHT THROUGH, so the callee is declared
+      flattened -- fixed parameters plus that pointer -- which is precisely the
+      wasm signature libc's variadic definition has.
+    * The alias is spelled non-variadic (`DebugPrint(const char*)` -> `printf`).
+      Then there is no varargs pointer to forward and the call has to go through
+      the REAL variadic prototype, so that clang builds the (empty) buffer and
+      emits the `(i32, i32) -> i32` call libc expects.
+
+    The flattened spelling is declared under its own C identifier with an
+    `__asm__` label naming the real symbol, so that both spellings of the same
+    libc function can coexist in one translation unit (one alias of `sprintf`
+    may be variadic and another not).
+
+    Returns (declaration key, declaration, forwarder) -- the key identifies the
+    SPELLING, so the caller emits each declaration once -- or None when the
+    alias signature uses a wasm type this emitter does not map."""
+    ret, types, names = sig_decl(sig)
+    if ret is None:
+        return None
+    cret, cparams, variadic = proto
+    note = ''
+    if variadic and len(types) == len(cparams) + 1:
+        # Variadic alias: declare the callee flattened and forward the buffer.
+        callee = f'll_crt_{real.lstrip("_")}_va'
+        decl = (f'extern {cret} {callee}({", ".join(cparams)}, void*) '
+                f'__asm__("{real}");')
+        args = [c_cast(t, n) for t, n in zip(cparams, names)] + \
+               [c_cast('void*', names[-1])]
+        return (callee, decl,
+                _crt_body(alias, callee, ret, types, names, cret, args, ''))
+    else:
+        callee = real
+        decl = (f'extern {cret} {real}('
+                f'{", ".join(cparams) + (", ..." if variadic else "") or "void"});')
+        args = [c_cast(t, n) for t, n in zip(cparams, names)]
+        if len(types) != len(cparams):
+            # An arity disagreement against libc is a game-side defect, not
+            # something to bridge silently: missing arguments become 0 and extra
+            # ones are dropped (which is what x86 cdecl did anyway), and the
+            # manifest names the row.
+            args += [c_cast(t, '0') for t in cparams[len(types):]]
+            note = (f'  /* arity: callers emitted {len(types)} argument(s), '
+                    f'libc takes {len(cparams)}{" + ..." if variadic else ""} */')
+    return (callee, decl,
+            _crt_body(alias, callee, ret, types, names, cret, args, note))
+
+
+def _crt_body(alias, callee, ret, types, names, cret, args, note):
+    """The forwarder body: one call, with the return value converted."""
+    call = f'{callee}({", ".join(args)})'
+    if ret == 'void':
+        body = f'(void)({call});' if cret != 'void' else f'{call};'
+    elif cret == 'void':
+        body = f'{call}; return ({ret})0;'
+    else:
+        # A pointer return goes through __UINTPTR_TYPE__ on the way to the
+        # alias's integer return type, for the same reason c_cast does.
+        src = f'(__UINTPTR_TYPE__)({call})' if cret.strip().endswith('*') else call
+        body = f'return ({ret})({src});'
+    return f'{ret} {alias}({sig_params(types, names)}) {{ {body} }}{note}\n'
+
+
 def elem_size(typ):
     """ILP32 size of one element of `typ`, or None when it is not a language
     fact (a struct the sources have not laid out)."""
@@ -374,6 +609,16 @@ def main():
         if wasm_defs is None:
             return None
         return wasm_defs.get(name) or wasm_sigs.get(name)
+
+    def defined_here(name):
+        """True when some object in this tree really DEFINES `name`.
+
+        Distinct from `def_sig_of`, which falls back to the signature the
+        references voted for. For a CRT name that matters: `malloc` is
+        referenced by 40 game objects and defined by none of them, so
+        `def_sig_of` answers with the GAME's declaration while the body that
+        gets linked is libc's. Only this predicate says whose prototype wins."""
+        return wasm_defs is not None and name in wasm_defs
 
     # Every address we know a symbol for: sizes come from the gaps.
     data_names = {}           # addr -> [names] (extern-only data)
@@ -666,10 +911,14 @@ def main():
     # same address (startup.c has `malloc` at 0x0049e4ff and `sprintf` at
     # 0x0049e573). Forwarding them is the same job as a stale extern name, so
     # they go through the alias machinery rather than trapping -- which is what
-    # every loader in the game is waiting for. The printf-shaped ones work
-    # because a variadic callee has a fixed wasm signature (its arguments
-    # arrive through one pointer), so the forwarder passes exactly what it was
-    # given.
+    # every loader in the game is waiting for.
+    #
+    # A CRT target is declared from CRT_PROTOS, never from the alias: the body is
+    # libc's and only libc's prototype is right. Both spellings are handled --
+    # an alias that is itself variadic (`Format` -> `sprintf`) forwards the
+    # varargs pointer straight through, and one that is not (`DebugPrint` ->
+    # `printf`) calls the real variadic prototype so clang builds the buffer.
+    # See CRT_PROTOS and crt_alias at the top of this file.
     fn_at = {}
     for nm, (addr, kind) in externs.items():
         if kind == 'fn':
@@ -686,10 +935,32 @@ def main():
 
     n_alias_fn = 0
     declared = {}             # real -> the signature aliases.c declared it with
+    crt_decls = set()         # the CRT spellings already declared in this file
+    crt_typed = []            # (alias, real) taken from CRT_PROTOS, not the alias
+    crt_untabled = []         # (alias, real) a CRT name with no CRT_PROTOS row
+    cast_fwd = []             # (alias, real, alias sig, real sig): see below
     for n, detail, _ in [(n, f'{a} is {m} (CRT)', None) for n, m, a in crt_thunks] + \
                         [(n, d, u) for n, d, u in cats['alias']]:
         real = detail.split(' is ')[1].split(' (')[0]
         sig = sig_of(n)
+        # A CRT name that no translation unit in the tree defines: the body comes
+        # out of libc, so the declaration must come from libc too (CRT_PROTOS).
+        # Declaring it from the ALIAS was the port's last signature mismatch.
+        from_crt = sig is not None and lr.is_crt(real) and not defined_here(real)
+        made = crt_alias(n, real, sig, crt_proto(real)) if \
+            from_crt and crt_proto(real) else None
+        if made is not None:
+            key, decl, fwd = made
+            if key not in crt_decls:
+                crt_decls.add(key)
+                aliases_c.append(decl)
+            aliases_c.append(fwd)
+            declared[real] = crt_wasm_sig(crt_proto(real))
+            crt_typed.append((n, real))
+            n_alias_fn += 1
+            continue
+        if from_crt:
+            crt_untabled.append((n, real))
         if sig is not None and real not in declared:
             # One declaration of the real body per file, with the signature
             # the body actually has; an alias whose callers disagree casts.
@@ -698,6 +969,9 @@ def main():
             declared[real] = rsig if ret is not None else None
             aliases_c.append(f'extern {ret} {real}({sig_params(types)});' if ret is not None
                              else f'extern void {real}();')
+        if sig is not None and declared.get(real) is not None and \
+                declared[real] != sig:
+            cast_fwd.append((n, real, sig, declared[real]))
         aliases_c.append(fn_alias(n, real, sig, declared.get(real)))
         n_alias_fn += 1
     for n, real in cross_tu_alias:   # data the game defines under another name
@@ -744,6 +1018,13 @@ def main():
         f'- unwritten game function stubs: {len(game_fn)}',
         f'- CRT thunks forwarded instead of trapped: {len(crt_thunks)}'
         f" ({', '.join(n + ' -> ' + m for n, m, _ in crt_thunks)})",
+        f'- forwarders typed from libc, not from the alias: {len(crt_typed)}'
+        + (f" ({', '.join(a + ' -> ' + r for a, r in crt_typed)})" if crt_typed else ''),
+        f'- CRT targets with no CRT_PROTOS row (typed from the alias, may mismatch):'
+        f' {len(crt_untabled)}'
+        + (f" ({', '.join(a + ' -> ' + r for a, r in crt_untabled)})"
+           if crt_untabled else ''),
+        f'- cast forwarders (latent indirect-call type mismatch): {len(cast_fwd)}',
         f"- unresolved-name stubs: {len(cats['unknown']) - n_unknown_data}"
         f" (+{n_unknown_data} placeholder data blocks)",
         f"- host API stubs: {len(cats['host'])}",
@@ -763,6 +1044,26 @@ def main():
     if sig_conflicts:
         manifest += ['', '## Conflicting wasm signatures', ''] + \
                     [f'- `{n}`' for n in sig_conflicts]
+    if cast_fwd:
+        # These are the rows `name_trap.py --indirect` explains. A forwarder
+        # whose callers' signature disagrees with the body's is emitted as a
+        # CAST of the function pointer, which lowers to `call_indirect` with the
+        # cast type: the call traps at runtime if the game reaches it, and
+        # binaryen's `directize` may rewrite it into an invalid direct call
+        # before that (docs/lanes/scope-port-m2.md section 4). Every row is a
+        # game-side defect -- a stale extern name whose spelling disagrees with
+        # the body it resolves to -- and the fix belongs in the DECLARING file.
+        manifest += ['', '## Cast forwarders: a stale name typed unlike its body', '',
+                     'One row per alias whose callers emitted a signature the real body',
+                     'does not have. On x86 cdecl these were the same call; on wasm the',
+                     'forwarder has to cast, the call becomes `call_indirect`, and it',
+                     'traps (or binaryen directizes it into an invalid direct call).',
+                     'Fix the DECLARING file, do not bridge it here.', '',
+                     '| alias | body | callers emitted | the body has |',
+                     '| --- | --- | --- | --- |']
+        for a, r, asig, rsig in sorted(cast_fwd):
+            manifest.append(f'| `{a}` | `{r}` | `{lr.sig_text(asig)}` | '
+                            f'`{lr.sig_text(rsig)}` |')
     for fname, text in (('globals.c', globals_c), ('aliases.c', aliases_c),
                         ('stubs.c', stubs_c), ('host_stubs.c', host_c), ('manifest.md', manifest)):
         with open(os.path.join(args.out, fname), 'w') as f:
