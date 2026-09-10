@@ -52,12 +52,19 @@ ll_u64 ll_fnv_int(ll_u64 h, long long v);
         else ll_fail(what, "got 0x%016llx, want 0x%016llx", g_, w_);          \
     } while (0)
 
+/* A NULL `want` means the game is expected to store a NULL POINTER, which is
+ * not the same thing as an empty string and is not interchangeable with it:
+ * LLIDB_LoadICM (data2.c 0x0047aff0) reads a length and, `if (len == 0)`,
+ * stores 0 rather than allocating a one-byte "". An oracle that reports such a
+ * field as "" is reporting the file honestly and the C contract wrongly.
+ * (PORT-A2; see docs/lanes/scope-port-a2.md §3.) */
 #define LL_CHECK_STR(what, got, want)                                        \
     do {                                                                     \
         const char* g_ = (got); const char* w_ = (want);                      \
         ll_checks++;                                                          \
-        if (g_ && strcmp(g_, w_) == 0) ll_pass(what);                         \
-        else ll_fail(what, "got \"%s\", want \"%s\"", g_ ? g_ : "(null)", w_); \
+        if (g_ == w_ || (g_ && w_ && strcmp(g_, w_) == 0)) ll_pass(what);     \
+        else ll_fail(what, "got \"%s\", want \"%s\"", g_ ? g_ : "(null)",      \
+                     w_ ? w_ : "(null)");                                     \
     } while (0)
 
 #define LL_CHECK_TRUE(what, cond)                                            \

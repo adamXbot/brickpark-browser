@@ -309,8 +309,71 @@ signature than the body another source defines (`AddBasicObject` is defined with
 three parameters and called with two from 21 files). Harmless in x86 cdecl,
 a runtime trap on wasm.
 
+## The loaders run: pointer tables, install paths, the spine to the sprite loader (scope PORT-A2, 2026-09-11)
+
+```bash
+ninja -C portable/build-wasm legoland_headless
+LL_HOST_TRACE=1 LL_CD_DIR=$PWD/gamedata/disc LL_DATA_DIR=$PWD/gamedata/main \
+        node portable/build-wasm/legoland_headless.js --resmount   # mount + list members
+LL_HOST_TRACE=1 LL_CD_DIR=$PWD/gamedata/disc LL_DATA_DIR=$PWD/gamedata/main \
+        node portable/build-wasm/legoland_headless.js --stages     # InitSession, step by step
+```
+
+**Pointers INTO a rebuilt global, not only AT one.** `gen_link.py --ilp32`
+re-pointed a word only when it *equalled* a named symbol's address, so
+`g_volume_names`' three `const char*` kept their raw x86 values,
+`RES_OpenVolume` opened `"D:\.res"` and the page died with "Failed to open
+resource". PORT-A sketched the fix as gap blocks between named globals;
+measured, there are none — the rebuilt globals already tile `.rdata`
+(35,856/36,864) and `.data` (3,669,492/3,670,016), and the three literals sit
+at offset 4/20/36 *inside* the 472-byte block for 0x004bcbf4. A pointer word
+now resolves to a symbol's address, an offset into a rebuilt block, an offset
+into an object the game defines, or a synthesised `ll_gap_<start>` initialised
+from the exe; outside the data sections it stays raw. Which words are pointers
+comes from the game's own `extern` declarations, never from the value — a
+three-character string at the end of a word is an in-image integer
+(`"tan\0"` = 0x006e6174), and a value-only rule re-points 1,650 words of which
+1,209 are string text. 272 exact + **441 interior** + 0 gaps + 12 left raw.
+
+**Install paths.** `ll_host_resolve_path` (kernel32.c) resolves the paths the
+game wrote for a 1999 Windows install: the emulated `D:` drive, backslashes,
+each component matched case-insensitively ("LEGOLAND.ICM" vs `Legoland.icm`),
+and — when a directory component does not exist at all — the last component
+looked for in the deepest directory that did match, which is what makes the
+flat `gamedata/main` serve `".\strings\stab.str"`. `msvcrt.c` routes
+`_open`/`_chdir`/`_mkdir`/`_findfirst` through it and now defines `fopen`
+itself, which was the one file entry point nothing wrapped: `LoadStrings`
+(narration2.c) is `if (!f) exit(1)`, so the page vanished with status 1 and no
+message the moment the volumes mounted.
+
+`legoland_headless` and `legoland_tests` link PORT-B's `legoland_hostwin` and
+the filtered closure `legoland_gen_browser`; `src/headless/node_shim.c` supplies
+the four `ll_canvas.js` entry points and `emscripten_sleep` under node.
+`--profiling-funcs` on both keeps the wasm name section.
+
+How far the spine runs (`--stages`, and the browser page reaches the same
+point): `LoadStrings` → `GetString(0xcb) = "LEGOLAND ERROR"`;
+`InitHostSystemGPU` = 1; `InitScreen` = 1 (640x480 display, window "LEGOLAND");
+`InitInputSystem` = 1; `RES_OpenFile(".\graphics\erase it.lls")` = 1402 bytes;
+then `LoadSprite` → `RuntimeError: unreachable` in `__BMPLoader`.
+
+**The next blocker is not the host shim.** It is
+`signature_mismatch:RES_CloseFile` — screen.c, loaders.c and eleven other files
+declare `extern void RES_CloseFile(void*)` while sweep4.c defines
+`int RES_CloseFile(RVol*)`, and on wasm that is a poisoned call site, not a
+`TRAP`. Three of the 542 prototype conflicts are now proved live on paths the
+game takes. See `docs/lanes/scope-port-a2.md` §4.
+
+Census after this lane (`linkreport.py portable/build-wasm/CMakeFiles/legoland_core.dir`):
+game-fn 12 (all CRT thunks, forwarded), game-data 2612, alias 228, host 95,
+crt 43, unknown 86, duplicates 0, asm stubs 26, prototype conflicts 542.
+
 ## Next
 
+0. **The 542 prototype conflicts** are now the frontier, ahead of everything
+   below: `RES_CloseFile` (13 files) and `DBPrintf` (30+) are each one
+   `#ifdef LEGOLAND_PORTABLE` declaration away, and each one unblocks a whole
+   loader. `docs/lanes/scope-port-a2.md` §4 has the recipe and the evidence.
 1. **Host shim on SDL3, native desktop first**: window and message pump,
    one 16-bpp surface presented as a texture (`DirectDrawCreate` and the
    `IDirectDraw*` vtables in gpu.c/surface.c), DirectInput-shaped keyboard

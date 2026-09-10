@@ -46,11 +46,142 @@ extern int WinMain(void* hinst, void* hprev, char* cmdline, int ncmdshow);
  * next. */
 extern int   RES_EnsureMounted(const char* volume);   /* 0x004515e0 */
 extern void* RES_OpenVolume(const char* name);        /* 0x00489750 */
-extern void  RES_CloseVolume(void* vol);              /* 0x00489dc0 */
+/* 0x00489dc0. `int`, NOT the `void` startup.c declares it with: sweep4.c
+ * defines it as `int RES_CloseVolume(RVol*)`, and on wasm the two prototypes
+ * are two different function types, so a `void`-typed call is replaced by
+ * wasm-ld with a trapping stub -- a bare `RuntimeError: unreachable` with no
+ * symbol name, which is exactly what this probe hit before. The game's own
+ * calls (startup.c:140/153/161/183) carry the `void` prototype and WILL trap
+ * the same way: it is one of the 542 prototype conflicts in
+ * docs/lanes/scope-port-a.md, and the first one proved to be live. */
+extern int   RES_CloseVolume(void* vol);
 extern const char* g_volume_names[3];                 /* 0x004bcba4 */
 extern char  g_res_path[];                            /* 0x00813b04 */
 
-static int ll_resmount(void)
+/* The mounted-volume records, as LEGOLAND/resaudio2.c declares them (the same
+ * layout portable/tests/test_res_archive.c checks field by field). Walking
+ * them is how the probe proves the directory really was parsed: a volume whose
+ * name table was still full of raw x86 addresses opened a file called ".res"
+ * and produced no members at all. */
+typedef struct LLResEnt {
+    struct LLResEnt* anext;   /* +0x00 every member of every volume */
+    struct LLResEnt* next;    /* +0x04 next in the directory bucket */
+    struct LLResEnt* vnext;   /* +0x08 next in THIS volume */
+    void*            dir;     /* +0x0c */
+    void*            vol;     /* +0x10 */
+    int              size;    /* +0x14 */
+    int              base;    /* +0x18 offset in the volume */
+    char*            name;    /* +0x1c */
+} LLResEnt;
+
+typedef struct LLResVol {
+    struct LLResVol* next;    /* +0x00 */
+    LLResEnt*        files;   /* +0x04 */
+    char             name[0x14];  /* +0x08 upper-cased */
+    int              handle;  /* +0x1c */
+} LLResVol;
+
+#define LL_RES_SHOW 6         /* members printed per volume */
+
+static void ll_res_list(void* v)
+{
+    LLResVol* vol = (LLResVol*)v;
+    LLResEnt* e;
+    int n = 0;
+    long bytes = 0;
+
+    for (e = vol->files; e; e = e->vnext) {
+        if (n < LL_RES_SHOW)
+            fprintf(stderr, "legoland_headless:     %-16s %8d bytes @ %d\n",
+                    e->name ? e->name : "(null)", e->size, e->base);
+        n++;
+        bytes += e->size;
+    }
+    fprintf(stderr, "legoland_headless:   volume \"%s\" handle %d: %d members,"
+                    " %ld bytes%s\n", vol->name, vol->handle, n, bytes,
+            n > LL_RES_SHOW ? " (first few shown)" : "");
+}
+
+/* --stages: InitSession's own sequence (startup.c 0x0047f880), one step at a
+ * time with a line before each, because that is the only way to find out where
+ * a prototype conflict stopped the game. A mismatched signature is not a TRAP
+ * and not a call into a named stub: wasm-ld poisons the CALL SITE, so the
+ * exception arrives as `RuntimeError: unreachable` attributed to whatever
+ * function the call was inlined into -- `main`, for everything static in this
+ * file. Bracketing each step with a print is what turns that back into a name.
+ *
+ * Every prototype below is copied from the file that DEFINES the function, not
+ * from the file that declares it, for the same reason. */
+extern void       LoadStrings(void);                  /* narration2.c 0x00498d00 */
+extern char*      GetString(int id);                  /* text.c */
+extern int        LLIDB_LoadICM(void);                /* data2.c 0x0047b1d0 */
+extern int        LLIDB_RegisterNewElement(char* name, char* image, unsigned int type);
+extern int        InitHostSystemGPU(void);            /* gpu.c */
+extern int        InitScreen(void);                   /* screen.c */
+extern int        InitInputSystem(void);              /* input2.c */
+extern void*      LoadSprite(const char* name, int kind);   /* sprite2.c */
+extern void*      RES_OpenFile(const char* name);     /* res.c 0x00489b60 */
+extern int        RES_GetFileSize(void* f);           /* sweep4.c 0x00489ce0 */
+extern int        RES_CloseFile(void* f);             /* sweep4.c 0x00489de0 -- int */
+extern char*      GetGFXFName(const char* name, unsigned char type, char* buf);
+extern char* g_gfx_dirs[7];                    /* rin.c 0x004b81c0 */
+
+#define LL_STAGE(what) \
+    do { fprintf(stderr, "legoland_headless: --- %s\n", what); fflush(stderr); } while (0)
+
+static int ll_stages(void)
+{
+    char* s;
+
+    LL_STAGE("LoadStrings()");
+    LoadStrings();
+    s = GetString(0xcb);
+    fprintf(stderr, "legoland_headless: GetString(0xcb) = \"%s\"\n", s ? s : "(null)");
+
+    LL_STAGE("InitHostSystemGPU()");
+    fprintf(stderr, "legoland_headless: = %d\n", InitHostSystemGPU());
+
+    LL_STAGE("InitScreen()");
+    fprintf(stderr, "legoland_headless: = %d\n", InitScreen());
+
+    LL_STAGE("InitInputSystem()");
+    fprintf(stderr, "legoland_headless: = %d\n", InitInputSystem());
+
+    /* Before LoadSprite, prove that the member IS reachable through the
+     * mounted volumes: it is in Graphics1.res (1402 bytes, COMP 34x30 bpp16).
+     * If this works and LoadSprite does not, the loader's failure is not the
+     * archive. */
+    LL_STAGE("RES_OpenFile(GetGFXFName(\"erase it.lls\", kind, 0))");
+    {
+        int   kind;
+        for (kind = 0; kind <= 2; kind++) {
+            char* path = GetGFXFName("erase it.lls", (unsigned char)kind, 0);
+            void* f = RES_OpenFile(path);
+            fprintf(stderr, "legoland_headless:   kind %d -> \"%s\" = %p size %d\n",
+                    kind, path, f, f ? RES_GetFileSize(f) : -1);
+            if (f)
+                RES_CloseFile(f);
+        }
+    }
+
+    LL_STAGE("LoadSprite(\"erase it.lls\")");
+    fprintf(stderr, "legoland_headless: = %p\n", LoadSprite("erase it.lls", 0));
+
+    LL_STAGE("LLIDB_LoadICM()");
+    fprintf(stderr, "legoland_headless: LLIDB_LoadICM() = %d\n", LLIDB_LoadICM());
+
+    LL_STAGE("LLIDB_RegisterNewElement(\"BUILD MENU\")");
+    fprintf(stderr, "legoland_headless: = %d\n",
+            LLIDB_RegisterNewElement("BUILD MENU", 0, 0x200));
+
+    LL_STAGE("done");
+    return 0;
+}
+
+/* `keep` leaves the volumes mounted, which is what the game does: InitSession
+ * only closes them on a failure path or at shutdown, and everything after the
+ * mount reads through them. */
+static int ll_resmount_ex(int keep)
 {
     int i;
 
@@ -69,7 +200,10 @@ static int ll_resmount(void)
                 g_volume_names[i], v);
         if (!v)
             return 1;
-        RES_CloseVolume(v);
+        ll_res_list(v);
+        if (!keep)
+            fprintf(stderr, "legoland_headless:   RES_CloseVolume = %d\n",
+                    RES_CloseVolume(v));
     }
     return 0;
 }
@@ -94,7 +228,13 @@ int main(int argc, char** argv)
         fprintf(stderr, "legoland_headless: data directory %s\n", cwd);
 
     if (argc > 1 && strcmp(argv[1], "--resmount") == 0)
-        return ll_resmount();
+        return ll_resmount_ex(0);
+    /* --stages: mount the volumes, then walk InitSession's own sequence one
+     * named step at a time. */
+    if (argc > 1 && strcmp(argv[1], "--stages") == 0) {
+        r = ll_resmount_ex(1);
+        return r ? r : ll_stages();
+    }
 
     cmdline[0] = 0;
     for (i = 1; i < argc; i++) {

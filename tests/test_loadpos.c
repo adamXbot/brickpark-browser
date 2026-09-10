@@ -22,19 +22,23 @@
  * RUN DIRECTORY: gamedata/disc.
  *
  * GLOBALS THIS TEST INITIALISES:
- *   g_res_path 0x00813b04  set to "./" -- it is BOTH the volume-file prefix
+ *   g_res_path 0x00813b04  set to "D:\" -- it is BOTH the volume-file prefix
  *                          RES_OpenVolume's second attempt uses
  *                          (sprintf("%s%s.res", g_res_path, name)) AND the
  *                          drive root RES_FindVolumeOnResPath probes.
  * Everything else is allocated by the loader.
  *
- * NOTE FOR THE INTEGRATOR: RES_OpenFile calls RES_EnsureMounted(0), which
- * loops on RES_FindVolumeOnResPath until a CDFS volume named "LEGOLAND" is
- * found and otherwise shows a modal retry box. Headless, that is an infinite
- * loop through two traps. The host shim must answer GetVolumeInformationA with
- * fsname "CDFS" and volume name "LEGOLAND"; this lane's stopgap
- * portable/tests/support/ll_test_host.c does exactly that, and PORT-A's
- * kernel32 shim will need to as well.
+ * RES_OpenFile calls RES_EnsureMounted(0), which loops on
+ * RES_FindVolumeOnResPath until a CDFS volume named "LEGOLAND" is found and
+ * otherwise shows a modal retry box with no other exit. That prober does
+ * `root[0] = g_res_path[0]` and asks GetVolumeInformationA about
+ * "<letter>:\", so the ONLY thing that can satisfy it is a drive letter: the
+ * original "./" here made it probe ".:\" and spin for ever once PORT-B's
+ * shim was linked and the generated ShowWindow trap stopped hiding the loop.
+ * kernel32.c emulates drive D: as a CD-ROM labelled LEGOLAND at $LL_CD_DIR,
+ * which cmake/tests.cmake points at gamedata/disc for every test. (PORT-A2;
+ * this is PORT-C's finding 2, and the answer is a drive letter, not a
+ * cleverer GetVolumeInformationA.)
  */
 #include "ll_tests.h"
 #include "oracle_geom.h"
@@ -104,9 +108,17 @@ void test_loadpos(void)
     int     mi;
     int     si;
 
-    g_res_path[0] = '.';
-    g_res_path[1] = '/';
-    g_res_path[2] = 0;
+    /* "D:\", not "./" -- see the header note. RES_FindVolumeOnResPath builds
+     * its probe as `root[0] = g_res_path[0]; root = "<that>:\"`, so a
+     * g_res_path of "./" asks the host about a drive called ".:\" that can
+     * never be the CD, and RES_EnsureMounted(0) then loops on its modal retry
+     * box for ever. With the emulated CD drive the probe is "D:\" and the
+     * volume prefix is "D:\<name>.res", which the shim maps back to
+     * $LL_CD_DIR -- the same gamedata/disc this test runs in. (PORT-A2.) */
+    g_res_path[0] = 'D';
+    g_res_path[1] = ':';
+    g_res_path[2] = '\\';
+    g_res_path[3] = 0;
 
     v = RES_OpenVolume(ORACLE_GEOM_VOLUME);
     LL_CHECK_TRUE("RES_OpenVolume mounted " ORACLE_GEOM_VOLUME, v != 0);

@@ -1,6 +1,9 @@
 /* LEGOLAND portable build -- the MSVC CRT file/directory calls the game uses
  * (see portable/hostwin/include/io.h and direct.h), on POSIX. Paths may use
- * backslashes; they are normalised here. Flag values are MSVC's. */
+ * backslashes and the install's directory names; they are resolved by
+ * ll_host_resolve_path (kernel32.c). Flag values are MSVC's. */
+#include "ll_host.h"
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -26,12 +29,19 @@
 #define MS_O_EXCL   0x0400
 #define MS_A_SUBDIR 0x10
 
+/* Every path the CRT layer takes goes through the shim's resolver
+ * (kernel32.c, PORT-A2): backslashes, the emulated CD drive, a
+ * case-insensitive component match, and the flattened-install fallback that
+ * finds ".\strings\stab.str" as `stab.str`. `create` means the name is being
+ * made and must be taken as written. */
+static void ll_path2(char* out, size_t cap, const char* in, int create)
+{
+    ll_host_resolve_path(out, (unsigned int)cap, in, create);
+}
+
 static void ll_path(char* out, size_t cap, const char* in)
 {
-    size_t i;
-    for (i = 0; i + 1 < cap && in[i]; i++)
-        out[i] = in[i] == '\\' ? '/' : in[i];
-    out[i] = 0;
+    ll_path2(out, cap, in, 0);
 }
 
 int _open(const char* path, int oflag, ...)
@@ -39,7 +49,7 @@ int _open(const char* path, int oflag, ...)
     char p[1024];
     int  flags = 0;
     int  mode = 0644;
-    ll_path(p, sizeof p, path);
+    ll_path2(p, sizeof p, path, (oflag & MS_O_CREAT) != 0);
     if (oflag & MS_O_RDWR) flags |= O_RDWR;
     else if (oflag & MS_O_WRONLY) flags |= O_WRONLY;
     else flags |= O_RDONLY;
@@ -56,6 +66,51 @@ int _open(const char* path, int oflag, ...)
     return open(p, flags, mode);
 }
 
+/* ---- fopen -----------------------------------------------------------------
+ * The game opens most of its loose assets with the stdio `fopen`, not with
+ * `_open` or `CreateFileA`, and it hands it Windows paths:
+ *
+ *     fopen(".\\strings\\stab.str", "r")     narration2.c LoadStrings
+ *
+ * On POSIX a backslash is an ordinary filename character, so that call cannot
+ * succeed even on a case-insensitive filesystem with the file sitting right
+ * there -- and LoadStrings reproduces the original's `if (!f) exit(1)`, so the
+ * whole program disappeared with status 1 the moment the resource volumes
+ * finished mounting. Defining `fopen` here overrides libc's for everything in
+ * this build (wasm-ld prefers an object's definition to an archive member's,
+ * so musl's is never pulled in) and routes it through the same resolver as
+ * everything else. The body must NOT call fopen -- it opens the fd itself and
+ * hands it to fdopen, which is a different symbol.
+ *
+ * Mode strings the game uses: "r", "rb", "w", "wb", "a", "ab", with an
+ * optional "+"; anything else falls through to read-only, which is what the
+ * CRT would have done with a mode it did not understand. */
+FILE* fopen(const char* path, const char* mode)
+{
+    char p[1024];
+    int  flags;
+    int  fd;
+    int  update = mode && strchr(mode, '+') != 0;
+    char m = mode ? mode[0] : 'r';
+    FILE* f;
+
+    if (m == 'w')
+        flags = (update ? O_RDWR : O_WRONLY) | O_CREAT | O_TRUNC;
+    else if (m == 'a')
+        flags = (update ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND;
+    else
+        flags = update ? O_RDWR : O_RDONLY;
+
+    ll_host_resolve_path(p, sizeof p, path, (flags & O_CREAT) != 0);
+    fd = open(p, flags, 0644);
+    if (fd < 0)
+        return 0;
+    f = fdopen(fd, mode ? mode : "r");
+    if (!f)
+        close(fd);
+    return f;
+}
+
 int  _close(int fd) { return close(fd); }
 int  _read(int fd, void* buf, unsigned int n) { return (int)read(fd, buf, n); }
 int  _write(int fd, const void* buf, unsigned int n) { return (int)write(fd, buf, n); }
@@ -68,7 +123,7 @@ long _filelength(int fd)
     return fstat(fd, &st) == 0 ? (long)st.st_size : -1;
 }
 
-int _mkdir(const char* path) { char p[1024]; ll_path(p, sizeof p, path); return mkdir(p, 0755); }
+int _mkdir(const char* path) { char p[1024]; ll_path2(p, sizeof p, path, 1); return mkdir(p, 0755); }
 int _chdir(const char* path) { char p[1024]; ll_path(p, sizeof p, path); return chdir(p); }
 char* _getcwd(char* buf, int size) { return getcwd(buf, (size_t)size); }
 
