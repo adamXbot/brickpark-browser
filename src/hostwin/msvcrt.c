@@ -111,6 +111,33 @@ FILE* fopen(const char* path, const char* mode)
     return f;
 }
 
+/* ---- the failure-value audit (PORT-A5) -------------------------------------
+ * The CRT has TWO failure conventions and this file mixes two implementations
+ * of them, so every entry point was checked for the asymmetry that broke
+ * `_findclose`: a call made WITH the failure value the previous call returned.
+ *
+ *   fd family (`_open`, `_close`, `_read`, `_write`, `_lseek`, `_tell`,
+ *   `_filelength`): failure is -1 and the fd goes straight to POSIX, which
+ *   rejects -1 with EBADF. audio4.c:152/227 `_close(g_speech_fd)` on a failed
+ *   `_open` is therefore already safe, and behaves as it does on Windows.
+ *   Nothing to fix.
+ *
+ *   find family (`_findfirst`/`_findnext`/`_findclose`): failure is -1 and the
+ *   handle is OURS -- a pointer cast to long. -1 is non-null, so `if (!f)`
+ *   misses it; see ll_bad_find. FIXED here, all three entry points.
+ *
+ *   pointer family (`fopen`, `_getcwd`, `_strupr`, `_msize`): failure is NULL.
+ *   `fopen` already returns 0 on any error. `_msize(NULL)` and `_strupr(NULL)`
+ *   are invalid-parameter cases on MSVC (no crash, a defined return) and were
+ *   an unguarded dereference here, so they are guarded below.
+ *
+ *   `_stat`/`_fstat`/`_access`/`_unlink`/`_chmod` are NOT defined here and no
+ *   game source calls them -- a grep of LEGOLAND/*.c for the whole CRT surface
+ *   finds only `_filelength` (2), `_getcwd` (4), `_msize` (4), `_splitpath`
+ *   (15), `_strupr` (3), `_tell` (7) beyond the families above. If one is ever
+ *   added, note that MSVC's `_stat` returns -1 and leaves the buffer alone
+ *   while POSIX `stat` is the same shape, so it needs no special care; the
+ *   handle-shaped calls are the dangerous ones. */
 int  _close(int fd) { return close(fd); }
 int  _read(int fd, void* buf, unsigned int n) { return (int)read(fd, buf, n); }
 int  _write(int fd, const void* buf, unsigned int n) { return (int)write(fd, buf, n); }
@@ -143,9 +170,29 @@ struct ll_finddata {          /* mirrors struct _finddata_t in hostwin/io.h */
     char          name[260];
 };
 
+/* The CRT's find handle is an OPAQUE long whose FAILURE value is -1, not 0.
+ * This layer hands back a `struct ll_find*` cast to long, so every entry point
+ * that takes a handle has to reject -1 as well as 0 before it dereferences:
+ * `(struct ll_find*)(intptr_t)-1` is a perfectly non-null pointer to
+ * 0xffffffff. `ll_bad_find` is that test, in one place.
+ *
+ * This is not a hypothetical: profiles.c's `Goto_ProfileDir` (0x00491360)
+ * calls `_findclose(h)` UNCONDITIONALLY, as shipped -- on Windows that is a
+ * documented -1/EINVAL return, here it was a wild `closedir` that took the
+ * whole module down with `memory access out of bounds` on the first front-end
+ * frame whenever no `profiles` directory existed. */
+static int ll_bad_find(long handle)
+{
+    return handle == 0 || handle == -1;
+}
+
 static int ll_find_step(struct ll_find* f, struct ll_finddata* out)
 {
     struct dirent* e;
+    if (!f || !f->dir || !out) {
+        errno = EINVAL;
+        return -1;
+    }
     while ((e = readdir(f->dir)) != 0) {
         struct stat st;
         char full[1300];
@@ -168,11 +215,18 @@ static int ll_find_step(struct ll_find* f, struct ll_finddata* out)
 
 long _findfirst(const char* spec, void* out)
 {
-    struct ll_find* f = (struct ll_find*)calloc(1, sizeof *f);
+    struct ll_find* f;
     char            p[1024];
     char*           slash;
-    if (!f)
+    if (!spec || !out) {              /* MSVC: invalid parameter -> -1/EINVAL */
+        errno = EINVAL;
         return -1;
+    }
+    f = (struct ll_find*)calloc(1, sizeof *f);
+    if (!f) {
+        errno = ENOMEM;
+        return -1;
+    }
     ll_path(p, sizeof p, spec);
     slash = strrchr(p, '/');
     if (slash) {
@@ -198,15 +252,23 @@ long _findfirst(const char* spec, void* out)
 
 int _findnext(long handle, void* out)
 {
+    if (ll_bad_find(handle)) {        /* a failed _findfirst handed back -1 */
+        errno = EINVAL;
+        return -1;
+    }
     return ll_find_step((struct ll_find*)(intptr_t)handle, (struct ll_finddata*)out);
 }
 
 int _findclose(long handle)
 {
-    struct ll_find* f = (struct ll_find*)(intptr_t)handle;
-    if (!f)
+    struct ll_find* f;
+    if (ll_bad_find(handle)) {        /* Goto_ProfileDir closes unconditionally */
+        errno = EINVAL;
         return -1;
-    closedir(f->dir);
+    }
+    f = (struct ll_find*)(intptr_t)handle;
+    if (f->dir)
+        closedir(f->dir);
     free(f);
     return 0;
 }
@@ -214,6 +276,8 @@ int _findclose(long handle)
 /* ---- misc CRT ------------------------------------------------------------ */
 unsigned int _msize(void* block)
 {
+    if (!block)                       /* MSVC: invalid parameter, not a crash */
+        return 0;
 #ifdef __APPLE__
     return (unsigned int)malloc_size(block);
 #else
@@ -227,6 +291,8 @@ int _stricmp(const char* a, const char* b) { return stricmp(a, b); }
 char* _strupr(char* s)
 {
     char* p;
+    if (!s)
+        return 0;
     for (p = s; *p; p++)
         if (*p >= 'a' && *p <= 'z')
             *p -= 'a' - 'A';
@@ -239,6 +305,13 @@ void _splitpath(const char* path, char* drive, char* dir, char* fname, char* ext
     const char* last_sep = 0;
     const char* dot = 0;
     const char* q;
+    if (!path) {                      /* every out buffer still gets emptied */
+        if (drive) drive[0] = 0;
+        if (dir) dir[0] = 0;
+        if (fname) fname[0] = 0;
+        if (ext) ext[0] = 0;
+        return;
+    }
     if (drive) drive[0] = 0;
     if (p[0] && p[1] == ':') {
         if (drive) { drive[0] = p[0]; drive[1] = ':'; drive[2] = 0; }
