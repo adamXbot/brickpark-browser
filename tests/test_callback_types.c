@@ -283,7 +283,10 @@ ll_fn_cb_a0 const ll_tab_cb_a0[] = {
     Restaurant2_GetDrawDesc,
 };
 /* not named above, and why:
- *   DrawBasicPath  [(i32, i32, i32, i32) -> void]
+ *   DrawBasicPath  [(i32, i32, i32, i32) -> void -- an ORIGINAL mis-registration,
+ *       unreachable because PATH CONTROL never sets ObjDef flags & 0x400;
+ *       screen.c's portable arm registers ll_cb_a0_DrawBasicPath, which has
+ *       this slot's type and traps.  Scope PORT-M5 section 2a.]
  *   Joust_A0  [a stale name no game TU defines: gen_link.py forwards it, and takes the forwarder's signature from the registering file's declaration]
  *   TempleSlide_A0  [a stale name no game TU defines: gen_link.py forwards it, and takes the forwarder's signature from the registering file's declaration]
  */
