@@ -338,9 +338,34 @@ def main():
     globals_c += prologue + [''] + body
 
     # ---- function aliases -------------------------------------------------
+    # CRT thunks filed as unwritten game functions. `MemAlloc` (0x0049e4ff),
+    # `Format` (0x0049e573) and ten more are not missing bodies at all: each is
+    # a second name for a CRT function that the sources ALSO declare at that
+    # same address (startup.c has `malloc` at 0x0049e4ff and `sprintf` at
+    # 0x0049e573). Forwarding them is the same job as a stale extern name, so
+    # they go through the alias machinery rather than trapping -- which is what
+    # every loader in the game is waiting for. The printf-shaped ones work
+    # because a variadic callee has a fixed wasm signature (its arguments
+    # arrive through one pointer), so the forwarder passes exactly what it was
+    # given.
+    fn_at = {}
+    for nm, (addr, kind) in externs.items():
+        if kind == 'fn':
+            fn_at.setdefault(addr, []).append(nm)
+    crt_thunks = []           # (name, crt name, '0x...')
+    game_fn = []
+    for n, detail, users in cats['game-fn']:
+        crt = sorted(m for m in fn_at.get(int(detail, 16), [])
+                     if m != n and lr.is_crt(m) and c_ident_ok(m))
+        if crt:
+            crt_thunks.append((n, crt[0], detail))
+        else:
+            game_fn.append((n, detail, users))
+
     n_alias_fn = 0
     declared = {}             # real -> the signature aliases.c declared it with
-    for n, detail, _ in cats['alias']:
+    for n, detail, _ in [(n, f'{a} is {m} (CRT)', None) for n, m, a in crt_thunks] + \
+                        [(n, d, u) for n, d, u in cats['alias']]:
         real = detail.split(' is ')[1].split(' (')[0]
         sig = sig_of(n)
         if sig is not None and real not in declared:
@@ -357,7 +382,7 @@ def main():
         aliases_c.append(f'/* {n} is {real}: no cross-TU data alias exists on this target */')
 
     # ---- stubs ------------------------------------------------------------
-    for n, detail, users in cats['game-fn']:
+    for n, detail, users in game_fn:
         stubs_c.append(trap_body(n, f'GAME {detail}', users, sig_of(n)))
     stubs_c.append('')
     stubs_c.append('/* externs with no address comment: unresolved names, see the report.')
@@ -387,7 +412,9 @@ def main():
         f'- symbols re-pointed into (ilp32): {len(refs)}',
         f'- function aliases (stale extern names): {n_alias_fn}',
         f'- data names the game defines under another name (no alias possible): {len(cross_tu_alias)}',
-        f"- unwritten game function stubs: {len(cats['game-fn'])}",
+        f'- unwritten game function stubs: {len(game_fn)}',
+        f'- CRT thunks forwarded instead of trapped: {len(crt_thunks)}'
+        f" ({', '.join(n + ' -> ' + m for n, m, _ in crt_thunks)})",
         f"- unresolved-name stubs: {len(cats['unknown']) - n_unknown_data}"
         f" (+{n_unknown_data} placeholder data blocks)",
         f"- host API stubs: {len(cats['host'])}",

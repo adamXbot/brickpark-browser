@@ -154,6 +154,12 @@ clock, `Sleep` as a no-op with the `ll_host_yield` hook PORT-B sets), declared
 in the new host ABI header `portable/hostwin/include/ll_host.h`. Host API stubs:
 149 → 95.
 
+The 12 symbols the census files as "CRT-range wrappers filed as game-fn" are
+forwarded rather than trapped now: each (`MemAlloc`, `Format`, `NameCompare`, …)
+is a second name for a CRT function the sources declare at the same address, so
+gen_link routes them through the same forwarder machinery as a stale extern
+name. `- unwritten game function stubs: 0` in `gen/manifest.md`.
+
 `linkreport.py` also reports a new row, **prototype conflicts: 542** — places
 where one source's declaration of a game function lowers to a different wasm
 signature than the body another source defines (`AddBasicObject` is defined with
