@@ -93,6 +93,10 @@ static const struct entry entries[] = {
      * layout, so this one drives no decoder and needs no gamedata/. */
     { "keystate",      test_keystate,
       "g_key_state/g_gpu_state are ONE object; IsLShiftDown/IsRShiftDown" },
+    /* PORT-B3: the ten type-3 RLE painters. The expectation is a synthetic
+     * sprite drawn directly from its own op list, so no gamedata/ either. */
+    { "rle_paint",     test_rle_paint,
+      "RLEPaintFast/Hit/Clip{L,R,LR}/HitClip{L,R,LR}, recolour + highlight" },
 };
 
 int main(int argc, char** argv)

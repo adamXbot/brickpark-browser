@@ -81,5 +81,6 @@ void test_res_archive(void);
 void test_llidb_icm(void);
 void test_loadpos(void);
 void test_keystate(void);   /* PORT-A3: interior aliases, no oracle */
+void test_rle_paint(void);  /* PORT-B3: the ten type-3 RLE painters */
 
 #endif /* LL_TESTS_H */

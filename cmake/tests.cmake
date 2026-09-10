@@ -86,6 +86,8 @@ add_executable(legoland_tests EXCLUDE_FROM_ALL
   "${LL_TESTS_DIR}/test_loadpos.c"
   # PORT-A3 (docs/lanes/scope-port-a3.md): the generator's interior aliases.
   "${LL_TESTS_DIR}/test_keystate.c"
+  # PORT-B3 (docs/lanes/scope-port-b3.md): the ten type-3 RLE painters.
+  "${LL_TESTS_DIR}/test_rle_paint.c"
   ${LL_ORACLE_HEADERS})
 target_include_directories(legoland_tests PRIVATE
   "${LL_TESTS_DIR}" "${LL_ORACLE_DIR}")
@@ -172,3 +174,6 @@ ll_add_test(llidb_icm     "${LL_ROOT}/gamedata/main"  TRUE)
 ll_add_test(loadpos       "${LL_ROOT}/gamedata/disc"  TRUE)
 # PORT-A3: pure layout, no assets and no host shim -- runs on both toolchains.
 ll_add_test(keystate      "${CMAKE_BINARY_DIR}"       FALSE)
+# PORT-B3: a synthetic RLE frame into a local surface. No assets, no host shim,
+# no serialised layout, so it runs on both toolchains too.
+ll_add_test(rle_paint     "${CMAKE_BINARY_DIR}"       FALSE)
