@@ -403,20 +403,218 @@ def load_win32():
     return win32
 
 
+# ---- the extern scan: a STATEMENT, not a line ------------------------------
+# One regular expression per physical line missed 29 of the 81 names PORT-M4
+# had to classify by hand (docs/lanes/scope-port-m4.md section 2), in three
+# ways, all of them silent:
+#
+#   1. the `/* 0x... */` sat on a CONTINUATION line of a multi-line `extern`
+#      (20 names). A declaration may be formatted normally now: the scanner
+#      reads the whole statement, up to the `;` that ends it, and takes the
+#      address from any comment inside it.
+#   2. the type had a brace-enclosed body -- `extern struct FortArea { int x0,
+#      y0, x1, y1; } g_fort_area;` -- whose own semicolons the line regex could
+#      not cross. The body is removed before the declarators are read.
+#   3. the type was a FUNCTION POINTER: in `extern int (*g_present)(void);` the
+#      lazy match stopped at `int`, which is followed by `(`, so the TYPE was
+#      captured as the symbol name and the real global went unclassified. That
+#      is the dangerous one -- gen_link.py gives an unclassified data name a
+#      256-byte ZEROED placeholder, so if another file names the same address
+#      under a spelling the scanner can read, the program ends up with two
+#      objects for one global (`g_active_input_cb` / `g_icon_handler2` at
+#      0x006687c0 were exactly that pair).
+#
+# The declarator rules below are the C ones, restricted to what a declaration
+# can look like: the name is the last identifier outside any parameter list,
+# except in the `(*name)` form, where it is the identifier the star introduces.
+_EXTERN_START = re.compile(r'\bextern\b')
+
+
+def _extern_positions(text):
+    """Where the `extern` KEYWORD occurs in code -- not in a comment, not in a
+    string. The word is common in the recovered files' prose ("the extern's
+    types are the caller's codegen lever"), and a match inside a comment starts
+    a `statement` that then swallows the real declaration below it."""
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '/' and i + 1 < n and text[i + 1] == '*':
+            j = text.find('*/', i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        if c == '/' and i + 1 < n and text[i + 1] == '/':
+            j = text.find('\n', i)
+            i = n if j < 0 else j + 1
+            continue
+        if c in '"\'':
+            q, j = c, i + 1
+            while j < n and text[j] != q:
+                j += 2 if text[j] == '\\' else 1
+            i = j + 1
+            continue
+        if c.isalpha() or c == '_':
+            j = i
+            while j < n and (text[j].isalnum() or text[j] == '_'):
+                j += 1
+            if text[i:j] == 'extern':
+                out.append(i)
+            i = j
+            continue
+        i += 1
+    return out
+_COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
+_ADDR_IN_COMMENT = re.compile(r'/\*[^*]*?(0x[0-9a-fA-F]{6,8})|//[^\n]*?(0x[0-9a-fA-F]{6,8})')
+_TOKENS = re.compile(r'[A-Za-z_]\w*|0[xX][0-9a-fA-F]+|\d+|\S')
+
+
+def _statement_at(text, i):
+    """The `extern ...;` statement starting at `i`: (code, comments, end).
+
+    Brace-aware, so a `{ ... }` type body's own semicolons do not end it."""
+    depth = 0
+    j = i
+    code, comments = [], []
+    n = len(text)
+    while j < n:
+        if text.startswith('/*', j):
+            k = text.find('*/', j + 2)
+            k = n if k < 0 else k + 2
+            comments.append(text[j:k])
+            j = k
+            continue
+        if text.startswith('//', j):
+            k = text.find('\n', j)
+            k = n if k < 0 else k
+            comments.append(text[j:k])
+            j = k
+            continue
+        c = text[j]
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+        elif c == ';' and depth <= 0:
+            code.append(c)
+            j += 1
+            # The address comment is usually TRAILING -- `extern int g_x;
+            # /* 0x004b1234 */` -- so the statement's comments include what
+            # follows the semicolon up to the end of that line (and a block
+            # comment opened there, however many lines it runs).
+            while j < n and text[j] in ' \t':
+                j += 1
+            if text.startswith('/*', j):
+                k = text.find('*/', j + 2)
+                k = n if k < 0 else k + 2
+                comments.append(text[j:k])
+                j = k
+            elif text.startswith('//', j):
+                k = text.find('\n', j)
+                k = n if k < 0 else k
+                comments.append(text[j:k])
+                j = k
+            return ''.join(code), comments, j
+        code.append(c)
+        j += 1
+    return ''.join(code), comments, n
+
+
+def _strip_braces(stmt):
+    out, depth = [], 0
+    for c in stmt:
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+        elif depth == 0:
+            out.append(c)
+    return ''.join(out)
+
+
+def extern_decl_names(stmt):
+    """[(name, 'fn'|'data')] for one `extern ...;` statement.
+
+    The declared name is the last identifier at paren depth 0 -- everything
+    inside a parameter list belongs to the parameters -- unless the declarator
+    is the `(*name)` form, where the name is the identifier after the star.
+    `fn` when that name is immediately followed by a parameter list."""
+    toks = _TOKENS.findall(_strip_braces(stmt))
+    out = []
+    piece, depth = [], 0
+    for t in toks + [',']:
+        if t == '(':
+            depth += 1
+        elif t == ')':
+            depth -= 1
+        if t in (',', ';') and depth == 0:
+            hit = _declarator_name(piece)
+            if hit:
+                out.append(hit)
+            piece = []
+            continue
+        piece.append(t)
+    return out
+
+
+def _declarator_name(toks):
+    depth = 0
+    last, kind = None, 'data'
+    for i, t in enumerate(toks):
+        if t == '[':
+            # An array BOUND is not a declarator: `extern char
+            # g_key_prev[KEYMAP_COUNT];` declares g_key_prev, and the macro is
+            # not a second name for the same address.
+            depth += 1
+            continue
+        if t == ']':
+            depth -= 1
+            continue
+        if t == '(':
+            # `(*name)` / `(*name[4])`: a pointer declarator, not a call. Only
+            # at depth 0 -- the same shape one level in is a function-POINTER
+            # PARAMETER (`extern void SortSpriteWithCallback(int (*cb)(void))`)
+            # and the declared name is still the function's.
+            if depth == 0 and i + 1 < len(toks) and toks[i + 1] == '*':
+                k = i + 1
+                while k < len(toks) and toks[k] == '*':
+                    k += 1
+                if k < len(toks) and toks[k][:1].isalpha() or \
+                        (k < len(toks) and toks[k][:1] == '_'):
+                    return (toks[k], 'data')
+            depth += 1
+            continue
+        if t == ')':
+            depth -= 1
+            continue
+        if depth == 0 and (t[:1].isalpha() or t[:1] == '_') and \
+                t not in ('extern', 'const', 'volatile', '__declspec',
+                          'struct', 'union', 'enum', 'unsigned', 'signed',
+                          '__cdecl', '__stdcall', 'CALLBACK', 'WINAPI',
+                          'APIENTRY', 'dllimport'):
+            last = t
+            kind = 'fn' if i + 1 < len(toks) and toks[i + 1] == '(' else 'data'
+    if last is None:
+        return None
+    return (last, kind)
+
+
 def scan_sources():
     """Returns (externs, defined_at, stubs):
-    externs   name -> (address, 'fn' | 'data') from `extern ... /* 0x... */`
+    externs   name -> (address, 'fn' | 'data') from `extern ... /* 0x... */`,
+              read a STATEMENT at a time, from LEGOLAND/*.c AND *.h
     defined_at address -> (name, file) from the // FUNCTION markers
     stubs     [(file, line, function)] LL_UNPORTED_ASM sites"""
     externs = {}
     defined_at = {}
     marker_re = re.compile(r'^// (FUNCTION|WIP-FUNCTION): LEGOLAND (0x[0-9a-fA-F]+)')
-    extern_re = re.compile(r'^\s*extern\b[^;]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*(\(|\[|;|=).*?/\*\s*(0x[0-9a-fA-F]+)')
     sig_re = re.compile(r'^[A-Za-z_][A-Za-z0-9_ *]*?\**\s*\**([A-Za-z_][A-Za-z0-9_]*)\s*\(')
     stubs = []
-    for path in sorted(glob.glob(os.path.join(SRC, '*.c'))):
+    paths = sorted(glob.glob(os.path.join(SRC, '*.c'))) + \
+        sorted(glob.glob(os.path.join(SRC, '*.h')))
+    for path in paths:
         base = os.path.basename(path)
-        lines = open(path, encoding='utf-8', errors='replace').read().split('\n')
+        text = open(path, encoding='utf-8', errors='replace').read()
+        lines = text.split('\n')
         pending = None
         cur_func = None
         for i, line in enumerate(lines):
@@ -432,11 +630,24 @@ def scan_sources():
                 if pending is not None:
                     defined_at.setdefault(pending, (cur_func, base))
                     pending = None
-            m = extern_re.match(line)
-            if m:
-                externs.setdefault(m.group(1), (int(m.group(3), 16), 'fn' if m.group(2) == '(' else 'data'))
             if 'LL_UNPORTED_ASM()' in line:
                 stubs.append((base, i + 1, cur_func))
+        # the externs, statement by statement
+        pos = 0
+        for start in _extern_positions(text):
+            if start < pos:
+                continue                  # inside the statement just read
+            stmt, comments, pos = _statement_at(text, start)
+            addr = None
+            for c in comments:
+                a = re.search(r'\b0x[0-9a-fA-F]{6,8}\b', c)
+                if a:
+                    addr = int(a.group(), 16)
+                    break
+            if addr is None:
+                continue
+            for name, kind in extern_decl_names(stmt):
+                externs.setdefault(name, (addr, kind))
     return externs, defined_at, stubs
 
 
