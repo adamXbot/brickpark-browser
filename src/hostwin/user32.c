@@ -394,8 +394,8 @@ int SystemParametersInfoA(unsigned int action, unsigned int param,
 
 static int g_peek_calls;
 
-int PeekMessageA(void* msgp, void* hwnd, unsigned int lo, unsigned int hi,
-                 unsigned int flags)
+BOOL PeekMessageA(MSG* msgp, HWND hwnd, UINT lo, UINT hi,
+                 UINT flags)
 {
     LLMsg* msg = (LLMsg*)msgp;
     (void)hwnd; (void)lo; (void)hi;
@@ -419,7 +419,7 @@ int PeekMessageA(void* msgp, void* hwnd, unsigned int lo, unsigned int hi,
     return 0;
 }
 
-int GetMessageA(void* msgp, void* hwnd, unsigned int lo, unsigned int hi)
+BOOL GetMessageA(MSG* msgp, HWND hwnd, UINT lo, UINT hi)
 {
     LLMsg* msg = (LLMsg*)msgp;
     (void)hwnd; (void)lo; (void)hi;
@@ -436,9 +436,9 @@ int GetMessageA(void* msgp, void* hwnd, unsigned int lo, unsigned int hi)
 /* No keyboard-layout translation to do: the only WM_CHAR the game reads is
  * backspace, and the event translation synthesises that directly (see
  * ll_host_drain_events). */
-int TranslateMessage(const void* msg) { (void)msg; return 0; }
+BOOL TranslateMessage(const MSG* msg) { (void)msg; return 0; }
 
-long DispatchMessageA(const void* msgp)
+long DispatchMessageA(const MSG* msgp)
 {
     const LLMsg* msg = (const LLMsg*)msgp;
     if (!msg)

@@ -257,11 +257,11 @@ int main(void)
         {
             struct { void* hwnd; unsigned int msg, wp; long lp;
                      unsigned long t; long px, py; } msg;
-            while (PeekMessageA(&msg, ll_host_hwnd(), 0, 0, 0 /* PM_NOREMOVE */)) {
-                if (!GetMessageA(&msg, ll_host_hwnd(), 0, 0))
+            while (PeekMessageA((MSG*)&msg, ll_host_hwnd(), 0, 0, 0 /* PM_NOREMOVE */)) {
+                if (!GetMessageA((MSG*)&msg, ll_host_hwnd(), 0, 0))
                     goto done;
-                TranslateMessage(&msg);
-                DispatchMessageA(&msg);
+                TranslateMessage((MSG*)&msg);
+                DispatchMessageA((MSG*)&msg);
                 SetCursor(0);
             }
         }

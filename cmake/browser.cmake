@@ -50,7 +50,11 @@ endif()
 # at any depth of the render path. 128 KiB with a clear overflow message.
 # ASYNCIFY_IMPORTS is NOT set: every yield goes through emscripten_sleep, which
 # is already in Emscripten's default import list (scope-port-b.md §1).
+# -O2 at link as well as compile: unoptimised ASYNCIFY instrumentation of the
+# largest bodies (RunAppraisalScreen, 8,085 instructions) exceeds the wasm
+# per-function local limit ("local count too large" at instantiate).
 set(LL_WASM_COMMON_LINK
+  -O2
   -sASYNCIFY=1
   -sASYNCIFY_STACK_SIZE=131072
   -sALLOW_MEMORY_GROWTH=1
@@ -117,15 +121,18 @@ target_compile_options(legoland_gen_browser PRIVATE -w)
 option(LL_PRELOAD_RES "Preload the three RES volumes (157 MB)" ON)
 option(LL_PRELOAD_SPEECH "Preload the speech tree (58 MB)" OFF)
 set(LL_GAMEDATA "${LL_ROOT}/gamedata" CACHE PATH "Asset tree to preload")
-set(LL_PRELOAD --preload-file "${LL_GAMEDATA}/main@/gamedata")
+# Each pair is one SHELL: group: CMake de-duplicates repeated link-option
+# tokens, so a bare `--preload-file a --preload-file b` reaches emcc as
+# `--preload-file a b` and emcc then treats b as an input file.
+set(LL_PRELOAD "SHELL:--preload-file ${LL_GAMEDATA}/main@/gamedata")
 if(LL_PRELOAD_RES)
   foreach(vol Legoland Graphics1 Graphics2)
-    list(APPEND LL_PRELOAD --preload-file
-         "${LL_GAMEDATA}/disc/${vol}.res@/gamedata/volumes/${vol}.res")
+    list(APPEND LL_PRELOAD
+         "SHELL:--preload-file ${LL_GAMEDATA}/disc/${vol}.res@/gamedata/volumes/${vol}.res")
   endforeach()
 endif()
 if(LL_PRELOAD_SPEECH)
-  list(APPEND LL_PRELOAD --preload-file "${LL_GAMEDATA}/disc/Speech@/gamedata/speech")
+  list(APPEND LL_PRELOAD "SHELL:--preload-file ${LL_GAMEDATA}/disc/Speech@/gamedata/speech")
 endif()
 
 add_executable(legoland_browser EXCLUDE_FROM_ALL

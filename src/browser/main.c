@@ -24,6 +24,7 @@
  * there. See browser.cmake's LL_PRELOAD_* options.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -61,6 +62,11 @@ int main(int argc, char** argv)
      * copies it into the window class, and InitInputSystem reads it back out
      * with GetWindowLongA(GWL_HINSTANCE) and passes it to DirectInputCreateA
      * without a check (input2.c:266). */
+    ll_host_sleep_hook = ll_host_yield;   /* KERNEL32 Sleep yields through PORT-B's ASYNCIFY yield */
+    /* The CD check (sysmisc.c) wants a CD-ROM drive whose volume is "LEGOLAND"
+     * on CDFS; kernel32.c emulates one at $LL_CD_DIR (drive D:). The preload
+     * puts the three .res volumes under /gamedata/volumes. */
+    setenv("LL_CD_DIR", LL_GAMEDATA "/volumes", 0);
     r = WinMain((void*)0x00400000, 0, cmdline, 1);
 
     printf("[browser] WinMain returned %d\n", r);

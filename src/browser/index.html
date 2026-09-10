@@ -47,8 +47,13 @@
   }
   var Module = {
     canvas: document.getElementById('canvas'),
-    print: function (t) { logLine(t); },
-    printErr: function (t) { logLine(t, 'err'); },
+    // ?trace=1 turns on the host shim's call trace (LL_HOST_TRACE, kernel32.c);
+    // every line is mirrored to the console so it survives a hung renderer.
+    preRun: [function () {
+      if (/[?&]trace=1/.test(location.search)) ENV.LL_HOST_TRACE = '1';
+    }],
+    print: function (t) { logLine(t); console.log(t); },
+    printErr: function (t) { logLine(t, 'err'); console.error(t); },
     setStatus: function (t) { if (t) statusEl.textContent = t; },
     // ll_canvas.js calls these.
     llStatus: function (t) { statusEl.textContent = t; },

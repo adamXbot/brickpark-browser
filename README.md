@@ -196,6 +196,64 @@ What is not there yet: GDI text (invisible; the layout maths still runs), the AV
 frames, sound, MIDI, printing and dialogs. Each returns a documented failure or a
 successful no-op; none of them traps.
 
+## wasm32: the link closes and the startup spine runs (scope PORT-A, 2026-09-11)
+
+```bash
+emcmake cmake -S portable -B portable/build-wasm -G Ninja -DLL_ILP32=ON \
+        -DPython3_EXECUTABLE=$HOME/.venvs/legoland/bin/python
+ninja -C portable/build-wasm legoland_linkcheck
+node portable/build-wasm/legoland_linkcheck.js          # every symbol resolved
+
+ninja -C portable/build-wasm legoland_headless
+LL_HOST_TRACE=1 LL_DATA_DIR=$PWD/gamedata/main \
+        node portable/build-wasm/legoland_headless.js   # the game's own WinMain
+```
+
+`legoland_headless` (`portable/src/headless/`, `portable/cmake/headless.cmake`)
+calls `WinMain(NULL, NULL, "-nointro -nomusic WINDEBUG", 1)` with `-sNODERAWFS=1`,
+so `gamedata/` is read straight from disk — `$LL_DATA_DIR` is the `chdir` the
+loaders' relative paths need. It gets as far as:
+
+```
+HOST GetFileVersionInfoSizeA("Legoland.exe")   # WinMain -> ReadExeVersionString
+HOST GetFileVersionInfoA
+HOST VerQueryValueA("\StringFileInfo\080904B0\ProductVersion")
+HOST CreateMutexA("LegolandGameMutex")         # GameMain
+HOST WaitForSingleObject(1, 0)                 # the one-instance test
+TRAP DDRAW.dll DirectDrawCreate from gpu.c     # CheckHostSystemGPU: PORT-B
+```
+
+Every generated body now prints `TRAP <dll> <symbol> from <callers>` and exits
+70, and `LL_HOST_TRACE=1` traces the KERNEL32 side. `--resmount` runs the
+resource-volume mount that sits behind the DirectDraw wall;
+`LL_CD_DIR=$PWD/gamedata/disc` presents that directory as the game's CD.
+
+What `gen_link.py` had to learn for wasm, where symbols are typed and Mach-O's
+tolerance is gone: one consistent declaration per symbol (globals.c is planned
+before it is written, which also re-points forward references — 243 symbols);
+forwarders instead of aliases, since wasm has no cross-TU alias; and signatures
+read out of the objects for every stub and forwarder, because a mismatched
+signature is silently replaced by wasm-ld with a trapping stub. Details and the
+before/after census: `docs/lanes/scope-port-a.md`.
+
+`portable/src/hostwin/kernel32.c` implements all 56 KERNEL32/ADVAPI32/VERSION
+imports the game references (single-threaded waits, POSIX files, one monotonic
+clock, `Sleep` as a no-op with the `ll_host_yield` hook PORT-B sets), declared
+in the new host ABI header `portable/hostwin/include/ll_host.h`. Host API stubs:
+149 → 95.
+
+The 12 symbols the census files as "CRT-range wrappers filed as game-fn" are
+forwarded rather than trapped now: each (`MemAlloc`, `Format`, `NameCompare`, …)
+is a second name for a CRT function the sources declare at the same address, so
+gen_link routes them through the same forwarder machinery as a stale extern
+name. `- unwritten game function stubs: 0` in `gen/manifest.md`.
+
+`linkreport.py` also reports a new row, **prototype conflicts: 542** — places
+where one source's declaration of a game function lowers to a different wasm
+signature than the body another source defines (`AddBasicObject` is defined with
+three parameters and called with two from 21 files). Harmless in x86 cdecl,
+a runtime trap on wasm.
+
 ## Next
 
 1. **Host shim on SDL3, native desktop first**: window and message pump,

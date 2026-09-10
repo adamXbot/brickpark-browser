@@ -30,6 +30,7 @@ import collections
 import glob
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -54,6 +55,7 @@ _alldiv _allrem _allshl _allshr _aulldiv _aullrem _chkstk _fltused _purecall
 _strdup _strupr _strlwr _stricmp _strnicmp stricmp strnicmp strupr strlwr
 _itoa itoa _ltoa ltoa _ultoa _splitpath _makepath _fullpath _access _unlink
 _open _close _read _write _lseek _tell _eof _filelength _mkdir _rmdir _chdir
+iprintf siprintf fiprintf sniprintf viprintf vsiprintf vfiprintf vsniprintf
 _getcwd _findfirst _findnext _findclose _stat _fstat _sopen _creat _commit
 _getdrive _chdrive _heapmin _msize _expand _rotl _rotr _lrotl _lrotr _finite
 _isnan _fpclass _control87 _clearfp _statusfp _set_new_handler _getch _kbhit
@@ -73,11 +75,48 @@ def is_crt(name):
     return name in CRT or name.startswith('__') or name.startswith('_Default')
 
 
-def find_nm():
-    for cand in ('llvm-nm', 'nm'):
-        if subprocess.call(['which', cand], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
-            return cand
-    sys.exit('nm not found')
+def nm_candidates():
+    """The nm programs to try, best first.
+
+    The wasm objects emcc writes carry symbol flags older readers reject
+    ("invalid symbol type: 16" from the nm Xcode ships), so the llvm-nm that
+    belongs to the Emscripten install is tried before the system one. $LL_NM
+    overrides everything."""
+    cands = []
+    if os.environ.get('LL_NM'):
+        cands.append(os.environ['LL_NM'])
+    em_config = shutil.which('em-config')
+    if em_config:
+        # em-config is Emscripten's own answer for where its llvm lives, and
+        # the layouts differ (Homebrew keeps it under libexec, emsdk under
+        # upstream/bin).
+        try:
+            root = subprocess.run([em_config, 'LLVM_ROOT'], capture_output=True,
+                                  text=True, timeout=30).stdout.strip()
+            if root:
+                cands.append(os.path.join(root, 'llvm-nm'))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    cands += ['llvm-nm', 'nm']
+    out = []
+    for c in cands:
+        p = c if os.path.sep in c else shutil.which(c)
+        if p and os.path.exists(p) and p not in out:
+            out.append(p)
+    if not out:
+        sys.exit('nm not found')
+    return out
+
+
+def find_nm(sample=None):
+    """The first candidate that can actually read `sample`."""
+    cands = nm_candidates()
+    if sample is None:
+        return cands[0]
+    for nm in cands:
+        if subprocess.run([nm, '-P', sample], capture_output=True).returncode == 0:
+            return nm
+    sys.exit(f'no usable nm: none of {", ".join(cands)} could read {sample}')
 
 
 def run_nm(nm, path):
@@ -103,20 +142,253 @@ def collect_objects(build_dir, only_game=True):
     objs.sort()
     if not objs:
         sys.exit(f'no object files under {build_dir}; build first')
-    nm = find_nm()
-    defined = collections.defaultdict(set)     # name -> {object basename}
-    strong = collections.defaultdict(set)      # non-common definitions
-    undefined = collections.defaultdict(set)
+    # One nm has to read every object: the system one may manage the game's
+    # and then choke on a shim object (see nm_candidates), so a failure
+    # restarts the scan with the next candidate rather than losing symbols.
+    cands = nm_candidates()
+    for attempt, nm in enumerate(cands):
+        defined = collections.defaultdict(set)     # name -> {object basename}
+        strong = collections.defaultdict(set)      # non-common definitions
+        undefined = collections.defaultdict(set)
+        try:
+            for obj in objs:
+                base = os.path.basename(obj).replace('.c.o', '.c').replace('.o', '')
+                for name, typ in run_nm(nm, obj):
+                    if typ == 'U':
+                        undefined[name].add(base)
+                    elif typ in GLOBAL_TYPES:
+                        defined[name].add(base)
+                        if typ != 'C':
+                            strong[name].add(base)
+        except subprocess.CalledProcessError as e:
+            if attempt + 1 == len(cands):
+                sys.exit(f'{nm} cannot read {e.cmd[-1]}: {e.stderr.strip()}')
+            continue
+        return objs, defined, strong, undefined
+
+
+
+# ---- wasm object signatures ----------------------------------------------
+# wasm valtype -> (C type, zero literal). i32 covers every 32-bit C type and
+# every pointer on wasm32, which is what the game's prototypes lower to.
+WASM_TYPES = {0x7f: ('unsigned int', '0'), 0x7e: ('long long', '0'),
+              0x7d: ('float', '0'), 0x7c: ('double', '0')}
+
+
+def _leb(b, i):
+    r = s = 0
+    while True:
+        x = b[i]
+        i += 1
+        r |= (x & 0x7f) << s
+        if not x & 0x80:
+            return r, i
+        s += 7
+
+
+def _skip_limits(b, i):
+    flags = b[i]
+    i += 1
+    _, i = _leb(b, i)
+    if flags & 1:
+        _, i = _leb(b, i)
+    return i
+
+
+def wasm_object_sigs(path):
+    """(imported, defined): name -> (params, results) for the functions this
+    wasm object imports (the signature the compiler gave the call site) and
+    the functions it defines (the signature the body really has). Returns
+    (None, None) for anything that is not a wasm object.
+
+    The function index space is imports first, then the Function section in
+    order; the names of the defined ones come from the "linking" custom
+    section's symbol table."""
+    with open(path, 'rb') as f:
+        b = f.read()
+    if b[:4] != b'\0asm':
+        return None, None, None
+    types = []
+    imported = {}
+    import_fns = 0                 # how many function indices the imports take
+    local_types = []               # type index per locally defined function
+    symtab = None
+    i = 8
+    while i < len(b):
+        sid = b[i]
+        i += 1
+        size, i = _leb(b, i)
+        end = i + size
+        if sid == 1:                                   # type section
+            n, i = _leb(b, i)
+            for _ in range(n):
+                if b[i] != 0x60:
+                    break
+                i += 1
+                np, i = _leb(b, i)
+                params = list(b[i:i + np])
+                i += np
+                nr, i = _leb(b, i)
+                results = list(b[i:i + nr])
+                i += nr
+                types.append((params, results))
+        elif sid == 2:                                 # import section
+            n, i = _leb(b, i)
+            for _ in range(n):
+                ml, i = _leb(b, i)
+                i += ml
+                fl, i = _leb(b, i)
+                field = b[i:i + fl].decode('utf-8', 'replace')
+                i += fl
+                kind = b[i]
+                i += 1
+                if kind == 0:                          # function
+                    t, i = _leb(b, i)
+                    import_fns += 1
+                    if t < len(types):
+                        imported[field] = types[t]
+                elif kind == 1:                        # table
+                    i += 1
+                    i = _skip_limits(b, i)
+                elif kind == 2:                        # memory
+                    i = _skip_limits(b, i)
+                elif kind == 3:                        # global
+                    i += 2
+                elif kind == 4:                        # tag
+                    i += 1
+                    _, i = _leb(b, i)
+                else:
+                    break
+        elif sid == 3:                                 # function section
+            n, i = _leb(b, i)
+            for _ in range(n):
+                t, i = _leb(b, i)
+                local_types.append(t)
+        elif sid == 0:                                 # custom section
+            nl, j = _leb(b, i)
+            name = b[j:j + nl]
+            if name == b'linking':
+                symtab = (j + nl, end)
+        i = end
+
+    defined = {}
+    undef_data = set()
+    if symtab is not None:
+        i, end = symtab
+        _version, i = _leb(b, i)
+        while i < end:
+            sub = b[i]
+            i += 1
+            sz, i = _leb(b, i)
+            stop = i + sz
+            if sub == 8:                               # WASM_SYMBOL_TABLE
+                count, i = _leb(b, i)
+                for _ in range(count):
+                    kind = b[i]
+                    i += 1
+                    flags, i = _leb(b, i)
+                    undef = bool(flags & 0x10)
+                    if kind == 1:                      # DATA: name always
+                        nl, i = _leb(b, i)
+                        nm = b[i:i + nl].decode('utf-8', 'replace')
+                        i += nl
+                        if not undef:
+                            _, i = _leb(b, i)          # segment
+                            _, i = _leb(b, i)          # offset
+                            _, i = _leb(b, i)          # size
+                        else:
+                            undef_data.add(nm)
+                        continue
+                    index, i = _leb(b, i)
+                    nm = None
+                    if not undef or (flags & 0x40):    # EXPLICIT_NAME
+                        nl, i = _leb(b, i)
+                        nm = b[i:i + nl].decode('utf-8', 'replace')
+                        i += nl
+                    if kind == 0 and nm and not undef:
+                        k = index - import_fns
+                        if 0 <= k < len(local_types) and local_types[k] < len(types):
+                            defined[nm] = types[local_types[k]]
+            i = stop
+    return imported, defined, undef_data
+
+
+def collect_wasm_sigs(objs):
+    """(imported, defined, undefined-data, conflicts) over every object, or
+    (None, None, None, []) when the objects are not wasm: Mach-O and ELF need
+    neither signature nor function/data agreement, and carry no such
+    information for undefined symbols."""
+    votes = collections.defaultdict(collections.Counter)
+    defined = {}
+    undef_data = set()
+    any_wasm = False
+    for obj in objs:
+        try:
+            imp, dfn, udata = wasm_object_sigs(obj)
+        except (IndexError, ValueError):
+            continue
+        if imp is None:
+            continue
+        any_wasm = True
+        for name, sig in imp.items():
+            votes[name][(tuple(sig[0]), tuple(sig[1]))] += 1
+        for name, sig in dfn.items():
+            defined.setdefault(name, (tuple(sig[0]), tuple(sig[1])))
+        undef_data |= udata
+    if not any_wasm:
+        return None, None, None, []
+    out = {}
+    conflicts = []
+    for name, counter in votes.items():
+        winner, _ = counter.most_common(1)[0]
+        out[name] = winner
+        if len(counter) > 1:
+            conflicts.append(name)
+    return out, defined, undef_data, sorted(conflicts)
+
+
+def sig_text(sig):
+    """A wasm signature the way wasm-ld prints it: (i32, i32) -> void."""
+    names = {0x7f: 'i32', 0x7e: 'i64', 0x7d: 'f32', 0x7c: 'f64'}
+    params, results = sig
+    return '(' + ', '.join(names.get(p, hex(p)) for p in params) + ') -> ' + \
+           (names.get(results[0], '?') if results else 'void')
+
+
+def wasm_prototype_conflicts(objs):
+    """Symbols the game's own sources disagree about.
+
+    One file declares `extern void SetupControllers(void)` and calls it while
+    another defines `int SetupControllers(void)`: harmless in x86 cdecl, where
+    the caller simply ignores EAX, but wasm calls are type-checked, so wasm-ld
+    routes the mismatched call through a stub that traps (`RuntimeError:
+    unreachable`, with no symbol name). Each row here is a call that WILL trap
+    at runtime if the game reaches it, and the fix is one `#ifdef
+    LEGOLAND_PORTABLE` prototype in the declaring file -- or a matching-lane
+    correction, since one of the two prototypes is simply wrong about the
+    recovered function.
+
+    Returns [(name, defined_sig, defining_obj, {referenced_sig: [objs]})]."""
+    defs = {}
+    refs = collections.defaultdict(lambda: collections.defaultdict(list))
     for obj in objs:
         base = os.path.basename(obj).replace('.c.o', '.c').replace('.o', '')
-        for name, typ in run_nm(nm, obj):
-            if typ == 'U':
-                undefined[name].add(base)
-            elif typ in GLOBAL_TYPES:
-                defined[name].add(base)
-                if typ != 'C':
-                    strong[name].add(base)
-    return objs, defined, strong, undefined
+        try:
+            imp, dfn, _ = wasm_object_sigs(obj)
+        except (IndexError, ValueError):
+            continue
+        if imp is None:
+            return []                       # not a wasm build: nothing to check
+        for name, sig in dfn.items():
+            defs.setdefault(name, ((tuple(sig[0]), tuple(sig[1])), base))
+        for name, sig in imp.items():
+            refs[name][(tuple(sig[0]), tuple(sig[1]))].append(base)
+    out = []
+    for name, (dsig, dobj) in defs.items():
+        bad = {s: sorted(o) for s, o in refs[name].items() if s != dsig}
+        if bad:
+            out.append((name, dsig, dobj, bad))
+    return sorted(out)
 
 
 def load_win32():
@@ -202,6 +474,7 @@ def main():
     externs, defined_at, stubs = scan_sources()
     cats = classify(defined, undefined, externs, defined_at, win32)
     dups = sorted((n, sorted(o)) for n, o in strong.items() if len(o) > 1)
+    protos = wasm_prototype_conflicts(objs)
     missing = sum(len(v) for v in cats.values())
 
     lines = []
@@ -220,6 +493,7 @@ def main():
     p(f"| unknown | {len(cats['unknown'])} | externs with no address comment: look at these first |")
     p(f"| duplicates | {len(dups)} | symbols with a strong definition in more than one file |")
     p(f"| asm stubs | {len(stubs)} | inline-asm bodies still LL_UNPORTED_ASM |")
+    p(f"| prototype conflicts | {len(protos)} | the sources disagree about a signature; on wasm each such call traps (wasm32 builds only) |")
     p('')
     for cat, title in (('unknown', 'Unclassified'), ('game-fn', 'Unwritten game functions'),
                        ('alias', 'Stale extern names'), ('host', 'Host API'),
@@ -242,6 +516,21 @@ def main():
     p('')
     for base, ln, fn in stubs:
         p(f'- {base}:{ln} `{fn}`')
+    p('')
+    p(f'## Prototype conflicts ({len(protos)})')
+    p('')
+    p('One file\'s declaration of a function lowers to a different wasm')
+    p('signature than the body another file defines. Harmless in x86 cdecl;')
+    p('on wasm the call goes through a stub that traps with no symbol name.')
+    p('One of the two prototypes is wrong about the recovered function.')
+    p('')
+    if protos:
+        p('| symbol | defined as | declared as | by |')
+        p('| --- | --- | --- | --- |')
+        for name, dsig, dobj, bad in protos:
+            for sig, users in sorted(bad.items()):
+                shown = ', '.join(users[:6]) + (f' +{len(users) - 6}' if len(users) > 6 else '')
+                p(f'| `{name}` | `{sig_text(dsig)}` in {dobj} | `{sig_text(sig)}` | {shown} |')
     p('')
     text = '\n'.join(lines)
     print(text)

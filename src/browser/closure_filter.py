@@ -23,13 +23,22 @@ import re
 import subprocess
 import sys
 
-STUB_RE = re.compile(r'^void ([A-Za-z_][A-Za-z0-9_]*)\(void\) \{ ll_(unhosted|unwritten)\(')
+# gen_link.py's stub shapes: the original untyped `void N(void) { ll_unhosted(`
+# and PORT-A's signature-matched `<ret> N(<params>) { ll_gen_trap("DLL", "N", ...`.
+STUB_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_ \*]*?\b([A-Za-z_][A-Za-z0-9_]*)\([^)]*\) \{ ll_(unhosted|unwritten|gen_trap)\(')
 
 
 def nm_defined(objdir):
     """Names defined (not undefined, not common) by the objects under objdir."""
     names = set()
-    nm = os.environ.get('NM', 'nm')
+    # The nm Xcode ships cannot read emcc 6 objects ("invalid symbol type: 16"),
+    # so borrow linkreport.find_nm(), which asks `em-config LLVM_ROOT` first.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools'))
+    try:
+        import linkreport
+        nm = os.environ.get('NM') or linkreport.find_nm()
+    except Exception:
+        nm = os.environ.get('NM', 'nm')
     objs = []
     for d, _, files in os.walk(objdir):
         objs += [os.path.join(d, f) for f in files if f.endswith('.o')]
