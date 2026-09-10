@@ -16,9 +16,44 @@
 #define LL_ASINT(x) (*(int*)&(x))
 
 /* x87 `fistp` with the default control word rounds to nearest-even. The
- * game sets the CW to nearest/masked wherever it uses bare fistp. */
-#define LL_FISTP(f)  ((int)__builtin_lrintf((float)(f)))
-#define LL_FISTPD(d) ((int)__builtin_lrint((double)(d)))
+ * game sets the CW to nearest/masked wherever it uses bare fistp.
+ *
+ * Spelled out rather than as `__builtin_lrintf` / `__builtin_lrint` (scope
+ * PORT-B5).  Those honour the CURRENT rounding mode, so clang cannot fold them
+ * and emits a call to libm's `lrintf` / `lrint` -- and in the wasm32 build
+ * `gen_link.py` does not see emcc's libm in its defined set, so it generates
+ * TRAPPING STUBS for both (`gen-browser/stubs.c`:
+ * `lrintf(float) { ll_gen_trap("GAME", "lrintf", "bnvpath.c, coaster10.c,
+ * coaster12.c..."); }`).  Every LL_FISTP site in the portable build was
+ * therefore a latent trap under node and in the browser -- person3d.c's and
+ * math3d.c's included, which is every bloke the renderer draws -- and the
+ * first test to reach one (PORT-B5's `tri_raster`, through DrawFlatTexTri's
+ * u/v conversion) is what surfaced it.  The helper below hard-codes
+ * round-half-to-EVEN, which is the mode the game's own control word selects
+ * and the only mode the comment above ever claimed, and it lowers to plain
+ * arithmetic with no libcall. */
+static inline int ll_fistp_f(float f)
+{
+    float a = f < 0.0f ? -f : f;
+    int   i = (int)a;                       /* truncate */
+    float r = a - (float)i;
+    if (r > 0.5f) i++;
+    else if (r == 0.5f) i += (i & 1);       /* ties to even */
+    return f < 0.0f ? -i : i;
+}
+
+static inline int ll_fistp_d(double d)
+{
+    double a = d < 0.0 ? -d : d;
+    int    i = (int)a;
+    double r = a - (double)i;
+    if (r > 0.5) i++;
+    else if (r == 0.5) i += (i & 1);
+    return d < 0.0 ? -i : i;
+}
+
+#define LL_FISTP(f)  ll_fistp_f((float)(f))
+#define LL_FISTPD(d) ll_fistp_d((double)(d))
 
 /* `fld v / fmul s / fistp v` on a float lvalue: the int result overwrites
  * the float's storage and the caller reads it back through LL_ASINT. */

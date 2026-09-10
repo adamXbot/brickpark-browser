@@ -93,6 +93,10 @@ void test_tile_geometry(void);
 void test_res_archive(void);
 void test_llidb_icm(void);
 void test_loadpos(void);
+/* ---- scope PORT-B5: the remaining inline-asm bodies --------------------- */
+void test_anim_recolour(void); /* SoftBlitAnim, the recolouring type-2 painter */
+void test_tri_raster(void);    /* tri3d.c's four triangle rasterisers */
+void test_zbuf_blit(void);     /* ZBufferHelper and BltAdvisor */
 #endif
 
 #endif /* LL_TESTS_H */

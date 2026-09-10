@@ -111,6 +111,14 @@ static const struct entry entries[] = {
     /* PORT-B3: the type-2 sibling. Its own stream, its own encoder. */
     { "anim_paint",    test_anim_paint,
       "SoftBlitAnimPlain: the LLS control stream, the clips and the palette" },
+    /* PORT-B5: the recolouring sibling, and the nine differences between the
+     * two asm bodies driven over identical streams. */
+    { "anim_recolour", test_anim_recolour,
+      "SoftBlitAnim: the recolour mask and its divergences from the plain one" },
+    { "tri_raster",    test_tri_raster,
+      "DrawFlatTri/DrawGouraudTri/DrawFlatTexTri/DrawGouraudTexTri; sqrt hooks" },
+    { "zbuf_blit",     test_zbuf_blit,
+      "ZBufferHelper (the RLE Z walker) and BltAdvisor (the bottom-up DIB)" },
 };
 
 int main(int argc, char** argv)

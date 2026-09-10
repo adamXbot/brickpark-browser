@@ -101,7 +101,11 @@ set(LL_TEST_SOURCES
   # PORT-B3 (docs/lanes/scope-port-b3.md): the ten type-3 RLE painters and
   # the type-2 LLS animation painter.
   "${LL_TESTS_DIR}/test_rle_paint.c"
-  "${LL_TESTS_DIR}/test_anim_paint.c")
+  "${LL_TESTS_DIR}/test_anim_paint.c"
+  # PORT-B5 (docs/lanes/scope-port-b5.md): the remaining inline-asm bodies.
+  "${LL_TESTS_DIR}/test_anim_recolour.c"
+  "${LL_TESTS_DIR}/test_tri_raster.c"
+  "${LL_TESTS_DIR}/test_zbuf_blit.c")
 
 if(LL_HAVE_GAMEDATA)
   ll_oracle(tilegeom)
@@ -246,6 +250,12 @@ if(LL_HAVE_GAMEDATA)
   ll_add_test(llidb_icm     "${LL_ROOT}/gamedata/main"  TRUE)
   ll_add_test(loadpos       "${LL_ROOT}/gamedata/disc"  TRUE)
 endif()
+
+# PORT-B5: same shape -- synthetic streams into a local surface, both
+# toolchains.
+ll_add_test(anim_recolour "${CMAKE_BINARY_DIR}"       FALSE)
+ll_add_test(tri_raster    "${CMAKE_BINARY_DIR}"       FALSE)
+ll_add_test(zbuf_blit     "${CMAKE_BINARY_DIR}"       FALSE)
 
 # ---- PORT-M3: compile-time callback type check (the check IS the compile) --
 # Every callback slot's call-site pointer type against every body registered
