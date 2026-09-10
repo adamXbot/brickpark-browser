@@ -551,3 +551,38 @@ int StartDocA(void* hdc, const void* docinfo) { (void)hdc; (void)docinfo; return
 int StartPage(void* hdc) { (void)hdc; return 0; }
 int EndPage(void* hdc) { (void)hdc; return 0; }
 int EndDoc(void* hdc) { (void)hdc; return 0; }
+
+/* WINSPOOL.DRV's one import, and the LAST generated host trap in the whole
+ * closure (PORT-B6). It lives here because printing is this file's business and
+ * one function does not earn a winspool.c -- the same reasoning that puts ole32
+ * in dsound.c.
+ *
+ * certificate.c 0x00451740 SaveScreenshotBmp is the only caller and the very
+ * first thing it does is
+ *
+ *     rpn.needed = 0; rpn.returned = 0;
+ *     if (EnumPrintersA(1, 0, 2, printers, 0x540, &rpn.needed, &rpn.returned) <= 0
+ *         || rpn.returned <= 0)
+ *         return 0;
+ *
+ * so "no printers" stops the whole print path before CreateDCA, and the second
+ * half of that test means even a success with zero printers is handled. Both
+ * out counts are written -- the game pre-clears them, but a browser has no
+ * printer enumeration at all and 0/0 is the honest answer, not an untouched
+ * buffer. Returning 0 (FALSE) is what Win32 does when it has nothing to
+ * report. */
+int EnumPrintersA(unsigned long flags, char* name, unsigned long level,
+                  void* buf, unsigned long buflen, unsigned long* needed,
+                  unsigned long* returned)
+{
+    (void)flags;
+    (void)name;
+    (void)level;
+    (void)buf;
+    (void)buflen;
+    if (needed)
+        *needed = 0;
+    if (returned)
+        *returned = 0;
+    return 0;
+}
