@@ -92,6 +92,8 @@ add_executable(legoland_tests EXCLUDE_FROM_ALL
   # the type-2 LLS animation painter.
   "${LL_TESTS_DIR}/test_rle_paint.c"
   "${LL_TESTS_DIR}/test_anim_paint.c"
+  # PORT-B5 (docs/lanes/scope-port-b5.md): the remaining inline-asm bodies.
+  "${LL_TESTS_DIR}/test_anim_recolour.c"
   ${LL_ORACLE_HEADERS})
 target_include_directories(legoland_tests PRIVATE
   "${LL_TESTS_DIR}" "${LL_ORACLE_DIR}")
@@ -182,3 +184,6 @@ ll_add_test(keystate      "${CMAKE_BINARY_DIR}"       FALSE)
 # no serialised layout, so it runs on both toolchains too.
 ll_add_test(rle_paint     "${CMAKE_BINARY_DIR}"       FALSE)
 ll_add_test(anim_paint    "${CMAKE_BINARY_DIR}"       FALSE)
+# PORT-B5: same shape -- synthetic streams into a local surface, both
+# toolchains.
+ll_add_test(anim_recolour "${CMAKE_BINARY_DIR}"       FALSE)
