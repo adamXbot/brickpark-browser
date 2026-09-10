@@ -368,12 +368,129 @@ Census after this lane (`linkreport.py portable/build-wasm/CMakeFiles/legoland_c
 game-fn 12 (all CRT thunks, forwarded), game-data 2612, alias 228, host 95,
 crt 43, unknown 86, duplicates 0, asm stubs 26, prototype conflicts 542.
 
+## One block per object, naming a trap, and the spine as a test (scope PORT-A3)
+
+Full notes: [`docs/lanes/scope-port-a3.md`](../docs/lanes/scope-port-a3.md).
+
+**`gen_link.py` emits ONE block per object.** Sizing every rebuilt global by the
+gap to the next NAMED address is what lets a pointer be re-pointed into the
+middle of a block (PORT-A2 above), and it also split a named object that other
+names reach into at an offset. `extern unsigned char g_key_state[256]`
+(input.c:53) is also `g_left_ctrl` (+0x1d), `g_left_shift` (+0x2a),
+`g_right_shift` (+0x36) and `g_right_ctrl` (+0x9d) — those four offsets are the
+DIK codes themselves — so `ScanKeyboard`'s one
+`GetDeviceState(kbd, 256, g_key_state)` wrote 256 bytes into a 29-byte object and
+`IsLShiftDown`/`IsRShiftDown` read a byte of the wrong key. Worse and unnoticed:
+`extern char g_gpu_state[0x3d8]` (util.c:79) is the host GPU block gpu.c:10 maps
+field by field, and `CheckHostSystemGPU` clears the whole of it with one
+`memset` — which reached only the DirectDraw pointer, leaving both surfaces, the
+clipper, the palette, the fonts and the `DDSURFACEDESC` the renderer locks
+through stale; and the fragments were close enough to OVERLAP, so `g_ddsd_bits`
+(`lpSurface`) landed at +32 instead of +0x350.
+
+An object whose DECLARED extent — the game's own array bounds times an element
+size that is a language fact — contains other named addresses is now emitted once
+with those names as offset aliases. **15 objects, 100 interior names, every case
+in the image**; the list is a section of `gen/manifest.md`. A declaration whose
+element type has no known size hosts nothing and keeps the tiling. The merged
+block covers exactly what its tiled pieces did, so the pointer resolution and the
+census are unchanged (272 exact + 441 interior + 0 gaps + 12 raw; 2145 globals
+instead of 2232, same 3.7 MB).
+
+There is no offset form of `__attribute__((alias))` and none in C at all, so an
+interior alias is `.set name, host+off` module-level asm. The note above that
+module-level asm does not survive the wasm backend is true of a `.text`
+*function* alias; a wasm DATA symbol is a (segment, offset, size) triple, so an
+interior label is exactly representable. One trap: a tentative definition is a
+COMMON symbol under `-fcommon` and the assembler cannot resolve
+`.set alias, common+off` at all — silently leaving the alias undefined — so a
+zero-filled host block gets an explicit `= {0}`.
+
+```bash
+ninja -C portable/build legoland_tests && ctest --test-dir portable/build -R keystate
+```
+
+`portable/tests/test_keystate.c` (29 checks, both toolchains) is the proof: the
+four DIK offsets, a 256-byte write that must not reach the next object, the
+game's own `IsLShiftDown`/`IsRShiftDown`, eight offsets of the GPU block, and
+`CheckHostSystemGPU`'s memset really clearing all of it. It is the one test with
+no oracle — its expectation is the original's own layout.
+
+**Naming a trap is one command now.**
+
+```bash
+python3 portable/tools/name_trap.py              # the whole WinMain spine
+python3 portable/tools/name_trap.py -- --stages   # InitSession step by step
+```
+
+It builds `legoland_headless_debug`, runs it under node, and prints the host-call
+trace tail, the named stack innermost first, and — when the innermost frame is a
+`signature_mismatch:` stub — the two signatures, the file on each side, and every
+`extern` declaration of that name in `LEGOLAND/*.c` with its line number. That is
+the whole work item for a matching lane.
+
+`legoland_headless_debug` is `legoland_headless` with `-O0 -g2` at LINK time and
+nothing else changed, because link time is where this happens: `wasm-ld` creates
+the `signature_mismatch:<callee>` stub whose entire body is `unreachable`, and
+emcc's link-time `-O2` runs `wasm-opt`, which inlines a one-instruction body into
+every caller — so the name is in the name section and no frame mentions it. The
+game objects are shared with the optimised harness, so naming a trap costs one
+link. (The browser target cannot do this: unoptimised ASYNCIFY of
+`RunAppraisalScreen` exceeds wasm's per-function local limit. The headless
+harness has no ASYNCIFY.)
+
+**The node harness and the browser page now stop at the same instruction**, so CI
+can run the spine without a browser. Both reach
+`signature_mismatch:InitHostSystemGPU <- InitSession`: gpu.c:417 defines
+`int InitHostSystemGPU(void)` and startup.c:38 declares it `void`. The live
+prototype conflicts measured on the path the game takes, in the order it hits
+them, are in the notes; `wasm-ld` warns about 133 candidates out of the census's
+542.
+
+```bash
+ninja -C portable/build-wasm legoland_headless legoland_pathtest
+ctest --test-dir portable/build-wasm -R 'headless_spine|install_paths'
+```
+
+* **`headless_spine`** runs `legoland_headless --stages loadsprite,rungame` and
+  requires `--- done`: mount, 595 + 905 + 574 volume members,
+  `GetString(0xcb) = "LEGOLAND ERROR"`, `InitHostSystemGPU` = 1, `InitScreen` = 1
+  (640x480 RGB565), `InitInputSystem` = 1, `RES_OpenFile(".\graphics\erase
+  it.lls")` = 1402 bytes, `LLIDB_LoadICM`, five menu registrations. The two skips
+  are the two live prototype conflicts on that path; **delete each from that line
+  in `cmake/headless.cmake` as a matching lane closes it**, which makes the test a
+  ratchet.
+* **`install_paths`** is `ll_host_resolve_path` over a PRELOADED MEMFS — the
+  browser's filesystem, and the one the resolver had never run on. Every other
+  node target uses `-sNODERAWFS=1`, which on this Mac is APFS, which is
+  case-insensitive, so `stat("LEGOLAND.ICM")` succeeds first try and the
+  case-folding code never executes (`ls gamedata/main/LEGOLAND.ICM` lists
+  `Legoland.icm`). MEMFS is case-SENSITIVE whatever machine packaged it, and so is
+  Linux CI on ext4. 20 checks over a four-file fixture cmake generates from
+  nothing, so it needs no `gamedata/`: `LEGOLAND.ICM` -> `Legoland.icm`,
+  `".\GRAPHICS\ERASE IT.LLS"` -> `Graphics/Erase It.lls`,
+  `".\STRINGS\STAB.STR"` -> `stab.str` through the flattened-install fallback,
+  `"d:\legoland.res"` -> the emulated CD, three paths that must NOT be invented,
+  and `create=1` normalising only.
+
+One thing to know about MEMFS: **`getenv` sees the host environment only under
+NODERAWFS.** A page cannot be told `$LL_CD_DIR` through the environment, which is
+why `src/browser/main.c` calls `setenv` itself.
+
+Tests: native ctest 2/2 -> **3/3**, wasm32 ctest 4/5 -> **7/8** (`loadpos` is the
+`RES_CloseFile` conflict, unchanged).
+
 ## Next
 
-0. **The 542 prototype conflicts** are now the frontier, ahead of everything
-   below: `RES_CloseFile` (13 files) and `DBPrintf` (30+) are each one
-   `#ifdef LEGOLAND_PORTABLE` declaration away, and each one unblocks a whole
-   loader. `docs/lanes/scope-port-a2.md` §4 has the recipe and the evidence.
+0. **The prototype conflicts** are the frontier, ahead of everything below, and
+   `python3 portable/tools/name_trap.py` now names them one at a time in the
+   order the game hits them. Three are measured live: `InitHostSystemGPU`
+   (one word in `LEGOLAND/startup.c:38`, and the only thing between this port
+   and the front end), `RES_CloseFile` (13 files) and `InitSoundSystem`;
+   `RES_CloseVolume` and `DBPrintf` sit behind them.
+   `docs/lanes/scope-port-a3.md` §3 is the list with the file and line for each,
+   and §2 the recipe; `docs/lanes/scope-port-a2.md` §4 has the original
+   evidence.
 1. **Host shim on SDL3, native desktop first**: window and message pump,
    one 16-bpp surface presented as a texture (`DirectDrawCreate` and the
    `IDirectDraw*` vtables in gpu.c/surface.c), DirectInput-shaped keyboard
