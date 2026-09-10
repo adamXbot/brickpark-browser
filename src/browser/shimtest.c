@@ -29,9 +29,16 @@
  * key presses, the input path is right.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ll_host.h"
+
+/* portable/src/browser/ll_canvas.js -- the two counters a headless run reports.
+ * Declared here rather than in ll_host.h because the native build of the shim
+ * has no JS library and defines its own static no-ops for the ll_js_* family. */
+extern int ll_js_frames(void);
+extern int ll_js_checksum(void);
 
 /* ---- the game's own views of the host objects ---------------------------- */
 typedef struct WinRect { long left, top, right, bottom; } WinRect;
@@ -152,7 +159,95 @@ static unsigned short rgb565(int r, int g, int b)
     return (unsigned short)(((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3));
 }
 
-int main(void)
+/* IDirectDrawSurface's two DC slots, the way text.c:41 declares them. The GDI
+ * text pass below is text.c's Print / PrintCent shape exactly: GetDC(+0x44),
+ * SetBkMode, SelectObject(region), SelectObject(font), TextOutA / DrawTextA,
+ * restore in reverse, ReleaseDC(+0x68), DeleteObject(region). PORT-B2. */
+typedef struct DCSlots {
+    char pad00[0x44];
+    long (*GetDC)(DDSurface*, void**);                                  /* 0x44 */
+    char pad48[0x68 - 0x48];
+    long (*ReleaseDC)(DDSurface*, void*);                               /* 0x68 */
+} DCSlots;
+
+/* LOGFONTA, the 0x3c-byte record screen.c:1183 declares. */
+typedef struct TestLogFont {
+    long          lfHeight, lfWidth, lfEscapement, lfOrientation, lfWeight;
+    unsigned char lfItalic, lfUnderline, lfStrikeOut, lfCharSet;
+    unsigned char lfOutPrecision, lfClipPrecision, lfQuality, lfPitchAndFamily;
+    char          lfFaceName[32];
+} TestLogFont;
+
+static void* make_font(int height, int weight)
+{
+    TestLogFont lf;
+    memset(&lf, 0, sizeof(lf));
+    lf.lfHeight = height;
+    lf.lfWeight = weight;
+    lf.lfCharSet = 1;
+    lf.lfQuality = 2;
+    strcpy(lf.lfFaceName, "Lego");
+    return CreateFontIndirectA(&lf);
+}
+
+/* Draw the four fonts InitScreen creates, through the same host calls the game
+ * uses, into the surface the DC comes from. If the page shows this text, GDI
+ * text works; if it also shows the measured box around "DT_CALCRECT", DrawTextA
+ * is measuring as well as drawing, which is what eleven of the game's call
+ * sites depend on. */
+static void gdi_text_pass(DDSurface* surf, void* const fonts[4], int frame)
+{
+    static const char* const kNames[4] = {
+        "font 24/700 (SelectFont default)", "font 28/400 (SelectFont 3)",
+        "font 20/700 (SelectFont 1)",       "font 18/600 (SelectFont 2)"
+    };
+    DCSlots* dcv = (DCSlots*)surf->vtbl;
+    void* hdc = 0;
+    void* rgn;
+    void* oldrgn;
+    void* oldfont;
+    LLRect box;
+    int    i, y = 150;
+
+    /* The clip region every Print routine builds from g_clip_rect. */
+    rgn = CreateRectRgn(8, 140, 632, 472);
+    if (dcv->GetDC(surf, &hdc) != 0 || !hdc)
+        return;
+    SetBkMode(hdc, 1);                     /* TRANSPARENT, as PrintCent does */
+    SetTextColor(hdc, 0x00ffffff);         /* COLORREF 0x00bbggrr */
+    oldrgn = SelectObject(hdc, rgn);
+    for (i = 0; i < 4; i++) {
+        oldfont = SelectObject(hdc, fonts[i]);
+        TextOutA(hdc, 16, y, kNames[i], (int)strlen(kNames[i]));
+        SelectObject(hdc, oldfont);
+        y += 30;
+    }
+    /* DrawTextA measuring, then drawing in the box it measured. */
+    oldfont = SelectObject(hdc, fonts[2]);
+    box.left = 16; box.top = y + 10; box.right = 320; box.bottom = y + 10;
+    SetTextColor(hdc, 0x0000ffff);         /* yellow: b=0x00 g=0xff r=0xff */
+    DrawTextA(hdc, "DT_CALCRECT then draw in the measured box",
+              -1, &box, 0x410);            /* DT_CALCRECT | DT_WORDBREAK */
+    DrawTextA(hdc, "DT_CALCRECT then draw in the measured box",
+              -1, &box, 0x11);             /* DT_CENTER | DT_WORDBREAK */
+    /* Opaque text, which is what Print and PrintCentOpaque ask for. */
+    SetBkMode(hdc, 2);
+    SetBkColor(hdc, 0x00400000);           /* dark blue in 0x00bbggrr */
+    SetTextColor(hdc, 0x00ffffff);
+    {
+        char line[64];
+        snprintf(line, sizeof(line), "OPAQUE background, frame %d", frame);
+        TextOutA(hdc, 360, y + 10, line, (int)strlen(line));
+    }
+    /* Clipped: this starts inside the region and runs past its right edge. */
+    TextOutA(hdc, 500, y + 50, "clipped at the region's right edge", 33);
+    SelectObject(hdc, oldfont);
+    SelectObject(hdc, oldrgn);
+    dcv->ReleaseDC(surf, hdc);
+    DeleteObject(rgn);
+}
+
+int main(int argc, char** argv)
 {
     DDraw*     dd1 = 0;
     DDraw*     dd2 = 0;
@@ -168,10 +263,22 @@ int main(void)
     unsigned char caps_drv[0x17c], caps_hel[0x17c];
     unsigned char keys[256];
     MouseState ms;
+    void* fonts[4];
     int  depth, w = 640, h = 480;
     int  cx = 320, cy = 240;
     long frame = 0;
+    long max_frames = 0;        /* 0 = run until Escape / the tab closes */
     long hr;
+    int  argi;
+
+    /* --frames N stops after N presented frames and reports. That is what makes
+     * this runnable under node as a regression test of the whole shim with no
+     * DOM at all (PORT-B2 deliverable 2); in the browser, leaving it off gives
+     * the old endless visual test. */
+    for (argi = 1; argi < argc; argi++) {
+        if (strcmp(argv[argi], "--frames") == 0 && argi + 1 < argc)
+            max_frames = strtol(argv[++argi], 0, 10);
+    }
 
     printf("[shimtest] DirectDrawCreate\n");
     if (DirectDrawCreate(0, (void**)&dd1, 0) != 0) { printf("FAIL create\n"); return 1; }
@@ -246,6 +353,34 @@ int main(void)
     mouse->lpVtbl->SetCooperativeLevel(mouse, ll_host_hwnd(), 5);
     kbd->lpVtbl->Acquire(kbd);
     mouse->lpVtbl->Acquire(mouse);
+
+    /* The four fonts InitScreen creates, in its order (screen.c:1357-1373). */
+    fonts[0] = make_font(24, 700);
+    fonts[1] = make_font(28, 400);
+    fonts[2] = make_font(20, 700);
+    fonts[3] = make_font(18, 600);
+    printf("[shimtest] fonts %p %p %p %p\n",
+           fonts[0], fonts[1], fonts[2], fonts[3]);
+
+    /* MessageBoxA must ANSWER, not hang: MB_RETRYCANCEL has to come back
+     * IDCANCEL (2) or RES_EnsureMounted's `while` never exits. */
+    printf("[shimtest] MessageBoxA(MB_RETRYCANCEL) -> %d (2 = IDCANCEL, required)\n",
+           MessageBoxA(ll_host_hwnd(), "shimtest: pretend the CD is missing",
+                       "CD Missing", 0x50015));
+    printf("[shimtest] MessageBoxA(MB_OK) -> %d (1 = IDOK)\n",
+           MessageBoxA(ll_host_hwnd(), "shimtest: a plain notice",
+                       "LEGOLAND", 0x30));
+
+    /* SPI_GETMOUSE must fill its buffer: ResetController reads it uninitialised
+     * otherwise and the game's own mouse acceleration runs on stack garbage. */
+    {
+        int sp[3];
+        sp[0] = sp[1] = sp[2] = -12345;
+        SystemParametersInfoA(3, 0, sp, 0);
+        printf("[shimtest] SPI_GETMOUSE -> {%d, %d, %d} (must not be -12345)\n",
+               sp[0], sp[1], sp[2]);
+        if (sp[0] == -12345) printf("FAIL SPI_GETMOUSE did not fill\n");
+    }
 
     printf("[shimtest] all host objects built; entering the game-shaped loop\n");
     fflush(stdout);
@@ -322,6 +457,13 @@ int main(void)
         }
         back->vtbl->Unlock(back, lock.lpSurface);
 
+        /* --- GDI text, the shape text.c's Print routines use --------------
+         * Outside the Lock/Unlock pair, because GDI needs the surface unlocked:
+         * that is why every Print* brackets itself with
+         * PushRenderingStatusAndUnlockVideoSurface / PopRenderingStatus
+         * (surface.c). PORT-B2. */
+        gdi_text_pass(back, fonts, (int)frame);
+
         /* --- present, the shape FlipPrimary uses -------------------------- */
         {
             WinRect dst;
@@ -333,13 +475,30 @@ int main(void)
         }
 
         if ((++frame % 60) == 0) {
-            printf("[shimtest] frame %ld, cursor %d,%d, timeGetTime %u\n",
-                   frame, cx, cy, timeGetTime());
+            printf("[shimtest] frame %ld, cursor %d,%d, timeGetTime %u,"
+                   " presented %d\n",
+                   frame, cx, cy, timeGetTime(), ll_host_frames_presented());
             fflush(stdout);
         }
+        if (max_frames > 0 && frame >= max_frames)
+            break;
     }
 done:
-    printf("[shimtest] stopped after %ld frames\n", frame);
+    printf("[shimtest] stopped after %ld frames (%d presented)\n",
+           frame, ll_host_frames_presented());
+    printf("[shimtest] last MessageBox: %s (answer %d)\n",
+           ll_host_last_messagebox(), ll_host_last_messagebox_answer());
+    /* Under node this is the whole proof: frames were produced, the pixels
+     * changed, and nothing in ll_canvas.js reached for a `document`. */
+    printf("[shimtest] display frames %d, last frame checksum %08x\n",
+           ll_js_frames(), (unsigned)ll_js_checksum());
+    if (ll_js_frames() != ll_host_frames_presented())
+        printf("FAIL present count %d != JS frame count %d\n",
+               ll_host_frames_presented(), ll_js_frames());
+    else if (ll_js_checksum() == 0 && ll_host_frames_presented() > 0)
+        printf("FAIL checksum never changed from 0\n");
+    else
+        printf("[shimtest] PASS\n");
     fflush(stdout);
     return 0;
 }

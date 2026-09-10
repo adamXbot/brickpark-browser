@@ -192,9 +192,64 @@ because `RES_OpenVolume` opens `.\volumes\<stem>.res` first and `InitSession`
 mounts them *before* DirectDraw exists. That is a 170 MB `.data` file — fine over
 localhost, and the reason a WASMFS fetch backend is the next step.
 
-What is not there yet: GDI text (invisible; the layout maths still runs), the AVI
-frames, sound, MIDI, printing and dialogs. Each returns a documented failure or a
-successful no-op; none of them traps.
+What is not there yet: the AVI frames, sound, MIDI, printing and dialogs. Each
+returns a documented failure or a successful no-op; none of them traps. (GDI text
+was on this list until PORT-B2 — see below.)
+
+## GDI text, node safety and the instrumented page (scope PORT-B2)
+
+Full notes: [`docs/lanes/scope-port-b2.md`](../docs/lanes/scope-port-b2.md).
+Everything the *first front-end frame and the first click* need, written ahead of
+the loader landing.
+
+**GDI text is real now** (`src/hostwin/ll_font.c` plus the rewritten `gdi32.c`).
+The drawing half is the obvious part; the measuring half matters more. `DrawTextA`
+is the game's ONLY text-extent call — there is no `GetTextExtentPoint32A` anywhere
+in the tree — and eleven call sites pass `DT_CALCRECT` and lay something out
+around the rect that comes back (`frontend2.c:521` centres a button caption on it,
+`bighelp.c:316` and `bubblecache.c:500` size a speech bubble to hold the text).
+A `DrawTextA` that returns 1 and leaves the rect alone tells the game every block
+of text is one pixel tall, so one engine does both halves and they agree by
+construction. The face is a 6x7 bitmap authored for this lane — no shipped font is
+reproduced — scaled to the LOGFONT's `lfHeight` so its metrics land near the real
+"Lego" face's: about 53 characters of the 24-pixel font per 640-pixel line, so
+lines that fitted still fit and lines that wrapped still wrap.
+
+Alongside it, in the same reading of the front-end path: `SelectObject` returns
+the previously selected object *of the same class* (text.c restores four objects
+of two classes in reverse), the clip region from `CreateRectRgn(g_clip_rect)` is
+honoured, DC attributes are per-DC and reset by `GetDC`, `FillRect` fills with the
+brush colour packed the same way the game's own `GetNearestColour` packs 565 (so
+`DrawCachedTextSprite`'s colour key matches its fill), and `MoveToEx`/`LineTo`
+draw.
+
+**Three USER32 correctness fixes** found in the same sources: `MessageBoxA` now
+auto-answers per button set, always with the answer that does not ask again —
+`RES_EnsureMounted` *loops* on `MB_RETRYCANCEL` until IDCANCEL, so the old
+always-IDOK was a hard hang of the tab whenever the CD probe failed;
+`SystemParametersInfoA(SPI_GETMOUSE)` fills its buffer, which `ResetController`
+reads uninitialised into the game's own mouse acceleration (reporting acceleration
+*off* also closes the cursor-drift divergence PORT-B recorded, with no game edit);
+and `ShowCursor`'s display count starts at 0, so `InitScreen`'s `ShowCursor(0)`
+actually hides.
+
+**The JS library is node-safe.** `legoland_hostwin` links into `legoland_tests`
+and `legoland_headless`, which run under node with no DOM. Every function degrades
+and nothing throws; the display becomes a counter plus a sampled checksum, so a
+headless harness can prove pixels are changing. One trap worth knowing about:
+emcc's `-O2` JS optimizer **constant-folds `typeof document === 'undefined'` at
+build time**, so the headless probe has to be lazy and go through `globalThis`, or
+the browser page runs headless and paints nothing.
+
+```bash
+node portable/build-wasm/shimtest.js --frames 300   # prints PASS, exit 0
+```
+
+**The page** (`?trace=1` still works) shows the frame count and fps, the last
+`MessageBoxA` with the answer the shim gave it, any `TRAP` line in a red banner,
+and the trace toggle. `LL_HOST_TRACE` now drives the DirectX half of the shim too,
+not just `kernel32.c` — without that, a run that gets past the loaders and stops
+produces a trace ending at the last `ReadFile`.
 
 ## wasm32: the link closes and the startup spine runs (scope PORT-A, 2026-09-11)
 

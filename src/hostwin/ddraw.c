@@ -260,6 +260,11 @@ static void present_primary(void)
 {
     if (!g_ll_primary || !g_ll_primary->bits)
         return;
+    /* The FIRST present only: this is the line that says the game reached a
+     * frame, and tracing every one would bury the rest of the trace. */
+    if (g_present_count == 0)
+        ll_host_trace("first present: %dx%d pitch %d",
+                      g_ll_primary->w, g_ll_primary->h, g_ll_primary->pitch);
     g_present_count++;
     ll_host_present16(g_ll_primary->bits, g_ll_primary->w, g_ll_primary->h,
                       g_ll_primary->pitch);
@@ -392,6 +397,11 @@ static long ll_surf_GetDC(LLSurface* s, void** hdc)
 {
     if (!hdc) return DDERR_INVALIDPARAMS;
     *hdc = (void*)s;
+    /* A DC from GetDC is a FRESH DC: black text, white opaque background, no
+     * clip region. text.c relies on that -- PrintLimitedText (0x00454c70) calls
+     * SetTextColor and never restores it, and the next Print must still draw in
+     * black. PORT-B2. */
+    ll_host_dc_reset((void*)s);
     return DD_OK;
 }
 static long ll_surf_ReleaseDC(LLSurface* s, void* hdc) { (void)s; (void)hdc; return DD_OK; }
@@ -725,6 +735,9 @@ static long ll_draw_CreateSurface(LLDraw* d, LLSurfaceDesc* desc,
     s = new_surface(w, h, desc->dwCaps);
     if (!s)
         return DDERR_GENERIC;
+    ll_host_trace("CreateSurface %dx%d caps 0x%lx%s", w, h,
+                  (unsigned long)desc->dwCaps,
+                  (desc->dwCaps & DDSCAPS_PRIMARYSURFACE) ? " PRIMARY" : "");
 
     if (desc->dwCaps & DDSCAPS_PRIMARYSURFACE) {
         s->is_primary = 1;
@@ -789,6 +802,7 @@ static long ll_draw_SetDisplayMode(LLDraw* d, unsigned long w, unsigned long h,
     g_mode_w = (int)w;
     g_mode_h = (int)h;
     g_mode_bpp = 16;
+    ll_host_trace("SetDisplayMode %lux%lu 16bpp (RGB565)", w, h);
     ll_host_display_open(g_mode_w, g_mode_h);
     return DD_OK;
 }
@@ -830,6 +844,7 @@ long DirectDrawCreate(void* guid, void** out, void* outer)
     (void)guid; (void)outer;
     if (!out)
         return DDERR_INVALIDPARAMS;
+    ll_host_trace("DirectDrawCreate");
     g_ddraw_v1.vtbl = g_draw_vtbl;
     g_ddraw_v1.refs++;
     g_ddraw_v1.is_v2 = 0;
@@ -841,3 +856,27 @@ long DirectDrawCreate(void* guid, void** out, void* outer)
 
 /* For the page's status line / the headless harness. */
 int ll_host_frames_presented(void) { return g_present_count; }
+
+/* ---- the surface behind an HDC (PORT-B2) -------------------------------- */
+/* GetDC hands out the LLSurface pointer itself, so gdi32.c can draw straight
+ * into the surface's 16-bpp buffer -- which is what makes GDI text visible
+ * instead of a no-op. The vtable pointer is the identity check: a cookie from
+ * CreateCompatibleDC or CreateDCA (gdi32.c's printer/memory DCs) is not a
+ * surface and must be rejected, not dereferenced.
+ *
+ * Lock state is deliberately not consulted. text.c unlocks before GetDC
+ * (PushRenderingStatusAndUnlockVideoSurface, because real GDI needs an unlocked
+ * surface) and InfoPrintCent assumes its caller already did, but in this shim
+ * the pixel buffer is a plain malloc'd block that is valid either way. */
+int ll_host_surface_pixels(void* hdc, unsigned short** bits,
+                           int* w, int* h, int* pitch)
+{
+    LLSurface* s = (LLSurface*)hdc;
+    if (!s || s->vtbl != (const void*)g_surface_vtbl || !s->bits)
+        return 0;
+    if (bits)  *bits = s->bits;
+    if (w)     *w = s->w;
+    if (h)     *h = s->h;
+    if (pitch) *pitch = s->pitch;
+    return 1;
+}

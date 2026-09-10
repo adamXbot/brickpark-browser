@@ -253,6 +253,8 @@ static long di_CreateDevice(LLDInput* d, const void* guid, LLDIDevice** out,
     dev->vtbl = g_device_vtbl;
     dev->kind = dev == &g_keyboard_dev ? LL_DEV_KEYBOARD : LL_DEV_MOUSE;
     dev->refs++;
+    ll_host_trace("DirectInput CreateDevice(%s)",
+                  dev->kind == LL_DEV_KEYBOARD ? "GUID_SysKeyboard" : "GUID_SysMouse");
     *out = dev;
     return DI_OK;
 }

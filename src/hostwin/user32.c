@@ -105,7 +105,7 @@ static void*     g_class_inst;
 static int       g_hwnd_token = 0x4c4c4800;   /* 'LLH\0': a non-null cookie */
 static void*     g_hwnd;
 static void*     g_desktop_token = (void*)0x4c4c4401; /* GetDesktopWindow */
-static int       g_cursor_shown = 1;
+static int       g_cursor_shown = 0;   /* Win32's display count: >= 0 is visible */
 
 void* ll_host_hwnd(void) { return g_hwnd; }
 
@@ -139,6 +139,43 @@ static int queue_peek(LLMsg* out, int remove)
     if (remove)
         g_q_head = (g_q_head + 1) % LL_MSGQ;
     return 1;
+}
+
+/* ---- tracing (PORT-B2) --------------------------------------------------
+ * kernel32.c has had LL_HOST_TRACE since PORT-A, but it is a static there and
+ * the DirectX half of the shim had no tracing at all -- so a run that got past
+ * the loaders and then stopped produced a trace that ended at the last ReadFile
+ * and said nothing about whether DirectDrawCreate, the window or the first
+ * surface was ever reached. That is exactly the gap between "the loader works"
+ * and "the page draws", which is this lane's whole subject, so the same switch
+ * now drives ddraw.c, user32.c, gdi32.c and dinput.c too.
+ *
+ * The env var is read independently rather than by calling into kernel32.c:
+ * that file belongs to PORT-A2 and this must not need a change there. Per-frame
+ * calls (Lock, Blt, timeGetTime, PeekMessageA) are deliberately NOT traced --
+ * they would bury everything else; ddraw.c traces the FIRST present only. */
+static int g_trace = -1;
+
+int ll_host_tracing(void)
+{
+    if (g_trace < 0) {
+        const char* e = getenv("LL_HOST_TRACE");
+        g_trace = e && *e && *e != '0';
+    }
+    return g_trace;
+}
+
+void ll_host_trace(const char* fmt, ...)
+{
+    va_list ap;
+    if (!ll_host_tracing())
+        return;
+    fputs("HOST ", stderr);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    fflush(stderr);
 }
 
 /* ---- the yield ---------------------------------------------------------- */
@@ -304,6 +341,8 @@ unsigned short RegisterClassExA(const void* wcex)
     const LLWndClassEx* wc = (const LLWndClassEx*)wcex;
     if (!wc)
         return 0;
+    ll_host_trace("RegisterClassExA(\"%s\") wndproc %p",
+                  wc->lpszClassName ? wc->lpszClassName : "", wc->lpfnWndProc);
     g_wndproc = (LLWndProc)wc->lpfnWndProc;
     g_class_inst = wc->hInstance;
     return 1;   /* a non-zero ATOM */
@@ -320,6 +359,7 @@ void* CreateWindowExA(unsigned long ex, const char* cls, const char* name,
         g_class_inst = inst;
     if (w > 0 && h > 0)
         ll_host_display_open(w, h);
+    ll_host_trace("CreateWindowExA(\"%s\") %dx%d", name ? name : "", w, h);
     printf("[hostwin] window \"%s\" %dx%d\n", name ? name : "", w, h);
     return g_hwnd;
 }
@@ -380,11 +420,39 @@ int GetSystemMetrics(int index)
     }
 }
 
-/* Screen-saver / mouse-parameter queries: report success and touch nothing. */
+/* SPI_GETMOUSE (3) MUST fill its buffer. ResetController (gameframe.c:311,
+ * 0x004589a0) does
+ *
+ *     SystemParametersInfoA(3, 0, mouse, 0);
+ *     c->accel_t1 = mouse[0]; c->accel_t2 = mouse[1]; c->accel = mouse[2];
+ *
+ * on an UNINITIALISED three-int stack array and never checks the result, so the
+ * old "report success and touch nothing" left the game's mouse acceleration
+ * reading stack garbage -- with `accel` garbage-non-zero and the thresholds
+ * garbage-small, UpdateControllerFromMouseData (input.c:238) multiplies every
+ * delta by 4 and the cursor is uncontrollable. PORT-B2.
+ *
+ * The values reported are {6, 10, 0}: Windows' own default thresholds, and
+ * acceleration OFF. Acceleration off is a real Windows configuration ("enhance
+ * pointer precision" unchecked), and choosing it also closes the mouse
+ * divergence PORT-B recorded in its §7: the browser reports absolute pointer
+ * positions which ll_canvas.js differences into DirectInput deltas, so with the
+ * game's own 2x/4x stages disabled the game cursor tracks the real pointer 1:1
+ * instead of accelerating away from it. No game edit needed. */
 int SystemParametersInfoA(unsigned int action, unsigned int param,
                           void* data, unsigned int flags)
 {
-    (void)action; (void)param; (void)data; (void)flags;
+    (void)param; (void)flags;
+    if (action == 3 && data) {          /* SPI_GETMOUSE */
+        int* m = (int*)data;
+        m[0] = 6;                      /* xThreshold  (Windows default) */
+        m[1] = 10;                     /* yThreshold  (Windows default) */
+        m[2] = 0;                      /* acceleration off */
+        return 1;
+    }
+    if (action == 4 && data) {         /* SPI_SETMOUSE: accepted, ignored */
+        return 1;
+    }
     return 1;
 }
 
@@ -489,6 +557,10 @@ void* SetCursor(void* cursor)
     return 0;
 }
 
+/* Win32's display count starts at 0 with a mouse installed and the cursor is
+ * visible while the count is >= 0, so InitScreen's ShowCursor(0) (screen.c:1392,
+ * taken when g_screencfg->cursor == 0) must take it to -1 and hide it. PORT-B
+ * started the count at 1, which made that call a no-op. PORT-B2. */
 int ShowCursor(int show)
 {
     g_cursor_shown += show ? 1 : -1;
@@ -521,15 +593,93 @@ short GetKeyState(int vk)
  * message boxes, dialogs, formatting, GDI-ish drawing
  * ========================================================================= */
 
-/* InitSession reports every fatal startup failure through MessageBoxA and then
- * returns; sending it to the console keeps those messages visible. IDOK. */
+/* MessageBoxA has to ANSWER, not just print (PORT-B2).
+ *
+ * There is nobody to click a button in this port, and one of the game's two
+ * modal sites is a LOOP that only exits on a specific answer:
+ *
+ *   RES_EnsureMounted (sysmisc.c:445, 0x004515e0)
+ *       while (!RES_FindVolumeOnAnyDrive("LEGOLAND")) {
+ *           ... WNDENV_Minimise();
+ *           if (MessageBoxA(hwnd, "Please insert the LEGOLAND CD-ROM ...",
+ *                           "CD Missing", 0x50015) == IDCANCEL) return 0;
+ *       }
+ *
+ * 0x50015 is MB_RETRYCANCEL|MB_ICONHAND|MB_SETFOREGROUND|MB_TOPMOST, and
+ * IDCANCEL is 2. Returning IDOK (1) forever, as PORT-B did, means the `while`
+ * re-probes and asks again with nothing in between that yields -- a hard hang of
+ * the tab if the CD probe ever fails. (It does not fail today: kernel32.c
+ * presents $LL_CD_DIR as a CDFS volume named LEGOLAND. It will fail the moment
+ * that changes, and the failure mode must not be a wedged page.)
+ *
+ * So the answer is derived from the button set in the low nibble of `type`, and
+ * it is always the answer that DOES NOT ask again:
+ *
+ *   MB_OK (0)                 -> IDOK       1
+ *   MB_OKCANCEL (1)           -> IDCANCEL   2
+ *   MB_ABORTRETRYIGNORE (2)   -> IDIGNORE   5
+ *   MB_YESNOCANCEL (3)        -> IDNO       7
+ *   MB_YESNO (4)              -> IDNO       7
+ *   MB_RETRYCANCEL (5)        -> IDCANCEL   2
+ *   MB_CANCELTRYCONTINUE (6)  -> IDCONTINUE 11
+ *
+ * The text goes to the console AND to the page (ll_js_messagebox puts it in the
+ * status bar, so a modal that flashes past is still readable), and the shim
+ * yields for long enough that a person watching sees it before the game moves
+ * on. The delay shortens after the first few boxes so a repeated modal cannot
+ * turn into minutes of waiting. */
+#define LL_MB_PAUSE_MS       1200u
+#define LL_MB_PAUSE_SHORT_MS  150u
+#define LL_MB_PAUSE_COUNT       3
+
+#ifdef __EMSCRIPTEN__
+extern void ll_js_messagebox(const char* text, const char* caption, int answer);
+#else
+static void ll_js_messagebox(const char* text, const char* caption, int answer)
+{ (void)text; (void)caption; (void)answer; }
+#endif
+
+static char g_mb_text[512];
+static int  g_mb_answer;
+static int  g_mb_count;
+
+const char* ll_host_last_messagebox(void) { return g_mb_text; }
+int         ll_host_last_messagebox_answer(void) { return g_mb_answer; }
+
 int MessageBoxA(void* hwnd, const char* text, const char* caption,
                 unsigned int type)
 {
-    (void)hwnd; (void)type;
-    fprintf(stderr, "[MessageBox] %s: %s\n",
-            caption ? caption : "LEGOLAND", text ? text : "");
-    return 1;   /* IDOK */
+    static const char* const kName[12] = {
+        "0", "IDOK", "IDCANCEL", "IDABORT", "IDRETRY", "IDIGNORE", "IDYES",
+        "IDNO", "IDCLOSE", "IDHELP", "IDTRYAGAIN", "IDCONTINUE"
+    };
+    int answer;
+    (void)hwnd;
+
+    switch (type & 0x0fu) {
+    case 1:  answer = 2;  break;   /* MB_OKCANCEL          -> IDCANCEL   */
+    case 2:  answer = 5;  break;   /* MB_ABORTRETRYIGNORE  -> IDIGNORE   */
+    case 3:  answer = 7;  break;   /* MB_YESNOCANCEL       -> IDNO       */
+    case 4:  answer = 7;  break;   /* MB_YESNO             -> IDNO       */
+    case 5:  answer = 2;  break;   /* MB_RETRYCANCEL       -> IDCANCEL   */
+    case 6:  answer = 11; break;   /* MB_CANCELTRYCONTINUE -> IDCONTINUE */
+    default: answer = 1;  break;   /* MB_OK                -> IDOK       */
+    }
+
+    snprintf(g_mb_text, sizeof(g_mb_text), "%s: %s",
+             caption ? caption : "LEGOLAND", text ? text : "");
+    g_mb_answer = answer;
+    fprintf(stderr, "[MessageBox] %s  (type 0x%x, auto-answered %s)\n",
+            g_mb_text, type,
+            answer >= 0 && answer < 12 ? kName[answer] : "?");
+    fflush(stderr);
+    ll_js_messagebox(text ? text : "", caption ? caption : "LEGOLAND", answer);
+
+    /* Let the page paint the text, and let the browser breathe: a modal is
+     * exactly the place a game expects to have given up the CPU. */
+    ll_host_yield(g_mb_count++ < LL_MB_PAUSE_COUNT ? LL_MB_PAUSE_MS
+                                                  : LL_MB_PAUSE_SHORT_MS);
+    return answer;
 }
 
 /* No dialog system. -1 is Win32's "could not create the dialog"; every caller
@@ -562,10 +712,59 @@ int wsprintfA(char* out, const char* fmt, ...)
     return n;
 }
 
-/* GDI drawing through USER32: no-ops that report success. See gdi32.c. */
-int FillRect(void* hdc, const LLRect* rc, void* brush)
-{ (void)hdc; (void)rc; (void)brush; return 1; }
+/* =========================================================================
+ * GDI drawing that lives in USER32 (PORT-B2)
+ * ========================================================================= */
 
+/* bubblecache.c:439 fills the speech-bubble background with a solid brush
+ * before drawing the bubble's text into it, so this one is on screen. */
+int FillRect(void* hdc, const LLRect* rc, void* brush)
+{
+    LLFontTarget t;
+    unsigned short c;
+    long y, x;
+
+    if (!rc || !ll_host_dc_target(hdc, &t))
+        return 1;
+    c = ll_font_colorref_to_565(ll_host_brush_colour(brush));
+    for (y = rc->top; y < rc->bottom; y++) {
+        unsigned short* row;
+        if (y < t.clip.top || y >= t.clip.bottom)
+            continue;
+        row = (unsigned short*)((char*)t.bits + y * t.pitch);
+        for (x = rc->left; x < rc->right; x++)
+            if (x >= t.clip.left && x < t.clip.right)
+                row[x] = c;
+    }
+    return 1;
+}
+
+/* DrawTextA is BOTH halves of the game's text handling, which is why it has to
+ * be real even more than TextOutA does:
+ *
+ *   - it draws every wrapped and centred label (text.c's PrintCent 0x00454e60,
+ *     PrintCentOpaque, PrintLimitedText, PrintCentColref; frontend2.c:522;
+ *     movie.c:529; fpui4.c:562);
+ *   - and it MEASURES. Eleven call sites pass DT_CALCRECT (0x400) and lay out
+ *     around the rect that comes back: frontend2.c:521 centres a button caption
+ *     on the measured box, bighelp.c:316 and bubblecache.c:500 size a speech
+ *     bubble to hold the text, misc3.c:1105 measures a wrapped paragraph.
+ *
+ * The old stub returned 1 and left the rect alone, which told the game every
+ * block of text was one pixel tall. ll_font.c does both halves from one set of
+ * metrics, so what is measured is what is drawn. */
 int DrawTextA(void* hdc, const char* text, int len, LLRect* rc,
               unsigned int format)
-{ (void)hdc; (void)text; (void)len; (void)format; return rc ? 1 : 0; }
+{
+    LLFontTarget  t;
+    LLFontMetrics m;
+    int have_target;
+
+    if (!rc || !text)
+        return 0;
+    ll_host_dc_font(hdc, &m);
+    have_target = ll_host_dc_target(hdc, &t);
+    return ll_font_draw_text(have_target ? &t : 0, &m, rc, text, len, format,
+                             ll_host_dc_fg(hdc), ll_host_dc_opaque(hdc),
+                             ll_host_dc_bg(hdc));
+}
