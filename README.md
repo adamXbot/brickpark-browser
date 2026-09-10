@@ -779,6 +779,130 @@ eight in `screens3.c` are the front end's (matching lanes); and `gen_link.py`'s
 trap helper has no log-and-continue mode, which is what hides nine blockers
 behind the first one.
 
+## Input reaches the game, music-ON runs, traps can continue (scope PORT-A5)
+
+PORT-B4's three blockers and its open question, closed. Notes
+`docs/lanes/scope-port-a5.md`.
+
+### 1. THE INPUT QUESTION: a 164-byte record was nine objects
+
+The front end ignored every key and click over 3,700 frames while the shim
+delivered state every frame. It was PORT-A3's class of defect and the biggest
+instance of it in the image.
+
+`gen_link.py` sizes a global by the gap to the next NAMED address unless the
+game's own declaration gives a computable extent (array bounds times a primitive
+element size). `extern GameInput g_input;` gives none -- a struct type has no size
+until somebody writes the struct out -- and for a record whose fields other files
+declare individually, the next named address is **its own second field**. So
+`GameInput` at 0x00813a40 came out as nine separately 16-byte-aligned blocks and
+the two halves of the game addressed different memory:
+
+```
+bighelp.c ReadGameButtons   g_input.point.x = g_controller->x   -> g_input + 4
+screens3.c (the front end)  g_gfx_point (+0x04), g_mouse_buttons (+0x84)
+                                                                -> two other objects
+```
+
+The cursor point alone is read under four names in 22 files against six that
+write it as `g_input.point`.
+
+`STRUCT_EXTENTS` in `gen_link.py` is the extent for records whose type is a
+struct. A row is only allowed when the sources pin it **twice** -- the struct's
+last field offset and an independent `extern` at that field's own address whose
+comment gives the same number -- and both citations are in the row. The sweep for
+candidates is every extern whose address comment attributes it to a record:
+
+```
+grep -hoE "/\* 0x00[0-9a-f]{6} +[a-zA-Z_]\w*\.[\w.]+" LEGOLAND/*.c | sort -u
+```
+
+Three records, all split, all on the front-end path: `GameInput` 0x00813a40
+(4 -> 176 bytes, 12 interior names), `PopUpUI` 0x007fdea4 (4 -> 380, 72 -- every
+popup icon, `g_popup_x`/`g_popup_y`, `g_info_active`), `Profile` 0x007cad60
+(30 -> 288, 6 -- the PLAYER DETAILS scratch profile). All three are all-zero in
+the image, so globals.c's BYTES are unchanged: 2149 -> 2092 definitions,
+3705508 bytes both times, merged objects 15 -> 18 (100 -> 190 offset aliases).
+
+**The sweep is not exhaustive**: it finds records a source documented with a
+`g_owner.field` comment. The general fix is for the extent to come from `sizeof`
+of the struct definition, which is a small C parser nobody has written yet. Until
+then a split record is the first thing to suspect for any "the game ignores X".
+And the optimizer hazard A3 documented grows with every merge -- `gameframe.c`
+declares both `g_input` and `g_gfx_point`, `popup.c` both `g_popup` and
+`g_input`; nothing measured misbehaves, and `volatile` on the lvalue is the fix
+if it ever does.
+
+### 2. `legoland_headless --probe-input`, and the ctest
+
+One synthetic gesture through the shim's own injection points straight into the
+game's chain, printing what every link holds -- and the record's layout first,
+which is pure address arithmetic and is what found the bug:
+
+```
+LL_CD_DIR=$PWD/gamedata/disc LL_DATA_DIR=$PWD/gamedata/main \
+  node portable/build-wasm/legoland_headless.js --probe-input
+
+  g_gfx_point +0x4  expected +0x4  OK    ... the record is ONE object
+  after UpdateController   controller x=440 y=300 dx=120 dy=60 buttons=0x201
+  after ReadGameButtons    g_input.point=(440,300) btn0.state=0x5
+                           | READERS: g_gfx_point=(440,300) g_mouse_buttons=0x05
+  INPUT OK
+```
+
+Against the pre-fix closure the same probe reports `g_gfx_point` at +0x10,
+`g_fp_w` 958,336 bytes from its field, and READERS reading (5,4) where
+ReadGameButtons wrote (440,300). Registered as the ctest `probe_input` (wasm
+ctest 10 -> 11; it needs `gamedata/`, like `headless_spine`).
+
+### 3. `CreateThread` runs `MusicThread` inline: music-ON no longer hangs
+
+`g_music_disabled` is not "music is off" -- MusicThread sets it on every failure
+exit AND on its success path (musicthread.c:678), meaning "the thread has
+finished starting up". `RunGame` waits for it, and a refused `CreateThread` meant
+nothing ever wrote it. The start routine now runs **inline, to completion, on the
+main stack**, with a `setjmp`/`longjmp` escape from a wait nothing can satisfy.
+With ole32 failing by design the routine takes its first `shutdown:` rung after
+273 of its 3,161 instructions and returns, so `-nointro WINDEBUG` with no
+`-nomusic` now reaches the front end. A per-frame pump cannot host this routine:
+it is one function with an infinite message loop, not a step function, so it needs
+an ASYNCIFY fiber the day DirectMusic becomes real -- and on that day the escape
+fires and says so. Details and the full reasoning: kernel32.c's threads section.
+
+An event wait is now a POLL: `WaitForSingleObject(event, 0)` answers
+`WAIT_TIMEOUT` when nothing posted it, because MusicThread's message loop is
+built out of two of them and answering "posted" made it act on commands nobody
+sent. Mutex and thread handles are unchanged (always free), which is what
+startup.c's one-instance check wants.
+
+### 4. `LL_TRAP_CONTINUE=1`: every blocker in one run
+
+A generated trap is usually a logging call on ordinary data (`ODFError`) or a
+subsystem the port does not have (AVIFIL32), so exiting at the first hides every
+other. `LL_TRAP_CONTINUE=1` (read once, de-duplicated per symbol, default
+unchanged) makes the helper print and RETURN; `name_trap.py --continue` sets it
+and lists every trap in the order the game hit them. One run now enumerates nine:
+`ODFError`, `ObjDefFinalize`, `lrintf` (PORT-M4's) and six AVIFIL32 entry points
+(PORT-B's stubs). A returning trap hands its caller a zero it never computed, so
+the mode makes a LIST OF WORK and never the claim that something works -- say
+which mode produced a result.
+
+`name_trap.py` also makes `--cd-dir`/`--data-dir` absolute and checks them: the
+harness chdir()s to `LL_DATA_DIR` before `WinMain`, so a relative path failed with
+a bare message and `LL_CD_DIR` then resolved against the new cwd and silently
+named nothing, which looks like a missing CD.
+
+### 5. `_findclose(-1)`, and the CRT's two failure conventions
+
+profiles.c's `Goto_ProfileDir` closes a failed find handle unconditionally, as
+shipped; `-1` cast to a pointer is not NULL, so `if (!f)` missed it and the module
+died with `memory access out of bounds` on the first front-end frame. Fixed in all
+three `_find*` entry points through one `ll_bad_find` test. The rest of msvcrt.c
+is audited in a comment there: the fd family carries -1 into POSIX, which answers
+EBADF, so it was already right; `_msize(NULL)` and `_strupr(NULL)` were unguarded
+dereferences where MSVC answers and are guarded now; `_stat`/`_access`/`_unlink`
+are not defined and no game source calls them.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
