@@ -56,6 +56,8 @@ _strdup _strupr _strlwr _stricmp _strnicmp stricmp strnicmp strupr strlwr
 _itoa itoa _ltoa ltoa _ultoa _splitpath _makepath _fullpath _access _unlink
 _open _close _read _write _lseek _tell _eof _filelength _mkdir _rmdir _chdir
 iprintf siprintf fiprintf sniprintf viprintf vsiprintf vfiprintf vsniprintf
+lrint lrintf lrintl llrint llrintf rint rintf nearbyint nearbyintf round roundf trunc truncf
+wcscpy wcslen wcscmp wcsncpy wcscat
 _getcwd _findfirst _findnext _findclose _stat _fstat _sopen _creat _commit
 _getdrive _chdrive _heapmin _msize _expand _rotl _rotr _lrotl _lrotr _finite
 _isnan _fpclass _control87 _clearfp _statusfp _set_new_handler _getch _kbhit

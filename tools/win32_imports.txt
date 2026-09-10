@@ -200,3 +200,4 @@ timeKillEvent	WINMM.dll
 timeSetEvent	WINMM.dll
 wsprintfA	USER32.dll
 wvsprintfA	USER32.dll
+timeGetTime	WINMM.dll
