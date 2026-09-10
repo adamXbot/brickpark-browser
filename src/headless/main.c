@@ -128,6 +128,76 @@ extern char* g_gfx_dirs[7];                    /* rin.c 0x004b81c0 */
 
 extern void       RunGame(void);                      /* gamemain.c 0x00459520 */
 
+/* ---- the first present -------------------------------------------------- */
+/* RunGame's own prefix, down to the one call that puts a picture on the
+ * surface. Every prototype is the DEFINING file's, the same rule as above; the
+ * `int` returns are what gamemain.c's own LEGOLAND_PORTABLE arms declare.
+ *
+ * RunGame itself cannot be used for this: four statements after ShowTitleScreen
+ * it enters `while (g_music_disabled == 0) { PeekMessageA; Sleep(100); }`, and
+ * nothing clears that flag while DirectSoundCreate reports no driver, so the
+ * front end spins (docs/lanes/scope-port-b3.md, PORT-B's dsound.c). Calling the
+ * prefix directly is what makes the title screen a TEST rather than something a
+ * human watches in a tab. */
+extern int        SetupControllers(void);              /* input2.c  0x0048b0d0 */
+extern void       ResetController(void);               /* gameframe.c 0x004589a0 */
+extern int        SetPointer(int shape);               /* cursor.c  0x00463850 */
+extern int        ProcessSystemEvents(void);           /* sysmisc.c 0x00480050 */
+extern void       ShowTitleScreen(void);               /* gameframe.c 0x004588c0 */
+extern void       LLIDB_ClearOnLevel(void);            /* data2.c */
+
+/* node_shim.c: what the shim saw the game present. */
+extern int ll_node_frames(void);
+extern int ll_node_first_frame(int* w, int* h, unsigned* nonblack,
+                               unsigned* pixels, unsigned* checksum);
+
+/* The gate's two numbers. The threshold is deliberately far below what the real
+ * title artwork produces (307,200 pixels, essentially all of them non-black):
+ * the assertion this test has to make is "the painters ran and drew the
+ * picture", and anything that regresses them collapses the count to a handful of
+ * pixels or to zero, never to 40%. The checksum is the identity of the frame and
+ * is printed, not asserted, unless --frame-sum says what to expect -- see
+ * portable/cmake/headless.cmake for how the ctest pins it. */
+#define LL_TITLE_MIN_NONBLACK_PCT 40
+
+static unsigned ll_expect_sum;      /* --frame-sum 0x...: 0 means "just print" */
+static unsigned ll_title_sum;       /* the checksum the title stage saw, 0 if none */
+
+static int ll_first_present(void)
+{
+    int      w = 0, h = 0;
+    unsigned nonblack = 0, pixels = 0, sum = 0;
+    unsigned pct;
+
+    if (!ll_node_first_frame(&w, &h, &nonblack, &pixels, &sum)) {
+        fprintf(stderr, "legoland_headless: FAIL no frame was presented"
+                        " (%d present calls)\n", ll_node_frames());
+        return 1;
+    }
+    pct = pixels ? nonblack * 100u / pixels : 0u;
+    fprintf(stderr, "legoland_headless: first present %dx%d, %u/%u non-black"
+                    " (%u%%), frame checksum 0x%08x, %d present call(s)\n",
+            w, h, nonblack, pixels, pct, sum, ll_node_frames());
+    if (pct < LL_TITLE_MIN_NONBLACK_PCT) {
+        fprintf(stderr, "legoland_headless: FAIL the first frame is %u%%"
+                        " non-black, under the %d%% the title screen must"
+                        " reach -- the sprite painters drew nothing\n",
+                pct, LL_TITLE_MIN_NONBLACK_PCT);
+        return 1;
+    }
+    if (ll_expect_sum && sum != ll_expect_sum) {
+        fprintf(stderr, "legoland_headless: FAIL frame checksum 0x%08x,"
+                        " expected 0x%08x -- something changed what the title"
+                        " screen looks like. If the change was intended, update"
+                        " the expected value in portable/cmake/headless.cmake\n",
+                sum, ll_expect_sum);
+        return 1;
+    }
+    fprintf(stderr, "legoland_headless: first present OK\n");
+    ll_title_sum = sum;
+    return 0;
+}
+
 /* A stage can be skipped: `--stages loadsprite,rungame`. A live prototype
  * conflict inside the game kills the process, so without this one defect hides
  * every defect behind it, and the only way to enumerate the list PORT-M1 needs
@@ -228,6 +298,20 @@ static int ll_stages(void)
                 LLIDB_RegisterNewElement((char*)menus[i], 0, 0x200));
     LL_STAGE_END
 
+    /* RunGame's prefix, down to ShowTitleScreen: the first present. This is the
+     * regression gate -- see ll_first_present above for the two numbers and why
+     * RunGame itself cannot be the thing that is run. */
+    LL_STAGE("title", "RunGame() prefix -> ShowTitleScreen(), the first present");
+    SetupControllers();
+    LLIDB_ClearOnLevel();
+    ResetController();
+    SetPointer(0);
+    ProcessSystemEvents();
+    ShowTitleScreen();
+    if (ll_first_present())
+        return 1;
+    LL_STAGE_END
+
     /* The last thing InitSession does, and the whole front end. It does not
      * return until the player quits, so under node it runs until the caller's
      * alarm -- which is fine: the point is which prototype conflict it hits
@@ -238,7 +322,19 @@ static int ll_stages(void)
     fprintf(stderr, "legoland_headless: RunGame() returned\n");
     LL_STAGE_END
 
+    /* One line the ctest can key on: it appears only after every stage the skip
+     * list did not remove has run, and it carries the frame identity, so the
+     * gate is "the spine finished AND the title screen looked like this" rather
+     * than either half on its own (ctest's PASS_REGULAR_EXPRESSION is an OR, so
+     * two separate patterns could not say that). */
     fprintf(stderr, "legoland_headless: --- done\n");
+    if (ll_title_sum)
+        fprintf(stderr, "legoland_headless: SPINE OK, first present"
+                        " checksum 0x%08x\n", ll_title_sum);
+    else
+        fprintf(stderr, "legoland_headless: SPINE OK, no present"
+                        " (the title stage was skipped)\n");
+    fflush(stderr);
     return 0;
 }
 
@@ -290,6 +386,19 @@ int main(int argc, char** argv)
     }
     if (getcwd(cwd, sizeof cwd))
         fprintf(stderr, "legoland_headless: data directory %s\n", cwd);
+
+    /* --frame-sum 0x...: pin the first present's checksum, so a change that
+     * alters the title screen fails instead of being noticed by nobody. Parsed
+     * before the mode switch because every mode may want it. */
+    for (i = 1; i + 1 < argc; i++)
+        if (strcmp(argv[i], "--frame-sum") == 0) {
+            ll_expect_sum = (unsigned)strtoul(argv[i + 1], 0, 0);
+            /* Drop the pair so the remaining argv is still a mode + skip list. */
+            for (r = i; r + 2 < argc; r++)
+                argv[r] = argv[r + 2];
+            argc -= 2;
+            break;
+        }
 
     if (argc > 1 && strcmp(argv[1], "--resmount") == 0)
         return ll_resmount_ex(0);

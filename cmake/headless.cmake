@@ -102,32 +102,59 @@ if(EMSCRIPTEN)
   target_link_options(legoland_headless_debug PRIVATE -O0 -g2)
 
   # ---- the spine as a CI gate ---------------------------------------------
-  # The browser page and this harness now stop at the same place for the same
-  # reason (docs/lanes/scope-port-a3.md §3), so the startup spine can be a test
-  # instead of something a human looks at in a tab. `--stages` walks
-  # InitSession's own order with the prototypes the DEFINING files use, so it
-  # gets further than the game's own InitSession can while the live prototype
-  # conflicts stand: `loadsprite` is skipped because __BMPLoader's
-  # `RES_CloseFile` call is poisoned and `rungame` because the front end does
-  # not return. Both skips are work items for a matching lane, and each one
-  # should be deleted from this line as that lane closes it -- which is what
-  # makes this test a ratchet rather than a snapshot.
+  # The browser page and this harness stop at the same place for the same reason
+  # (docs/lanes/scope-port-a3.md §3), so the startup spine is a test instead of
+  # something a human looks at in a tab. `--stages` walks InitSession's own order
+  # with the prototypes the DEFINING files use.
   #
-  # ctest runs it only when gamedata/ is there: the mount, the directories and
-  # the string table are the substance of the test.
+  # THE SKIP LIST IS A RATCHET. It started as `loadsprite,rungame`: `loadsprite`
+  # because __BMPLoader's `RES_CloseFile` call was poisoned by a prototype
+  # conflict, `rungame` because the front end does not return. PORT-M2 closed the
+  # first, so it is gone from this line -- the eight cursor sprites load. Only
+  # `rungame` is left, and it is not a defect: four statements past
+  # ShowTitleScreen the front end enters `while (g_music_disabled == 0)
+  # { PeekMessageA; Sleep(100); }` and nothing clears that flag while
+  # DirectSoundCreate reports no driver (PORT-B's dsound.c,
+  # docs/lanes/scope-port-b3.md). The `title` stage runs RunGame's prefix up to
+  # ShowTitleScreen instead, so the picture is still gated.
+  #
+  # ---- what the two numbers mean ------------------------------------------
+  # `title` asserts the first present is at least 40% non-black and compares the
+  # frame's FNV-1a checksum against the value below. 0x4a092b01 is the title
+  # artwork as PORT-B3's painters produce it (640x480, 301157/307200 = 98%
+  # non-black). A change that alters the title screen fails here by design:
+  #
+  #   * if the change was intended, run
+  #     `node legoland_headless.js --stages rungame` and put the checksum it
+  #     prints in LL_TITLE_FRAME_SUM below, in the same commit as the change;
+  #   * if it was not, the frame is the evidence -- something in the sprite
+  #     pipeline (rlepaint.c, softblit*.c, the palette, the clip rect) moved.
+  #
+  # Unpinning it (setting LL_TITLE_FRAME_SUM to 0) keeps the non-black assertion
+  # and only prints the checksum, which is the right thing to do if the frame
+  # ever turns out to depend on something outside the tree.
+  set(LL_TITLE_FRAME_SUM "0x4a092b01")
+  #
+  # ctest runs it only when gamedata/ is there: the mount, the directories, the
+  # string table and the title artwork are the substance of the test, and CI has
+  # no game assets (.github/workflows/progress.yml).
   if(EXISTS "${LL_ROOT}/gamedata/disc/Legoland.res")
     enable_testing()
     add_test(NAME headless_spine
              COMMAND node "$<TARGET_FILE_DIR:legoland_headless>/legoland_headless.js"
-                     --stages loadsprite,rungame)
+                     --frame-sum "${LL_TITLE_FRAME_SUM}" --stages rungame)
     set_tests_properties(headless_spine PROPERTIES
       ENVIRONMENT "LL_CD_DIR=${LL_ROOT}/gamedata/disc;LL_DATA_DIR=${LL_ROOT}/gamedata/main"
-      PASS_REGULAR_EXPRESSION "--- done"
-      FAIL_REGULAR_EXPRESSION "TRAP|unreachable|RuntimeError|cannot chdir"
+      # `SPINE OK, first present checksum ...` is printed only after every stage
+      # ran AND the frame passed both assertions, which is the only single
+      # pattern that says both (PASS_REGULAR_EXPRESSION is an OR over a list).
+      PASS_REGULAR_EXPRESSION "SPINE OK, first present checksum"
+      FAIL_REGULAR_EXPRESSION "FAIL|TRAP|unreachable|RuntimeError|cannot chdir"
       TIMEOUT 300)
   else()
     message(STATUS "PORT-A headless: gamedata/ not present, "
-                   "headless_spine not registered")
+                   "headless_spine not registered (it needs the title artwork "
+                   "out of Graphics1.res)")
   endif()
 
   # ---- install-path resolution over a PRELOADED MEMFS ----------------------

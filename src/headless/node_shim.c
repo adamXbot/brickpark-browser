@@ -25,6 +25,34 @@
 static int ll_node_frames_n;
 static int ll_node_w, ll_node_h;
 
+/* The first present, kept so a harness run can ASSERT on it: how many pixels
+ * were not black, and a checksum of the whole frame. PORT-A4 made
+ * `headless_spine` a regression gate on these two numbers -- a change that
+ * alters the title screen moves the checksum, and one that stops drawing it at
+ * all drops the non-black count to zero. */
+static int      ll_node_first_w, ll_node_first_h;
+static unsigned ll_node_first_nonblack, ll_node_first_pixels, ll_node_first_sum;
+
+/* FNV-1a over the frame's 16-bpp pixels, row by row so the pitch's padding
+ * bytes (which the game never writes) cannot change the answer. Chosen for
+ * being four lines of C with no table: this is an identity, not a hash with a
+ * security requirement. */
+static unsigned ll_node_checksum(const void* pixels, int w, int h, int pitch)
+{
+    unsigned sum = 2166136261u;
+    int y, x;
+
+    for (y = 0; y < h; y++) {
+        const unsigned short* row =
+            (const unsigned short*)((const unsigned char*)pixels + (long)y * pitch);
+        for (x = 0; x < w; x++) {
+            sum = (sum ^ (row[x] & 0xffu)) * 16777619u;
+            sum = (sum ^ (row[x] >> 8)) * 16777619u;
+        }
+    }
+    return sum;
+}
+
 static int ll_node_trace(void)
 {
     static int on = -1;
@@ -49,15 +77,35 @@ void ll_js_display_open(int w, int h)
  * game never got to a present". */
 void ll_js_present16(const void* pixels, int w, int h, int pitch)
 {
-    if (ll_node_frames_n++ == 0 && ll_node_trace()) {
+    if (ll_node_frames_n++ != 0)
+        return;
+
+    /* Count over the pitch-correct rows, not over w*h words: the back surface
+     * the game locks is 640 wide but its pitch need not be 1280 bytes, and
+     * walking it as one flat run both misses pixels and counts padding. */
+    {
+        unsigned nonzero = 0;
+        int y, x;
+        for (y = 0; y < h; y++) {
+            const unsigned short* row =
+                (const unsigned short*)((const unsigned char*)pixels + (long)y * pitch);
+            for (x = 0; x < w; x++)
+                if (row[x])
+                    nonzero++;
+        }
+        ll_node_first_w = w;
+        ll_node_first_h = h;
+        ll_node_first_pixels = (unsigned)(w * h);
+        ll_node_first_nonblack = nonzero;
+        ll_node_first_sum = ll_node_checksum(pixels, w, h, pitch);
+    }
+
+    if (ll_node_trace()) {
         const unsigned short* p = (const unsigned short*)pixels;
         int i, n = w < 16 ? w : 16;
-        unsigned nonzero = 0;
-        for (i = 0; i < w * h; i++)
-            if (((const unsigned short*)pixels)[i])
-                nonzero++;
-        fprintf(stderr, "NODE present16 #1 %dx%d pitch %d: %u/%d non-black,"
-                        " first row:", w, h, pitch, nonzero, w * h);
+        fprintf(stderr, "NODE present16 #1 %dx%d pitch %d: %u/%u non-black,"
+                        " checksum 0x%08x, first row:", w, h, pitch,
+                ll_node_first_nonblack, ll_node_first_pixels, ll_node_first_sum);
         for (i = 0; i < n; i++)
             fprintf(stderr, " %04x", p[i]);
         fprintf(stderr, "\n");
@@ -103,4 +151,19 @@ void ll_node_display_size(int* w, int* h)
 {
     *w = ll_node_w;
     *h = ll_node_h;
+}
+
+/* The first present, for the harness's assertions. Returns 0 when the game
+ * never presented a frame. */
+int ll_node_first_frame(int* w, int* h, unsigned* nonblack, unsigned* pixels,
+                        unsigned* checksum)
+{
+    if (ll_node_frames_n == 0)
+        return 0;
+    *w = ll_node_first_w;
+    *h = ll_node_first_h;
+    *nonblack = ll_node_first_nonblack;
+    *pixels = ll_node_first_pixels;
+    *checksum = ll_node_first_sum;
+    return 1;
 }
