@@ -246,3 +246,10 @@ if(LL_HAVE_GAMEDATA)
   ll_add_test(llidb_icm     "${LL_ROOT}/gamedata/main"  TRUE)
   ll_add_test(loadpos       "${LL_ROOT}/gamedata/disc"  TRUE)
 endif()
+
+# ---- PORT-M3: compile-time callback type check (the check IS the compile) --
+# Every callback slot's call-site pointer type against every body registered
+# into it; an initialiser compiles only when the two are the same wasm type.
+add_library(legoland_cbtypes OBJECT "${LL_TESTS_DIR}/test_callback_types.c")
+target_compile_options(legoland_cbtypes PRIVATE
+                       -Werror=incompatible-function-pointer-types)
