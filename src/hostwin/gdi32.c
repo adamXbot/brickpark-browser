@@ -297,6 +297,9 @@ void* CreateFontIndirectA(const void* logfont)
             ll_font_metrics((int)lf->lfHeight, (int)lf->lfWeight, &o->font);
         else
             ll_font_default_metrics(&o->font);
+        ll_host_trace("CreateFontIndirectA h=%ld w=%ld \"%s\" -> advance %d",
+                      lf ? lf->lfHeight : 0, lf ? lf->lfWeight : 0,
+                      lf ? lf->lfFaceName : "", o->font.advance);
     }
     return h;
 }

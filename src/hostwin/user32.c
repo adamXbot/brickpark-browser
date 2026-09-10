@@ -141,6 +141,43 @@ static int queue_peek(LLMsg* out, int remove)
     return 1;
 }
 
+/* ---- tracing (PORT-B2) --------------------------------------------------
+ * kernel32.c has had LL_HOST_TRACE since PORT-A, but it is a static there and
+ * the DirectX half of the shim had no tracing at all -- so a run that got past
+ * the loaders and then stopped produced a trace that ended at the last ReadFile
+ * and said nothing about whether DirectDrawCreate, the window or the first
+ * surface was ever reached. That is exactly the gap between "the loader works"
+ * and "the page draws", which is this lane's whole subject, so the same switch
+ * now drives ddraw.c, user32.c, gdi32.c and dinput.c too.
+ *
+ * The env var is read independently rather than by calling into kernel32.c:
+ * that file belongs to PORT-A2 and this must not need a change there. Per-frame
+ * calls (Lock, Blt, timeGetTime, PeekMessageA) are deliberately NOT traced --
+ * they would bury everything else; ddraw.c traces the FIRST present only. */
+static int g_trace = -1;
+
+int ll_host_tracing(void)
+{
+    if (g_trace < 0) {
+        const char* e = getenv("LL_HOST_TRACE");
+        g_trace = e && *e && *e != '0';
+    }
+    return g_trace;
+}
+
+void ll_host_trace(const char* fmt, ...)
+{
+    va_list ap;
+    if (!ll_host_tracing())
+        return;
+    fputs("HOST ", stderr);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    fflush(stderr);
+}
+
 /* ---- the yield ---------------------------------------------------------- */
 static double g_last_yield_ms;
 
@@ -304,6 +341,8 @@ unsigned short RegisterClassExA(const void* wcex)
     const LLWndClassEx* wc = (const LLWndClassEx*)wcex;
     if (!wc)
         return 0;
+    ll_host_trace("RegisterClassExA(\"%s\") wndproc %p",
+                  wc->lpszClassName ? wc->lpszClassName : "", wc->lpfnWndProc);
     g_wndproc = (LLWndProc)wc->lpfnWndProc;
     g_class_inst = wc->hInstance;
     return 1;   /* a non-zero ATOM */
@@ -320,6 +359,7 @@ void* CreateWindowExA(unsigned long ex, const char* cls, const char* name,
         g_class_inst = inst;
     if (w > 0 && h > 0)
         ll_host_display_open(w, h);
+    ll_host_trace("CreateWindowExA(\"%s\") %dx%d", name ? name : "", w, h);
     printf("[hostwin] window \"%s\" %dx%d\n", name ? name : "", w, h);
     return g_hwnd;
 }

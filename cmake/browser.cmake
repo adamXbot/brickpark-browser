@@ -140,6 +140,28 @@ set(LL_GAMEDATA "${LL_ROOT}/gamedata" CACHE PATH "Asset tree to preload")
 # tokens, so a bare `--preload-file a --preload-file b` reaches emcc as
 # `--preload-file a b` and emcc then treats b as an input file.
 set(LL_PRELOAD "SHELL:--preload-file ${LL_GAMEDATA}/main@/gamedata")
+# stab.str a SECOND time, at .\strings\stab.str (PORT-B2).
+#
+# LoadStrings (narration2.c 0x00498d00) is `f = fopen(".\\strings\\stab.str",
+# "r"); if (!f) exit(1);` -- a bare exit(1), no message, no MessageBoxA. It runs
+# in InitSession immediately after the three RES volumes open and BEFORE
+# InitHostSystemGPU, so with the file missing the page loads the volumes and then
+# vanishes with status 1 and no explanation. That is exactly what it did once
+# PORT-A2's loader fix let it get that far.
+#
+# The file exists -- gamedata/main/stab.str, 11 KB, the 303-entry front-end
+# string table ("Player details", "Empty slot", "Cancel") that GetString(id)
+# serves and every front-end label draws -- but gamedata/main is FLAT: the
+# extraction has no subdirectories at all, while the shipped install had
+# strings\. Mapping the one file to both places costs 11 KB and needs no change
+# to the game, the loader or the extraction.
+#
+# It is the only such case. Sweeping every `.\<dir>\` literal in LEGOLAND/*.c
+# finds .\3ddata\, .\compsprite\, .\dlls\, .\graphics\ and .\volumes\ besides,
+# but all except .\volumes\ are paths INSIDE the mounted RES archives (they go
+# through RES_OpenFile, not the CRT) and .\volumes\ is already mapped below.
+list(APPEND LL_PRELOAD
+     "SHELL:--preload-file ${LL_GAMEDATA}/main/stab.str@/gamedata/strings/stab.str")
 if(LL_PRELOAD_RES)
   foreach(vol Legoland Graphics1 Graphics2)
     list(APPEND LL_PRELOAD

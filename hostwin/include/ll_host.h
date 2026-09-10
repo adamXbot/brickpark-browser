@@ -272,6 +272,14 @@ void ll_host_mouse_button(int button, int down);
  * once per message-pump pass. */
 void ll_host_pump_timers(void);
 
+/* LL_HOST_TRACE, for the DirectX half of the shim. kernel32.c has its own copy
+ * of this switch (PORT-A); this is the same env var read independently, so
+ * ddraw.c / user32.c / gdi32.c / dinput.c can trace without a change in a file
+ * this lane does not own. Trace ONE-OFF events only -- object creation, mode
+ * changes, the first present -- never per-frame calls. PORT-B2; user32.c. */
+int  ll_host_tracing(void);
+void ll_host_trace(const char* fmt, ...);
+
 /* The last MessageBoxA the shim answered, for the page's status line: the text,
  * the caption, and the button id it answered with. PORT-B2; user32.c. */
 const char* ll_host_last_messagebox(void);

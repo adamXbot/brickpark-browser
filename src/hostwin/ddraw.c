@@ -260,6 +260,11 @@ static void present_primary(void)
 {
     if (!g_ll_primary || !g_ll_primary->bits)
         return;
+    /* The FIRST present only: this is the line that says the game reached a
+     * frame, and tracing every one would bury the rest of the trace. */
+    if (g_present_count == 0)
+        ll_host_trace("first present: %dx%d pitch %d",
+                      g_ll_primary->w, g_ll_primary->h, g_ll_primary->pitch);
     g_present_count++;
     ll_host_present16(g_ll_primary->bits, g_ll_primary->w, g_ll_primary->h,
                       g_ll_primary->pitch);
@@ -730,6 +735,9 @@ static long ll_draw_CreateSurface(LLDraw* d, LLSurfaceDesc* desc,
     s = new_surface(w, h, desc->dwCaps);
     if (!s)
         return DDERR_GENERIC;
+    ll_host_trace("CreateSurface %dx%d caps 0x%lx%s", w, h,
+                  (unsigned long)desc->dwCaps,
+                  (desc->dwCaps & DDSCAPS_PRIMARYSURFACE) ? " PRIMARY" : "");
 
     if (desc->dwCaps & DDSCAPS_PRIMARYSURFACE) {
         s->is_primary = 1;
@@ -794,6 +802,7 @@ static long ll_draw_SetDisplayMode(LLDraw* d, unsigned long w, unsigned long h,
     g_mode_w = (int)w;
     g_mode_h = (int)h;
     g_mode_bpp = 16;
+    ll_host_trace("SetDisplayMode %lux%lu 16bpp (RGB565)", w, h);
     ll_host_display_open(g_mode_w, g_mode_h);
     return DD_OK;
 }
@@ -835,6 +844,7 @@ long DirectDrawCreate(void* guid, void** out, void* outer)
     (void)guid; (void)outer;
     if (!out)
         return DDERR_INVALIDPARAMS;
+    ll_host_trace("DirectDrawCreate");
     g_ddraw_v1.vtbl = g_draw_vtbl;
     g_ddraw_v1.refs++;
     g_ddraw_v1.is_v2 = 0;
