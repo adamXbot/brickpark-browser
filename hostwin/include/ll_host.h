@@ -467,6 +467,12 @@ int   LineTo(void* hdc, int x, int y);
 int   StretchDIBits(void* hdc, int xd, int yd, int wd, int hd,
                     int xs, int ys, int ws, int hs, const void* bits,
                     const void* info, unsigned int usage, unsigned long rop);
+/* WINSPOOL.DRV, in gdi32.c with the rest of the print path (PORT-B6): the last
+ * generated host trap in the closure. Reports zero printers, which is where
+ * certificate.c's SaveScreenshotBmp stops. */
+int   EnumPrintersA(unsigned long flags, char* name, unsigned long level,
+                    void* buf, unsigned long buflen, unsigned long* needed,
+                    unsigned long* returned);
 int   StartDocA(void* hdc, const void* docinfo);
 int   StartPage(void* hdc);
 int   EndPage(void* hdc);
@@ -518,5 +524,55 @@ long  DirectSoundCreate(void* guid, void** out, void* outer);
 long  CoInitialize(void* reserved);
 long  CoCreateInstance(const void* clsid, void* outer, unsigned long context,
                        const void* iid, void** out);
+
+/* ---- AVIFIL32 (portable/src/hostwin/avifil32.c) -------------------------- */
+/* Video for Windows' AVIFile API: the FMV player (movie.c, movie2.c) and the
+ * on-screen advisor (advisor.c, screens3.c). There is no Indeo 5 decoder in
+ * this port, so AVIFileOpenA reports AVIERR_FILEOPEN (0x8004406F) and every
+ * other entry point reports cleanly out of a handle it never follows. Both
+ * callers are built for exactly that: PlayMovie returns without entering the
+ * player, and the advisor's one draw site is behind `if (g_vidanim)`, which
+ * stays null. The full reasoning, the rejected alternative (a synthetic
+ * zero-length stream) and the game-side null-deref the shim has to survive are
+ * in the header of avifil32.c. PORT-B6. */
+void          AVIFileInit(void);
+void          AVIFileExit(void);
+long          AVIFileOpenA(void** ppfile, const char* name, unsigned int mode,
+                           const void* handler);
+long          AVIFileInfoA(void* pfile, void* pfi, long size);
+long          AVIFileGetStream(void* pfile, void** ppstream, unsigned long fcc,
+                               long lParam);
+unsigned long AVIFileRelease(void* pfile);
+long          AVIStreamInfoA(void* pavi, void* psi, long size);
+unsigned long AVIStreamAddRef(void* pavi);
+unsigned long AVIStreamRelease(void* pavi);
+void*         AVIStreamGetFrameOpen(void* pavi, const void* wanted);
+void*         AVIStreamGetFrame(void* pgf, long pos);
+long          AVIStreamGetFrameClose(void* pgf);
+long          AVIStreamStart(void* pavi);
+long          AVIStreamLength(void* pavi);
+long          AVIStreamRead(void* pavi, long start, long samples, void* buf,
+                            long buflen, long* bytes, long* nsamples);
+long          AVIStreamReadFormat(void* pavi, long pos, void* fmt, long* size);
+
+/* ---- MSACM32 (portable/src/hostwin/msacm32.c) --------------------------- */
+/* The Audio Compression Manager. NOT a stub: data2.c's CreateSampleFromWAV
+ * runs EVERY sample in the archives through resaudio2.c's ConvertWAVToPCM and
+ * drops the sample when it fails, so refusing everything would break the
+ * sample loader rather than silence it. PCM -> 16-bit PCM is implemented for
+ * real (including the 8-bit unsigned -> 16-bit signed widening); ADPCM is
+ * refused with ACMERR_NOTPOSSIBLE (512), which is what a real ACM returns with
+ * no driver and which every caller handles. acmStreamSize writes its out
+ * parameter even on failure -- audio4.c:212 mallocs it without checking
+ * anything. See the header of msacm32.c. PORT-B6. */
+int acmStreamOpen(void** phas, void* hdrv, void* srcfmt, void* dstfmt,
+                  void* wfltr, unsigned long callback, unsigned long inst,
+                  unsigned long flags);
+int acmStreamSize(void* has, unsigned long srclen, unsigned long* pdwOutput,
+                  unsigned long flags);
+int acmStreamPrepareHeader(void* has, void* phdr, unsigned long flags);
+int acmStreamUnprepareHeader(void* has, void* phdr, unsigned long flags);
+int acmStreamConvert(void* has, void* phdr, unsigned long flags);
+int acmStreamClose(void* has, unsigned long flags);
 
 #endif /* LL_HOST_H */

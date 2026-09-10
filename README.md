@@ -903,6 +903,77 @@ EBADF, so it was already right; `_msize(NULL)` and `_strupr(NULL)` were unguarde
 dereferences where MSVC answers and are guarded now; `_stat`/`_access`/`_unlink`
 are not defined and no game source calls them.
 
+
+## A trap-free page, and the front end answering the mouse (scope PORT-B6)
+
+**Zero generated host traps, and a click that changes the screen.** The page no
+longer needs `?trapcontinue=1`: every Win32 import the program names now has a
+real body, and the six AVIFIL32 traps PORT-A5 left are gone.
+
+`portable/src/hostwin/avifil32.c` — all sixteen AVIFile entry points.
+`AVIFileOpenA` reports `AVIERR_FILEOPEN`, which is the path movie.c and
+advisor.c are *written* for: `OpenMovie` returns 0 and `PlayMovie` retries the
+second prefix and returns without entering the player at all, and the advisor
+degrades to no animation because `RenderAdvisorIcon`'s only draw is behind
+`if (g_vidanim)` and that stays null. The rejected alternative (a synthetic
+zero-length stream) is argued in the file's header. Every entry point is
+pointer-blind, because `StartAdvisorClip(NULL)` reaches two of them with a word
+read out of a null struct.
+
+`portable/src/hostwin/msacm32.c` — the ACM, and **not** a stub: `data2.c`'s
+`CreateSampleFromWAV` runs every sample in the archives through
+`ConvertWAVToPCM` and drops the ones that fail, so a shim that refused
+everything would break the sample loader rather than silence it. PCM to 16-bit
+PCM is a real conversion (including the 8-bit unsigned to 16-bit signed
+widening); ADPCM is refused with `ACMERR_NOTPOSSIBLE`, which every caller
+handles.
+
+`gdi32.c` gained WINSPOOL's `EnumPrintersA`, the last generated host trap.
+
+### Input, end to end, measured in a tab
+
+Three host defects, each found by driving the real page and each proved with a
+before/after canvas hash:
+
+* **the press latch** (`dinput.c`). `GetDeviceState` is a poll; the browser is
+  an event source; `ll_host_drain_events` empties the whole queue from inside
+  it. A click whose down and up landed in one drain collapsed to "up" and the
+  game read `rgbButtons[0] == 0` every time — `buttons=000` on every trace line
+  for a click that demonstrably reached the canvas. A press is now held until a
+  poll has reported it and that poll's frame has been presented, which is what
+  `ReadGameButtons` needs to see an edge; a 250 ms wall-clock escape covers the
+  loops that poll without presenting. A human click is unaffected. Keys get the
+  same latch.
+* **the live-surface registry** (`ddraw.c`). `ll_host_surface_pixels` answered
+  "is this HDC mine" by dereferencing it, which is a hard out-of-bounds trap for
+  the gdi32 cookie `CreateCompatibleDC(0)` hands `HTBubbleHelp`. Surfaces are
+  now registered and the lookup follows nothing it does not own.
+* **`LL.dikOf`** (`ll_canvas.js`). `KeyboardEvent.code` is optional in practice
+  — a virtual keyboard, an IME, a script `dispatchEvent` and the DevTools
+  protocol all deliver `{code: "", key: "A"}` — and `LL.dik[""]` is undefined,
+  so every such keystroke was dropped in silence. `key` and `keyCode` are now
+  fallbacks.
+
+### Page tooling
+
+`window.llFrameHash()` (FNV-1a over the whole canvas — the sampled headless
+checksum calls two different front-end screens equal), `llNonBlack()`,
+`llSnapshot()` as a data: URL (a download button cannot work; the sandbox makes
+`<a download>` and script-driven saves inert), `llTrace(n)`, `llStats()`, a
+collapsible panel holding only the last 300 `HOST`/`[hostwin]` lines, and the
+frame hash on the status bar every two seconds.
+
+### Screens reached
+
+PLAYER DETAILS (`0x9d9b7c50`, 33.5 fps, zero traps), its bubble help under the
+cursor, and the NEW PROFILE popup (`0x5ab7ca10`) from one real left click.
+
+**Two more split records block the rest**, both proved by patching the generated
+closure and relinking, both PORT-A's (`gen_link.py` `STRUCT_EXTENTS`, one
+twice-cited row each in `docs/lanes/scope-port-b6.md` §6): the 12-byte mouse-hit
+record at `0x004bdd00` is three objects, so no front-end icon can ever be
+focussed; and the 270-byte `CurProfile` at `0x0080ffa0` is eight, so the
+new-profile name editor is never called.
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and

@@ -41,6 +41,62 @@
  * (UpdateControllerFromMouseData doubles the delta up to twice, input.c:~250),
  * so the game cursor moves faster than the real pointer. Known divergence,
  * recorded in docs/lanes/scope-port-b.md §7.
+ *
+ * ---------------------------------------------------------------------------
+ * PORT-B6: THE PRESS LATCH -- why an EVENT source feeding a POLLED API needs
+ * one, and why the front end ignored every click until it had one.
+ *
+ * DirectInput's GetDeviceState is a POLL: it reports the state at the instant
+ * it is called, and a press that begins and ends between two polls never
+ * happened. The browser is an EVENT source: mousedown and mouseup arrive as
+ * two records in a queue, and `ll_host_drain_events` (user32.c) empties the
+ * WHOLE queue -- from inside this function -- before the state is copied out.
+ * So a click whose down and up landed in the same drain collapsed to "up" and
+ * the game read `rgbButtons[0] == 0`, every time.
+ *
+ * MEASURED, before the fix, in a real tab with ?trace=1 (a click on the
+ * PLAYER DETAILS slot-1 button, confirmed to reach the canvas):
+ *
+ *     HOST DINPUT mouse state dx=-60 dy=-53 dz=0 buttons=000
+ *     HOST DINPUT mouse state dx=0   dy=127 dz=0 buttons=000
+ *                                                        ^^^ never once 1
+ *
+ * The cursor moved -- motion is accumulated, so it cannot be lost this way --
+ * and the frame hash before and after the click was bit-identical
+ * (0x17207e04). That is the whole of PORT-B4 §5's "input arrives from the host
+ * but the front end ignores it": the button half never arrived at all.
+ *
+ * The latch holds a press until a state read has actually REPORTED it, and
+ * then until the frame that read it has been presented:
+ *
+ *   press   down = 1, seen = 0
+ *   release seen and its frame already presented -> release now (the normal
+ *           path for a human click, which spans several frames: no added
+ *           latency, no behaviour change)
+ *           otherwise -> remember it (`pending_up`) and stay down
+ *   poll    report `down`, then: first sight of a press records the frame
+ *           counter; a later poll with a release pending applies it once the
+ *           frame counter has MOVED ON.
+ *
+ * Why the frame counter and not just "one poll": ScanMouse's GetDeviceState is
+ * not the only poll in a frame -- `ll_host_drain_events` also runs from
+ * PeekMessageA and WaitMessage, and the game may read the device more than once
+ * between two ReadGameButtons ticks. `ReadGameButtons` (bighelp.c 0x00452460)
+ * computes its press and release edges from `g_controller->buttons ^
+ * g_input.prev_buttons` ONCE per tick, so the press has to survive to the end
+ * of the frame it was first seen in, not merely to the end of one poll.
+ *
+ * The wall-clock escape (LL_LATCH_MAX_MS) is for the loops that poll input
+ * WITHOUT presenting -- PlayMovie's button-release spin (uimisc2.c:766) and
+ * RunMovie's abort test are both `do { ProcessSystemEvents(); ReadGameButtons();
+ * } while (buttons)`. Without it a latched press in one of those never lifts and
+ * the loop never exits. 250 ms is longer than any frame and shorter than a
+ * deliberate press.
+ *
+ * Keys get the same treatment for the same reason, and it matters more there:
+ * name entry on the PLAYER DETAILS screen reads the DIK array (input2.c's
+ * GetTypedChar), so a synthesised keystroke that is not held across a frame
+ * types nothing.
  */
 #include <string.h>
 
@@ -53,17 +109,81 @@
 #define LL_DEV_KEYBOARD 1
 #define LL_DEV_MOUSE    2
 
+/* ---- the press latch ---------------------------------------------------- */
+/* See the header comment. One of these per key and per mouse button; `down` is
+ * the byte a poll copies out and everything else is bookkeeping. */
+#define LL_LATCH_MAX_MS 250u
+
+typedef struct LLLatch {
+    unsigned char down;         /* 0x80 while a poll should report it pressed */
+    unsigned char seen;         /* a poll has reported this press at least once */
+    unsigned char pending_up;   /* a release arrived that could not be applied */
+    unsigned int  frame;        /* frames presented when `seen` was set */
+    unsigned int  ms;           /* timeGetTime() when the press arrived */
+} LLLatch;
+
+/* Frames presented (ddraw.c) and the millisecond clock (winmm.c). Both are
+ * already part of the host ABI; nothing new is needed for the latch. */
+static unsigned int latch_frame(void) { return (unsigned int)ll_host_frames_presented(); }
+
+static void latch_press(LLLatch* l)
+{
+    l->down = 0x80;
+    l->seen = 0;
+    l->pending_up = 0;
+    l->frame = latch_frame();
+    l->ms = timeGetTime();
+}
+
+static void latch_release(LLLatch* l)
+{
+    /* The ordinary case: a human press that several polls have already seen,
+     * in a frame that has been presented. Released immediately -- the latch
+     * adds nothing to the path a real mouse takes. */
+    if (l->seen && latch_frame() != l->frame) {
+        l->down = 0;
+        l->pending_up = 0;
+        return;
+    }
+    l->pending_up = 1;
+}
+
+/* Called from a device poll AFTER the state has been copied out, so the poll
+ * that first reports a press always reports it. */
+static void latch_polled(LLLatch* l)
+{
+    if (!l->down)
+        return;
+    if (!l->seen) {
+        l->seen = 1;
+        l->frame = latch_frame();
+        return;
+    }
+    if (l->pending_up &&
+        (latch_frame() != l->frame || timeGetTime() - l->ms > LL_LATCH_MAX_MS)) {
+        l->down = 0;
+        l->pending_up = 0;
+    }
+}
+
 /* ---- the state the browser feeds --------------------------------------- */
 static unsigned char g_keys[256];
+static LLLatch       g_key_latch[256];
 static int  g_mouse_dx, g_mouse_dy, g_mouse_dz;
 static unsigned char g_mouse_buttons[4];
+static LLLatch       g_btn_latch[4];
 
 unsigned char* ll_host_key_state(void) { return g_keys; }
 
 void ll_host_key_set(int dik, int down)
 {
-    if (dik > 0 && dik < 256)
-        g_keys[dik] = down ? 0x80 : 0x00;
+    if (dik <= 0 || dik >= 256)
+        return;
+    if (down)
+        latch_press(&g_key_latch[dik]);
+    else
+        latch_release(&g_key_latch[dik]);
+    g_keys[dik] = g_key_latch[dik].down;
 }
 
 void ll_host_mouse_move(int dx, int dy) { g_mouse_dx += dx; g_mouse_dy += dy; }
@@ -71,8 +191,13 @@ void ll_host_mouse_wheel(int dz) { g_mouse_dz += dz; }
 
 void ll_host_mouse_button(int button, int down)
 {
-    if (button >= 0 && button < 4)
-        g_mouse_buttons[button] = down ? 0x80 : 0x00;
+    if (button < 0 || button >= 4)
+        return;
+    if (down)
+        latch_press(&g_btn_latch[button]);
+    else
+        latch_release(&g_btn_latch[button]);
+    g_mouse_buttons[button] = g_btn_latch[button].down;
 }
 
 /* ---- objects ----------------------------------------------------------- */
@@ -165,9 +290,24 @@ static long dev_GetDeviceState(LLDIDevice* d, unsigned long size, void* data)
     ll_host_drain_events();
 
     if (d->kind == LL_DEV_KEYBOARD) {
+        int i;
         if (size > sizeof(g_keys))
             size = sizeof(g_keys);
         memcpy(data, g_keys, (size_t)size);
+        /* AFTER the copy: this poll has now reported whatever is held, so a
+         * release that arrived too early may be applied for the next one. 255
+         * trivial tests once a frame. */
+        for (i = 1; i < 256; i++)
+            if (g_key_latch[i].down) {
+                /* PORT-B6: the keyboard's half of PORT-B4's mouse trace line --
+                 * the one that says whether a key that "did nothing" was never
+                 * delivered or was delivered and ignored. One line per key per
+                 * poll while it is held, and nothing at all while it is not. */
+                ll_host_trace("DINPUT key state DIK 0x%02x down (poll reports it)",
+                              (unsigned)i);
+                latch_polled(&g_key_latch[i]);
+                g_keys[i] = g_key_latch[i].down;
+            }
         return DI_OK;
     }
 
@@ -190,6 +330,15 @@ static long dev_GetDeviceState(LLDIDevice* d, unsigned long size, void* data)
                           g_mouse_buttons[0] ? 1 : 0, g_mouse_buttons[1] ? 1 : 0,
                           g_mouse_buttons[2] ? 1 : 0);
         g_mouse_dx = g_mouse_dy = g_mouse_dz = 0;   /* relative axes: consumed */
+        /* AFTER the copy, for the same reason as the keyboard branch. */
+        {
+            int b;
+            for (b = 0; b < 4; b++)
+                if (g_btn_latch[b].down) {
+                    latch_polled(&g_btn_latch[b]);
+                    g_mouse_buttons[b] = g_btn_latch[b].down;
+                }
+        }
         return DI_OK;
     }
     return DIERR_INVALIDPARAM;

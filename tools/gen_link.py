@@ -145,6 +145,21 @@ STRUCT_EXTENTS = {
     # 0x007cad80 as `g_temp_profile.age` (+0x20, the `f20` of that layout).
     0x007cad60: (0x110, 'Profile, profiles.c:64-77 (0x110, f10f +0x10f); '
                         'unref7.c:276 g_temp_profile.age +0x20'),
+    # BlitCtx / HitInfo @ 0x004bdd00 (PORT-B6): PrintSprite copies the caller's
+    # 12-byte record here and UpdateFocussedIconPtr reads +0x04; split into three
+    # objects, g_icon_value was never written and no front-end icon could be
+    # focussed or clicked. printlist.c:61-65 lays it out to +0x08 and
+    # printlist.c:245 declares g_hit_ctx here; gameframe.c:261 / workorder2.c:308
+    # declare 0x004bdd08 (the last field, 4 bytes) -> 12 bytes.
+    0x004bdd00: (12, 'BlitCtx/HitInfo, printlist.c:61-65 (+0x08 last field); '
+                     'gameframe.c:261 g_hit_cell 0x004bdd08'),
+    # CurProfile @ 0x0080ffa0 (PORT-B6): the writer stores profile_slot at +0x43,
+    # bigscreens.c:416 reads g_cur_profile.profile_slot from what was a 32-byte
+    # object, so EnterNewProfile never ran. bigscreens.c:73-87 / profiles.c:89-101
+    # (#pragma pack(1)) end at block[200] @ +0x46 -> 0x10e; screens3.c:234 and
+    # unref7.c:271 declare 0x0080ffe3 as CurProfile+0x43.
+    0x0080ffa0: (0x10e, 'CurProfile, bigscreens.c:73-87 (block[200] @ +0x46); '
+                        'screens3.c:234 g_profile_slot +0x43'),
 }
 
 # The initialised data sections: a pointer re-pointed by offset has to land in

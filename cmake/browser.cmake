@@ -32,7 +32,15 @@ set(LL_HOSTWIN_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/ll_font.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/dinput.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/winmm.c"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/dsound.c")
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/dsound.c"
+  # PORT-B6: the last two DLLs the import table names that were still generated
+  # traps. avifil32.c reports "this file will not open" through all sixteen
+  # AVIFile entry points, which is the path movie.c/advisor.c are written for;
+  # msacm32.c is a real PCM converter, because data2.c runs every sample in the
+  # archives through it and drops the ones it cannot convert. With these two the
+  # page runs with ZERO traps.
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/avifil32.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/msacm32.c")
 
 add_library(legoland_hostwin STATIC ${LL_HOSTWIN_SOURCES})
 target_include_directories(legoland_hostwin PUBLIC
