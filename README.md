@@ -90,8 +90,8 @@ to a non-x86 compiler, so each site has a C fallback:
   `ll_FastRSqrt`), and unref7.c's hand-written texture sampler
   `SampleTexturePixel`.
 - **Stubbed with `LL_UNPORTED_ASM()`** (aborts when reached): the four
-  triangle rasterisers in tri3d.c, the RLE animation blitters in
-  softblit.c/softblit2.c,
+  triangle rasterisers in tri3d.c, the RECOLOURING animation blitter
+  SoftBlitAnim in softblit.c,
   the z-buffer RLE walker in bigrender.c, the two blits in blitmisc.c, the
   50% blend blit in popup.c, the Gouraud span fillers `Span_FillShade` /
   `Span_FillShadeZ` (coastershade2.c) and the textured `TrackShade_FillPoly`
@@ -108,6 +108,15 @@ to a non-x86 compiler, so each site has a C fallback:
   their top-skip pass and the two recolouring ones have three hit-test
   divergences of their own; all of that is REPRODUCED, not fixed, and
   `docs/lanes/scope-port-b3.md` says which leaf does what.
+- **The type-2 LLS animation painter** (scope PORT-B3): softblit2.c's
+  `SoftBlitAnimPlain` too, with its own control stream (a cached word plus
+  `g_zb_bits`, an 8-bit run length spliced out of the low byte for four code
+  slots, 8-bit indices through `g_sp_pal16`) in `ll_anim_open`/`ll_anim_code`/
+  `ll_anim_count`/`ll_anim_hit`. Its recolouring sibling `SoftBlitAnim`
+  (softblit.c 0x00465240) is deliberately still a trap: porting it means
+  first deciding what to do about a misplaced `row:` label in its `__asm`
+  text that the byte gate cannot see. Both findings are in
+  `docs/lanes/scope-port-b3.md` §3b.
 - Structured exception handling in exceptlog.c and winmain.c compiles to
   plain blocks (`__try` -> `if (1)`, `__except` -> `else if (0)`).
 - castleobj.c's `Track_Update` (0x00427b20) collides with coaster.c's
@@ -506,10 +515,10 @@ Tests: native ctest 2/2 -> **3/3**, wasm32 ctest 4/5 -> **7/8** (`loadpos` is th
    `IDirectDraw*` vtables in gpu.c/surface.c), DirectInput-shaped keyboard
    and mouse state, `GetTickCount`/`timeSetEvent`, DirectSound over SDL
    audio, GDI text via a bitmap font. Stub movies, music and printing.
-2. **Port the stubbed blitters** as they are reached. The RLE sprite
-   painters are done (PORT-B3); the next ones the front end will want are
-   softblit.c/softblit2.c's `SoftBlitAnim`/`SoftBlitAnimPlain` (ImageRec
-   type 2, the same control stream over an 8-bit index block and a palette)
+2. **Port the stubbed blitters** as they are reached. The ten RLE sprite
+   painters and the plain type-2 animation painter are done (PORT-B3); the
+   next ones the front end will want are softblit.c's `SoftBlitAnim` (read
+   `docs/lanes/scope-port-b3.md` §3b first — its `row:` label needs moving)
    and bigrender.c's z-buffer RLE walker.
 3. **Emscripten job** mirroring isle-portable's CI row: `emcmake`,
    pthreads, WASMFS fetch backend streaming assets from a host URL, OPFS
