@@ -10,20 +10,26 @@ This directory never touches the VC6 matching build. Every change it needs in
 `../LEGOLAND` sits under `#ifdef LEGOLAND_PORTABLE` (or `#ifndef`), which the
 VC6 gate does not define, so `tools/verify.py` sees the original text.
 
-## Status: native link closed (2026-09-08)
+## Status: merged to main, census refreshed (2026-09-11)
 
-All 236 game sources compile with clang, and a whole-archive link of the
-recovered game succeeds against a generated closure. Nothing runs yet; the
-generated pieces trap by name when reached. The census below is the work list.
+All 258 game sources compile with clang under `LEGOLAND_PORTABLE`, and a
+whole-archive link of the recovered game succeeds against a generated
+closure. Nothing runs yet; the generated pieces trap by name when reached.
+The census below (`linkreport.py` over the clang objects at the merge) is the
+work list. The matching frontier closed on 2026-09-09, so the "unwritten game
+functions" row is gone: the 12 symbols `linkreport.py` still files there are
+all CRT-range wrappers (`HeapAlloc_w`, `MemAlloc`, `Format`, `CRT_calloc`,
+`NameCompare`, ... at 0x0049e4xx..0x004aab90), which the host shim's CRT
+supplies, not matching lanes.
 
 | what the link still needs | count | where it comes from |
 | --- | --- | --- |
-| game functions referenced but not written | 66 | matching lanes (`tools/inventory.py` lists all 340 live) |
-| externs with no address comment | 102 | rename or write; see `linkreport.md` "Unclassified" |
-| stale extern names (address defined under another name) | 198 | rename pass; bridged by generated aliases for now |
-| Win32 / DirectX imports | 130 | host shim (`src/hostwin/`), stubbed per DLL |
-| inline-asm bodies still stubbed | 23 | port by hand, see below |
-| extern-only globals | 2,492 | rebuilt from `original/legoland.exe` by `gen_link.py` |
+| CRT-range wrappers filed as "game-fn" | 12 | host shim / libc (`HeapAlloc_w`, `MemAlloc`, `Format`, `rand_w`, ...) |
+| externs with no address comment | 84 | rename or write; see `linkreport.md` "Unclassified" |
+| stale extern names (address defined under another name) | 228 | rename pass; bridged by generated aliases for now |
+| Win32 / DirectX imports | 149 | host shim (`src/hostwin/`), stubbed per DLL |
+| inline-asm bodies still stubbed | 26 | port by hand, see below |
+| extern-only globals | 2,612 | rebuilt from `original/legoland.exe` by `gen_link.py` |
 
 Host imports by DLL: KERNEL32 42, USER32 34, GDI32 18, AVIFIL32 16 (Indeo 5
 FMV), MSACM32 6 (ADPCM), WINMM 5 (MIDI out, timers), VERSION 3, ole32 2
@@ -69,25 +75,38 @@ original's pointer tables (callback tables, string tables) valid again on a
 
 ## What the LEGOLAND_PORTABLE guards changed
 
-Inline x86 assembly (82 sites in 29 files) is invisible to a non-x86
-compiler, so each site has a C fallback:
+Inline x86 assembly (about 100 sites in 36 files at the merge) is invisible
+to a non-x86 compiler, so each site has a C fallback:
 
 - **Ported to C**: x87 `fld/fmul/fistp` conversions (round-to-nearest, as the
   game's control word sets), the 16.16 `imul/shrd` fixed-point macros in
   person3d.c and math3d.c, the rotation-matrix and vector-transform loops,
-  rdtsc timing brackets, byte swaps, control-word save/restore (no-ops), the
-  z-buffer span filler in schoolcar6.c, the clear/fill loops in tri3d.c and
-  text.c, the 8-bit paletted and 16-bit rectangle blits, the fast
-  sqrt/rsqrt table helpers (`ll_FastSqrt`, `ll_FastRSqrt`).
+  rdtsc timing brackets (coaster10.c's three model draw passes included),
+  byte swaps, control-word save/restore (no-ops), the flat z-buffer span
+  fillers (`ZBuffer_FillPoly` in schoolcar6.c, `ZBuffer_FillShadedPoly` in
+  unref1.c, `Span_FillFlat` / `Span_FillFlatZ` in coastershade2.c), the
+  clear/fill loops in tri3d.c and text.c, the 8-bit paletted and 16-bit
+  rectangle blits, the fast sqrt/rsqrt table helpers (`ll_FastSqrt`,
+  `ll_FastRSqrt`), and unref7.c's hand-written texture sampler
+  `SampleTexturePixel`.
 - **Stubbed with `LL_UNPORTED_ASM()`** (aborts when reached): the four
   triangle rasterisers in tri3d.c, the eight RLE painters in rlepaint.c and
   two in rlepaint2.c, the RLE animation blitters in softblit.c/softblit2.c,
   the z-buffer RLE walker in bigrender.c, the two blits in blitmisc.c, the
-  50% blend blit in popup.c, and the ST(0)-ABI helpers `sub_458930`,
-  `FastSqrt`, `FastRSqrt`. About 6,000 lines of hand-written blitter asm.
-- Structured exception handling in exceptlog.c compiles to plain blocks.
+  50% blend blit in popup.c, the Gouraud span fillers `Span_FillShade` /
+  `Span_FillShadeZ` (coastershade2.c) and the textured `TrackShade_FillPoly`
+  (coaster13.c), and the ST(0)-ABI helpers `sub_458930`, `FastSqrt`,
+  `FastRSqrt`. About 6,000 lines of hand-written blitter asm; the full list
+  is the "Unported inline-asm bodies" section of `linkreport.md`.
+- Structured exception handling in exceptlog.c and winmain.c compiles to
+  plain blocks (`__try` -> `if (1)`, `__except` -> `else if (0)`).
 - castleobj.c's `Track_Update` (0x00427b20) collides with coaster.c's
   (0x004275d0); the portable build renames the former `Track_Update_427b20`.
+
+Every new `__asm` site a matching lane adds must get the same treatment, or
+the clang build breaks: wrap it in `#ifndef LEGOLAND_PORTABLE` and give the
+`#else` arm a C fallback or `LL_UNPORTED_ASM()`. The guard lines go INSIDE
+the function body, never between a `// FUNCTION:` marker and its signature.
 
 ## Next
 
