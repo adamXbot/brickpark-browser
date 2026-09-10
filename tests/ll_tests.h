@@ -22,6 +22,12 @@ extern int ll_notes;
 void ll_pass(const char* what);
 void ll_fail(const char* what, const char* fmt, ...);
 void ll_note(const char* what, const char* fmt, ...);
+/* A check that could not be made, with the reason. NOT a pass and NOT a
+ * failure: `LL_TESTS_NO_GAMEDATA` builds (CI has no game assets, see
+ * portable/cmake/tests.cmake) run the synthetic cases of a test and skip the
+ * ones that read a shipped file, and a skip has to be visible in the log or the
+ * test silently claims coverage it does not have. */
+void ll_skip(const char* what, const char* why);
 
 /* FNV-1a 64: the canonical digest both the oracles and the tests compute over
  * a rendering of a whole table, so a committed/generated expectation is one
@@ -76,12 +82,17 @@ ll_u64 ll_fnv_int(ll_u64 h, long long v);
 
 /* Each test: returns nothing, reports through the macros above. */
 void test_save_framing(void);
+void test_keystate(void);   /* PORT-A3: interior aliases, no oracle */
+void test_rle_paint(void);  /* PORT-B3: the ten type-3 RLE painters */
+void test_anim_paint(void); /* PORT-B3: the type-2 LLS animation painter */
+#ifndef LL_TESTS_NO_GAMEDATA
+/* These four need gamedata/: their oracles read the shipped volumes, so without
+ * the assets they cannot even be given a header. tests.cmake leaves their
+ * sources out of the driver entirely (PORT-A4). */
 void test_tile_geometry(void);
 void test_res_archive(void);
 void test_llidb_icm(void);
 void test_loadpos(void);
-void test_keystate(void);   /* PORT-A3: interior aliases, no oracle */
-void test_rle_paint(void);  /* PORT-B3: the ten type-3 RLE painters */
-void test_anim_paint(void); /* PORT-B3: the type-2 LLS animation painter */
+#endif
 
 #endif /* LL_TESTS_H */

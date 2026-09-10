@@ -506,6 +506,19 @@ void test_rle_paint(void)
  * emits its byte range, the sentinel to pre-fill with, and the digests; the
  * frame's own bytes never leave the archive. */
 
+#ifdef LL_RLE_NO_ASSETS
+/* gamedata/ is absent, so tools/oracle_rlepaint.py could not read Graphics1.res
+ * and there are no digests to compare against. The nine synthetic cases above
+ * are the test in that build (portable/cmake/tests.cmake wrote the stub header,
+ * see docs/lanes/scope-port-a4.md §4); this one says so instead of passing
+ * quietly or failing on a missing file. */
+static void real_sprite(void)
+{
+    ll_skip("one real shipped sprite, bit-exact against tools/comp.py",
+            "gamedata/ is absent, so the oracle has no digests -- the nine "
+            "synthetic cases above are this build's coverage");
+}
+#else
 static void real_sprite(void)
 {
     FILE*           f;
@@ -580,3 +593,4 @@ static void real_sprite(void)
     free(surf);
     free(mem);
 }
+#endif /* LL_RLE_NO_ASSETS */

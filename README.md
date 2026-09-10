@@ -499,6 +499,230 @@ why `src/browser/main.c` calls `setenv` itself.
 Tests: native ctest 2/2 -> **3/3**, wasm32 ctest 4/5 -> **7/8** (`loadpos` is the
 `RES_CloseFile` conflict, unchanged).
 
+## CRT prototypes, indirect-call traps, CI and the title-screen gate (scope PORT-A4)
+
+Four things, all of them about *telling you what went wrong*. Notes:
+`docs/lanes/scope-port-a4.md`.
+
+### 1. wasm-ld is silent: a CRT name is typed from libc, not from its alias
+
+PORT-M2 left exactly one `function signature mismatch` in the tree and it was
+the generator's. `DebugPrint` is a second name for 0x0049e5c5 = `printf`, and
+`gen_link.py` declared the real symbol with the **alias's** signature, producing
+`extern void printf(unsigned int)` against libc's `(i32, i32) -> i32`; wasm-ld
+then sent every call through that declaration — the game's own `printf` calls
+included — to a trapping stub.
+
+A CRT name no object in the tree *defines* now takes its prototype from
+`CRT_PROTOS`, a table of the libc signatures the game reaches. Three things make
+it work:
+
+* `crt_wasm_sig` adds **one extra i32 for a variadic callee**, because that is
+  how clang lowers `...` on wasm32 (the variable arguments go in a buffer and
+  its address is the last parameter). That is the whole reason libc's `printf`
+  is `(i32, i32) -> i32`.
+* `defined_here()` asks the *definition* map only. The older `def_sig_of` falls
+  back to the signature the **references** voted for, so it answers for `malloc`
+  with the game's declaration even though nothing in the tree defines `malloc`.
+* `crt_alias()` bridges the two signatures with per-argument C casts and **never
+  with a cast of the function pointer**: a cast call lowers to `call_indirect`,
+  and binaryen's `directize` turns a constant-index one into a direct call whose
+  types then disagree, failing validation far from the defect
+  (`docs/lanes/scope-port-m2.md` §4).
+
+Both spellings of a variadic alias are handled. `Format` → `sprintf` is spelled
+variadic, so its last argument already *is* the varargs pointer and is forwarded
+straight through (the callee declared flattened, under an `__asm__`-labelled
+identifier so both spellings can coexist in one file). `DebugPrint` → `printf`
+is not, so the call goes through the real variadic prototype and clang builds
+the empty buffer.
+
+Result: wasm-ld warnings **0** across all seven wasm targets, `wasm-opt
+--all-features` validator errors **0** on all seven modules, 11 forwarders typed
+from libc, 0 CRT targets without a table row.
+
+### 2. Naming a `call_indirect` type mismatch
+
+This is the next class the front end will hit, and it survives a completely
+clean link: the type is an **immediate on the instruction**, not a property of a
+symbol, so there is no declaration for wasm-ld to compare. node says
+
+```
+RuntimeError: function signature mismatch
+```
+
+and nothing else — no index, no caller, no types.
+
+`name_trap.py` now reconstructs all of it. The key is that V8's
+`wasm-function[N]:0xOFF` offset is the instruction's **byte offset in the module
+file**, which is exactly the number `llvm-objdump -d` prints, so it names one
+`call_indirect` whose type immediate is the type the slot was supposed to hold.
+The workflow:
+
+```bash
+# 1. the trap, named automatically (the -O0 link is what keeps the frame)
+python3 portable/tools/name_trap.py -- --stages
+
+# 2. or explain one call site by hand, from a frame you already have
+#    (a browser trap, someone else's report, a page that died in a tab)
+python3 portable/tools/name_trap.py --at 0x266ea
+
+# 3. what the table can hold at all: every signature and how many slots
+python3 portable/tools/name_trap.py --table
+```
+
+and what it prints:
+
+```
+== INDIRECT CALL TYPE MISMATCH
+   caller      TrackCurve_EvaluatePosition   (module offset 0x266ea)
+   call site   call_indirect type 8 = (i32, i32, i32) -> void
+== the call site, in order
+    0x266de  i32.load	76
+    0x266e3  i32.const	3
+    0x266e5  i32.shl
+    0x266e7  i32.load	0
+    0x266ea  call_indirect	 8        <-- trapped here
+== candidate targets: ... nearest type first
+== by callback table: the global holding the wrong-typed bodies is what to re-declare
+   g_track_desc_flat   (i32) -> void x3, (i32, f32) -> void x1, (i32) -> i32 x1
+```
+
+Three details worth knowing when you use it:
+
+* **The candidate list is narrowed by `gen/globals.c`.** gen_link re-points the
+  data words that hold a function address, so the set of functions a *static*
+  game callback table can reach is exactly the set of `&Name` in the generated
+  globals — 216 of the 1012 table slots' functions in the current build. A
+  function nothing stores in `.data` cannot be in a slot the game loaded from
+  `.data`, which takes the list from "the whole table" to something readable.
+  When nothing in that set has the wrong type, the slot was written at runtime
+  (`LLIDB_RegisterNewElement`, the `screen.c` tables) and the report says so and
+  falls back to the whole table.
+* **Candidates are ranked by type distance, not alphabetically.** Same arity and
+  return with one parameter retyped first, because that is the shape of the real
+  defect: a float passed as its bit pattern, or a struct flattened into ints.
+* **"by callback table" is the actual work item.** One global holds a whole
+  family of wrongly-typed bodies and re-declaring that table fixes every slot at
+  once. The name shown is the *block's* head symbol (gen_link emits one block per
+  object and the rest as offset aliases), so `gen/manifest.md`'s interior-alias
+  table says which declared name the slot belongs to.
+
+The same defect can also arrive as plain `unreachable`, because binaryen's
+`directize` may rewrite a constant-index `call_indirect` into a trap before the
+runtime sees the indirect call. `--indirect` forces the report in that case.
+`-sASSERTIONS=2` and `-sSAFE_HEAP` are worth adding when the trap is *not* a type
+mismatch (SAFE_HEAP catches the out-of-bounds load that produced a garbage table
+index in the first place); they do not improve the signature-mismatch message
+itself, which is why the static half exists.
+
+`gen/manifest.md` grew the static counterpart: a **Cast forwarders** table of
+every alias whose callers emitted a signature the real body does not have — 80 of
+them, each a latent runtime trap of exactly this kind, with both signatures per
+row.
+
+### 3. The first present as a regression gate
+
+`headless_spine` used to assert "the spine got this far". With PORT-B3's painters
+in, it asserts **pixels**. A new `title` stage runs RunGame's own prefix down to
+`ShowTitleScreen` — RunGame itself cannot be used, because four statements later
+it enters `while (g_music_disabled == 0) { PeekMessageA; Sleep(100); }` and
+nothing clears that flag while `DirectSoundCreate` reports no driver — then
+checks the first present:
+
+```
+legoland_headless: first present 640x480, 301157/307200 non-black (98%),
+                   frame checksum 0x4a092b01, 1 present call(s)
+```
+
+The non-black floor is 40%, deliberately far below the real 98%: the failure this
+catches is "the painters drew nothing", never "40% of it". The checksum is an
+FNV-1a over the frame's 16-bpp pixels, row by row so the pitch padding cannot
+change it, and it is **pinned** in `cmake/headless.cmake` as
+`LL_TITLE_FRAME_SUM`. A change that alters the title screen fails here by
+design; if the change was intended, run
+
+```bash
+node portable/build-wasm/legoland_headless.js --stages rungame
+```
+
+and put the checksum it prints in `LL_TITLE_FRAME_SUM` in the same commit.
+Setting it to `0` keeps the non-black assertion and only prints the checksum.
+
+The skip list lost `loadsprite` (PORT-M2 closed the `RES_CloseFile` conflict that
+poisoned `__BMPLoader`), so only `rungame` is left — the ratchet the comment in
+that file describes.
+
+### 4. CI builds the wasm32 tree
+
+`.github/workflows/progress.yml` had one portable job, native clang — a
+compile-and-link census on a target that cannot run the game. It now has a
+second, `portable-wasm`, on the tree that can: `mymindstorm/setup-emsdk@v14`
+pinned to 6.0.9 (the version this tree is developed against — keep it in step
+with the Build section above, because a different emsdk can change the libc
+signatures `CRT_PROTOS` is matched against), `emcmake cmake -DLL_ILP32=ON
+-DCMAKE_BUILD_TYPE=Release`, all five targets linked, `node
+legoland_linkcheck.js`, and `ctest`.
+
+Two gates beyond "it builds":
+
+* **No wasm-ld signature mismatch.** A mismatch is a *warning*, so the link
+  succeeds and only the log says a call site is poisoned. The job tees the link
+  output and greps it, which is what turns §1 into a ratchet.
+* **The browser target must link.** `legoland_browser` is the one link that runs
+  ASYNCIFY and binaryen's `directize`, so it is the one that catches an invalid
+  module — the failure mode PORT-M2 documented, where a clean wasm-ld run still
+  produces a module the validator rejects.
+
+**Two things CI does not have**, and what follows from each:
+
+*No `original/legoland.exe`*, so `gen_link.py` zero-fills every rebuilt global
+instead of initialising it from the exe's `.data`. The link still closes and
+nothing that depends on a shipped value is asserted.
+
+*No `gamedata/`*, which needed two fixes:
+
+1. `cmake/tests.cmake` used to `return()` at the top when `gamedata/` was
+   missing, registering **nothing**. It now registers the asset-free subset and
+   says in its configure output what it registered and why:
+
+   | test | needs gamedata? | in CI |
+   | --- | --- | --- |
+   | `save_framing` | no — the oracle emits a synthetic script of framing operations | yes |
+   | `keystate` | no — pure layout, checks gen_link's interior aliases | yes |
+   | `rle_paint` | nine synthetic cases do not; the tenth decodes a shipped sprite | yes, 38 of 43 checks |
+   | `anim_paint` | no — its own encoder, a synthetic type-2 frame | yes |
+   | `install_paths` | no — the fixture is empty files generated at configure time | yes |
+   | `tile_geometry` | the oracle samples a real level (`GLONE.MAP`) for its grid | no |
+   | `res_archive`, `llidb_icm`, `loadpos` | yes, all three read the volumes | no |
+   | `headless_spine` | yes — the mount, the string table and the title artwork | no |
+
+   The four asset-reading tests are not merely unregistered but **not compiled**:
+   their oracles cannot produce a header at all without the volumes.
+   `LL_TESTS_NO_GAMEDATA` is what leaves them out of `ll_tests.c`'s subcommand
+   table, so the driver's usage listing is an honest statement of what the build
+   can run. `test_rle_paint.c` is the one hybrid: `tests.cmake` writes a stub
+   oracle header defining `LL_RLE_NO_ASSETS`, and its `real_sprite()` case calls
+   the new `ll_skip()` — a third outcome next to pass and fail, because a skipped
+   check must not look like coverage.
+
+2. `legoland_browser` bakes its assets in with `--preload-file
+   $LL_GAMEDATA/main@/gamedata`, **unconditionally**, and emcc's `file_packager`
+   fails outright on a directory that does not exist — so the browser target
+   could not be linked in CI at all. The job creates an empty tree (one
+   zero-byte `main/stab.str`) and configures `-DLL_GAMEDATA=<that>
+   -DLL_PRELOAD_RES=OFF`, which links the real target against an empty `.data`
+   file. The page cannot *run* from it and is not asked to. This is a workaround
+   in the workflow rather than in `cmake/browser.cmake`, which is PORT-B's file;
+   when PORT-B's WASMFS fetch backend (`scope-port-b.md` §6) replaces
+   `--preload-file`, the step goes away.
+
+Verified by replaying the job against a copy of the tree with no `gamedata/` and
+no `original/`: 271 sources compile, all five targets link, 0 signature
+mismatches, `legoland_linkcheck` resolves every symbol, ctest **5/5**
+(`rle_paint` 38 checks with the tenth case skipped by name). The native job is
+unchanged.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
