@@ -97,6 +97,9 @@ static const struct entry entries[] = {
      * sprite drawn directly from its own op list, so no gamedata/ either. */
     { "rle_paint",     test_rle_paint,
       "RLEPaintFast/Hit/Clip{L,R,LR}/HitClip{L,R,LR}, recolour + highlight" },
+    /* PORT-B3: the type-2 sibling. Its own stream, its own encoder. */
+    { "anim_paint",    test_anim_paint,
+      "SoftBlitAnimPlain: the LLS control stream, the clips and the palette" },
 };
 
 int main(int argc, char** argv)
