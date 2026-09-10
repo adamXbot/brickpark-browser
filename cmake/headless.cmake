@@ -151,10 +151,29 @@ if(EMSCRIPTEN)
       PASS_REGULAR_EXPRESSION "SPINE OK, first present checksum"
       FAIL_REGULAR_EXPRESSION "FAIL|TRAP|unreachable|RuntimeError|cannot chdir"
       TIMEOUT 300)
+    # ---- input reaches the game's own globals (PORT-A5) -------------------
+    # One synthetic gesture through the shim's injection points, straight into
+    # ScanMouse / ScanKeyboard / UpdateControllerFromMouseData /
+    # ReadGameButtons, with the layout of the 0x00813a40 record checked first.
+    # The record is `GameInput` to the files that write it and a dozen loose
+    # globals to the files that read it, and when the closure split it into one
+    # block per field the two halves addressed different memory -- the front end
+    # then ignored every key and click, silently, for 3,700 frames (PORT-B4 §5).
+    # This is the gate that makes that regression impossible to re-introduce
+    # without a red test. It needs the volumes mounted (InitInputSystem opens
+    # the display first), hence gamedata/.
+    add_test(NAME probe_input
+             COMMAND node "$<TARGET_FILE_DIR:legoland_headless>/legoland_headless.js"
+                     --probe-input)
+    set_tests_properties(probe_input PROPERTIES
+      ENVIRONMENT "LL_CD_DIR=${LL_ROOT}/gamedata/disc;LL_DATA_DIR=${LL_ROOT}/gamedata/main"
+      PASS_REGULAR_EXPRESSION "INPUT OK"
+      FAIL_REGULAR_EXPRESSION "FAIL|TRAP|unreachable|RuntimeError|cannot chdir"
+      TIMEOUT 300)
   else()
     message(STATUS "PORT-A headless: gamedata/ not present, "
-                   "headless_spine not registered (it needs the title artwork "
-                   "out of Graphics1.res)")
+                   "headless_spine and probe_input not registered (they need "
+                   "the title artwork and the volumes out of Graphics1.res)")
   endif()
 
   # ---- install-path resolution over a PRELOADED MEMFS ----------------------

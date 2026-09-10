@@ -338,6 +338,217 @@ static int ll_stages(void)
     return 0;
 }
 
+/* ---- --probe-input: does the host's input reach the game's own globals? ----
+ *
+ * PORT-B4 measured that DirectInput state arrives at the shim's GetDeviceState
+ * every frame and that the front end then changes not a pixel over 3,700
+ * frames. The chain it could not see into is
+ *
+ *   ll_host_key_set / ll_host_mouse_* (the shim's queue)
+ *     -> ScanKeyboard / ScanMouse               (input.c, GetDeviceState)
+ *       -> UpdateControllerFromMouseData        (input.c:328, the Controller)
+ *         -> ReadGameButtons                    (bighelp.c 0x00452460)
+ *           -> g_input.point / g_input.<button>  (the record at 0x00813a40)
+ *             -> what the front end reads: g_gfx_point, g_mouse_buttons ...
+ *
+ * This mode injects one synthetic gesture through the shim's own entry points
+ * and prints, at every link of that chain, what the game's globals contain. It
+ * needs no window, no assets past the volumes and no frame loop, so it runs in
+ * a second and says which link is broken.
+ *
+ * It opens with the LAYOUT gate, which is the part that actually found the bug:
+ * the record at 0x00813a40 is `GameInput` to the files that WRITE it and a dozen
+ * loose globals to the files that READ it, so the two halves only agree if the
+ * generated closure put them in ONE object at the image's offsets. The check is
+ * pure arithmetic on addresses -- no input, no game state -- and it fails loudly
+ * if a regenerated globals.c ever splits the record again. */
+typedef struct LLProbePos { int x, y; } LLProbePos;
+
+extern unsigned int g_ui_flags;          /* 0x00813a40  g_input.flags   */
+extern LLProbePos   g_gfx_point;         /* 0x00813a44  g_input.point   */
+extern int          g_fp_w;              /* 0x00813a6c  g_input.f2c     */
+extern unsigned char g_mouse_buttons;    /* 0x00813ac4  g_input.btn0.state */
+extern int          g_mouse_btn_a;       /* 0x00813ad4  g_input.ret.mask  */
+
+/* The writer's view of the same record, exactly as bighelp.c declares it --
+ * only the fields this probe reads, at the offsets that file documents. */
+typedef struct LLProbeInput {
+    int        flags;         /* +0x00 */
+    LLProbePos point;         /* +0x04 */
+    int        pad0c[6];      /* +0x0c mouse_a/b/c */
+    int        map_x;         /* +0x24 */
+    int        map_y;         /* +0x28 */
+    int        f2c;           /* +0x2c */
+    int        pad30[9];      /* +0x30..+0x50 */
+    int        prev_buttons;  /* +0x54 */
+    int        pad58[10];     /* +0x58 up/right/down/left/tab */
+    int        btn0_mask;     /* +0x80 */
+    int        btn0_state;    /* +0x84 */
+} LLProbeInput;
+extern LLProbeInput g_input;             /* 0x00813a40 */
+
+typedef struct LLProbeController {
+    int x0, y0, x, y, dx, dy, buttons;   /* input.c:57, +0x00..+0x18 */
+} LLProbeController;
+extern LLProbeController* g_controller;  /* 0x00813b00 */
+
+typedef struct LLProbeMouseState { int lX, lY, lZ; unsigned char rgb[4]; } LLProbeMouseState;
+extern LLProbeMouseState g_mouse_state;  /* 0x00668d78 */
+extern unsigned char     g_key_state[256];  /* 0x007fdda0 */
+
+/* The game record: `in_game` at +0x1e gates ReadGameButtons' cursor copy. */
+extern unsigned char* g_game;            /* 0x004bcbf4 -> 0x004bcbb0 */
+
+extern void ScanKeyboard(void);                            /* 0x00473930 */
+extern void ScanMouse(void);                               /* 0x00473a80 */
+extern void UpdateControllerFromMouseData(void* c);        /* 0x00473b00 */
+extern void UpdateControllerFromKeyboardData(void* c);     /* 0x00473c10 */
+extern void ReadGameButtons(void);                         /* 0x00452460 */
+
+static int ll_resmount_ex(int keep);   /* below */
+
+/* portable/hostwin/include/ll_host.h (PORT-B's input injection). */
+extern void ll_host_key_set(int dik, int down);
+extern void ll_host_mouse_move(int dx, int dy);
+extern void ll_host_mouse_button(int button, int down);
+
+#define LL_OFF(member) ((int)((char*)&(member) - (char*)&g_ui_flags))
+
+static int ll_probe_offset(const char* name, int got, int want)
+{
+    int ok = got == want;
+    fprintf(stderr, "legoland_headless:   %-16s +0x%-4x expected +0x%-4x  %s\n",
+            name, got, want, ok ? "OK" : "WRONG -- the record is split");
+    return ok ? 0 : 1;
+}
+
+static int ll_probe_layout(void)
+{
+    int bad = 0;
+
+    fprintf(stderr, "legoland_headless: --- the 0x00813a40 record: one object,"
+                    " or several?\n");
+    bad += ll_probe_offset("g_gfx_point", LL_OFF(g_gfx_point), 0x04);
+    bad += ll_probe_offset("g_input.point", LL_OFF(g_input.point), 0x04);
+    bad += ll_probe_offset("g_fp_w", LL_OFF(g_fp_w), 0x2c);
+    bad += ll_probe_offset("g_input.f2c", LL_OFF(g_input.f2c), 0x2c);
+    bad += ll_probe_offset("g_mouse_buttons", LL_OFF(g_mouse_buttons), 0x84);
+    bad += ll_probe_offset("g_input.btn0.state", LL_OFF(g_input.btn0_state), 0x84);
+    bad += ll_probe_offset("g_mouse_btn_a", LL_OFF(g_mouse_btn_a), 0x94);
+    if (bad)
+        fprintf(stderr, "legoland_headless: FAIL %d of the record's names are at"
+                        " the wrong offset. The files that WRITE it (bighelp.c's"
+                        " ReadGameButtons) and the files that READ it (screens3.c,"
+                        " gameframe.c, popup2.c ...) are addressing different"
+                        " memory, so no input can ever reach the front end.\n", bad);
+    else
+        fprintf(stderr, "legoland_headless: the record is ONE object, every name"
+                        " at its image offset\n");
+    return bad;
+}
+
+static void ll_probe_show(const char* when)
+{
+    fprintf(stderr, "legoland_headless:   %-22s key[ESC]=%02x key[RET]=%02x"
+                    "  mouse=(%d,%d,%d) btn=%02x%02x%02x\n",
+            when, g_key_state[0x01], g_key_state[0x1c],
+            g_mouse_state.lX, g_mouse_state.lY, g_mouse_state.lZ,
+            g_mouse_state.rgb[0], g_mouse_state.rgb[1], g_mouse_state.rgb[2]);
+    if (g_controller)
+        fprintf(stderr, "legoland_headless:   %-22s controller x=%d y=%d dx=%d"
+                        " dy=%d buttons=0x%03x\n", "", g_controller->x,
+                g_controller->y, g_controller->dx, g_controller->dy,
+                g_controller->buttons);
+    fprintf(stderr, "legoland_headless:   %-22s g_input.point=(%d,%d)"
+                    " btn0.state=0x%x | READERS: g_gfx_point=(%d,%d)"
+                    " g_mouse_buttons=0x%02x\n", "",
+            g_input.point.x, g_input.point.y, g_input.btn0_state,
+            g_gfx_point.x, g_gfx_point.y, (unsigned)g_mouse_buttons);
+}
+
+static int ll_probe_input(void)
+{
+    int bad = ll_probe_layout();
+
+    if (ll_resmount_ex(1))
+        return 1;
+    LoadStrings();
+    fprintf(stderr, "legoland_headless: --- InitHostSystemGPU/InitScreen/"
+                    "InitInputSystem/SetupControllers\n");
+    InitHostSystemGPU();
+    InitScreen();
+    if (!InitInputSystem()) {
+        fprintf(stderr, "legoland_headless: FAIL InitInputSystem\n");
+        return 1;
+    }
+    SetupControllers();
+    ResetController();
+    if (!g_controller) {
+        fprintf(stderr, "legoland_headless: FAIL no Controller record\n");
+        return 1;
+    }
+    /* ReadGameButtons only copies the cursor when the game record says a map is
+     * up (bighelp.c:161). InitSession sets it; this probe does not run
+     * InitSession, so it sets the one byte itself and says so. */
+    if (g_game) {
+        g_game[0x1e] = 1;
+        fprintf(stderr, "legoland_headless: g_game->in_game := 1 (the probe sets"
+                        " it; InitSession would)\n");
+    }
+
+    fprintf(stderr, "legoland_headless: --- before any input\n");
+    ll_probe_show("idle");
+
+    /* One gesture: move the pointer, press mouse button 0, press ESCAPE. */
+    fprintf(stderr, "legoland_headless: --- ll_host_mouse_move(+120,+60),"
+                    " button 0 down, DIK_ESCAPE down\n");
+    ll_host_mouse_move(120, 60);
+    ll_host_mouse_button(0, 1);
+    ll_host_key_set(0x01, 1);          /* DIK_ESCAPE */
+
+    ScanKeyboard();
+    ScanMouse();
+    ll_probe_show("after Scan*");
+    UpdateControllerFromMouseData(g_controller);
+    UpdateControllerFromKeyboardData(g_controller);
+    ll_probe_show("after UpdateController");
+    ReadGameButtons();
+    ll_probe_show("after ReadGameButtons");
+
+    /* What the front end would see. The button bit the game builds for mouse 0
+     * is 0x001 (input.c:70), and bighelp.c's SetGameButton puts the press edge
+     * in btn0.state, which screens3.c reads as g_mouse_buttons. */
+    if (g_controller->x == 0 && g_controller->y == 0) {
+        fprintf(stderr, "legoland_headless: FAIL the Controller did not move:"
+                        " the break is in the shim or in ScanMouse\n");
+        bad++;
+    } else if (g_gfx_point.x != g_controller->x ||
+               g_gfx_point.y != g_controller->y) {
+        fprintf(stderr, "legoland_headless: FAIL the Controller moved to (%d,%d)"
+                        " but the READERS' cursor is (%d,%d): the break is"
+                        " between ReadGameButtons and the record\n",
+                g_controller->x, g_controller->y, g_gfx_point.x, g_gfx_point.y);
+        bad++;
+    } else if (!(g_controller->buttons & 1)) {
+        fprintf(stderr, "legoland_headless: FAIL the button did not reach the"
+                        " Controller (buttons=0x%03x)\n", g_controller->buttons);
+        bad++;
+    } else if (g_mouse_buttons == 0) {
+        fprintf(stderr, "legoland_headless: FAIL the button reached the"
+                        " Controller but not g_mouse_buttons, which is what the"
+                        " front end tests\n");
+        bad++;
+    } else {
+        fprintf(stderr, "legoland_headless: INPUT OK -- the gesture reached"
+                        " g_gfx_point=(%d,%d) and g_mouse_buttons=0x%02x, which"
+                        " is what screens3.c reads\n",
+                g_gfx_point.x, g_gfx_point.y, (unsigned)g_mouse_buttons);
+    }
+    fprintf(stderr, "legoland_headless: --- done\n");
+    fflush(stderr);
+    return bad ? 1 : 0;
+}
+
 /* `keep` leaves the volumes mounted, which is what the game does: InitSession
  * only closes them on a failure path or at shutdown, and everything after the
  * mount reads through them. */
@@ -402,6 +613,11 @@ int main(int argc, char** argv)
 
     if (argc > 1 && strcmp(argv[1], "--resmount") == 0)
         return ll_resmount_ex(0);
+    /* --probe-input: the host's input injected straight into the game's own
+     * ScanMouse/ScanKeyboard/ReadGameButtons, with the 0x00813a40 record's
+     * layout checked first. See ll_probe_input. */
+    if (argc > 1 && strcmp(argv[1], "--probe-input") == 0)
+        return ll_probe_input();
     /* --stages: mount the volumes, then walk InitSession's own sequence one
      * named step at a time. */
     if (argc > 1 && strcmp(argv[1], "--stages") == 0) {

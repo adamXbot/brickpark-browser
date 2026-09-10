@@ -6,6 +6,16 @@
     python3 portable/tools/name_trap.py --resmount       # (-- is optional)
     python3 portable/tools/name_trap.py --table          # what the table holds
     python3 portable/tools/name_trap.py --at 0x2e9f1c    # explain one call site
+    python3 portable/tools/name_trap.py --continue       # EVERY blocker, one run
+
+`--continue` is the "find every blocker in one run" mode: it sets
+`LL_TRAP_CONTINUE=1`, which makes `gen_link.py`'s trap helper print each distinct
+symbol once and RETURN instead of exiting. A generated trap is usually a logging
+call on ordinary data (`ODFError`) or a subsystem the port does not have
+(AVIFIL32), and stopping at the first one hides every other. One such run on
+this tree lists nine. The run past a trap is on made-up data -- a returning trap
+hands its caller a zero it never computed -- so the mode produces a LIST OF WORK
+and never the claim that something works; say which mode produced a result.
 
 The port has four ways of dying and only one of them says so by itself:
 
@@ -55,8 +65,9 @@ is the complete work item for a matching lane: the file and line to put an
 `#ifdef LEGOLAND_PORTABLE` prototype in, and which side is right (the one with
 the body always is).
 
-Exit code: 0 if the run finished without a trap, 1 if a trap was named,
-2 if the harness could not be built or run.
+Exit code: 0 if the run finished without a trap, 1 if a trap was named (or, under
+`--continue`, if any trap was hit at all), 2 if the harness could not be built or
+run.
 """
 import argparse
 import os
@@ -79,7 +90,10 @@ FRAME_RE = re.compile(r'^\s*at\s+(?P<mod>[\w.-]+?)\.wasm\.(?P<sym>\S+)\s*\('
                       r'(?:[^)]*?wasm-function\[(?P<idx>\d+)\]:'
                       r'(?P<off>0x[0-9a-fA-F]+))?')
 JS_FRAME_RE = re.compile(r'^\s*at\s+(?P<sym>[\w.<>$]+)\s*\(?(?P<where>\S*)')
-TRAP_RE = re.compile(r'^TRAP (?P<dll>\S+) (?P<sym>\S+) from (?P<from>.*)$')
+# `TRAP <dll> <symbol> from <callers>`. The dll field is not always one token:
+# an unwritten GAME body with a known address prints `GAME 0x00481234`, so dll
+# is non-greedy and the LAST token before ` from ` is the symbol.
+TRAP_RE = re.compile(r'^TRAP (?P<dll>.+?) (?P<sym>\S+) from (?P<from>.*)$')
 ERR_RE = re.compile(r'^(?:\w+\.)*(?P<kind>RuntimeError|Error|Aborted)\b.*$')
 MISMATCH_RE = re.compile(r'^signature_mismatch:(?P<callee>.+)$')
 
@@ -648,10 +662,11 @@ def explain_mismatch(callee, build_dir):
         print(f'   LEGOLAND/{fn}:{n}: {text.strip()}')
 
 
-def report(stdout, stderr, status, trace_tail):
+def report(stdout, stderr, status, trace_tail, trap_continue=False):
     lines = stderr.splitlines()
 
-    trap = next((m for m in (TRAP_RE.match(ln) for ln in lines) if m), None)
+    traps = [m for m in (TRAP_RE.match(ln) for ln in lines) if m]
+    trap = traps[0] if traps else None
     host = [ln for ln in lines if ln.startswith('HOST ')]
     stage = [ln for ln in lines if '--- ' in ln]
 
@@ -662,7 +677,20 @@ def report(stdout, stderr, status, trace_tail):
     if stage:
         print(f'\n== last stage reached: {stage[-1].split("--- ", 1)[1]}')
 
-    if trap:
+    if trap_continue:
+        # Every trap on the path, in the order the game reached them. The run
+        # did not stop at any of them, so the stack analysis below still has to
+        # run: what killed this run (if anything did) is something else.
+        print(f'\n== {len(traps)} trap(s) on the path, in the order hit '
+              '(LL_TRAP_CONTINUE)')
+        for m in traps:
+            print(f'   {m.group("dll"):16} {m.group("sym"):24} '
+                  f'<- {m.group("from")}')
+        if not traps:
+            print('   (none)')
+        print('   Each returned a zero its caller did not ask for: this is a '
+              'list of work, not a passing run.')
+    elif trap:
         print(f'\n== TRAP: {trap.group("sym")} ({trap.group("dll")})')
         print(f'   referenced by {trap.group("from")}')
         print('   A generated body: the host shim or a game source has to '
@@ -689,10 +717,10 @@ def report(stdout, stderr, status, trace_tail):
                 elif frames:
                     break
     if not err:
-        print(f'\n== no trap: the harness exited {status}')
+        print(f'\n== no fault: the harness exited {status}')
         if stdout.strip():
             print('\n'.join('   ' + ln for ln in stdout.splitlines()[-10:]))
-        return 0
+        return 1 if traps else 0
 
     wasm = [f for f in frames if not f.startswith('[js] ')]
     print(f'\n== {err}')
@@ -748,6 +776,13 @@ def main():
     ap.add_argument('--data-dir', default=os.path.join(ROOT, 'gamedata', 'main'),
                     help="the install directory the loaders' relative paths "
                          'resolve against')
+    ap.add_argument('--continue', dest='trap_continue', action='store_true',
+                    help='LL_TRAP_CONTINUE=1: every generated trap prints once '
+                         'and RETURNS, so ONE run enumerates every blocker on '
+                         'the path instead of stopping at the first. The run '
+                         'past a trap is on made-up data (a returning trap '
+                         'hands its caller a zero), so this mode makes a LIST '
+                         '-- it never says something works.')
     ap.add_argument('--no-trace', action='store_true',
                     help='do not set LL_HOST_TRACE')
     ap.add_argument('--trace-tail', type=int, default=12,
@@ -795,8 +830,19 @@ def main():
         return 2
 
     env = dict(os.environ)
-    env['LL_CD_DIR'] = a.cd_dir
-    env['LL_DATA_DIR'] = a.data_dir
+    # BOTH must be absolute. The harness chdir()s to LL_DATA_DIR before it calls
+    # WinMain, so a relative path is resolved against whatever cwd node happens
+    # to have and fails with a bare message; LL_CD_DIR is then resolved from the
+    # new cwd and silently names nothing, which looks like a missing CD.
+    env['LL_CD_DIR'] = os.path.abspath(a.cd_dir)
+    env['LL_DATA_DIR'] = os.path.abspath(a.data_dir)
+    for var in ('LL_CD_DIR', 'LL_DATA_DIR'):
+        if not os.path.isdir(env[var]):
+            print(f'name_trap: {var}={env[var]} is not a directory',
+                  file=sys.stderr)
+            return 2
+    if a.trap_continue:
+        env['LL_TRAP_CONTINUE'] = '1'
     if not a.no_trace:
         env['LL_HOST_TRACE'] = '1'
     args = a.args[1:] if a.args[:1] == ['--'] else a.args
@@ -817,7 +863,7 @@ def main():
         sys.stdout.write(stdout)
     print(f'== {a.target} {" ".join(args) or "(default switches)"}: '
           f'exit {status}')
-    r = report(stdout, stderr, status, a.trace_tail)
+    r = report(stdout, stderr, status, a.trace_tail, a.trap_continue)
     if isinstance(r, str):
         explain_mismatch(r, a.build)
         print('\n   The fix is a caller-side prototype under '

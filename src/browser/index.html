@@ -14,6 +14,7 @@
                    the whole explanation for a run that stops dead, so it is
                    pulled out of the log and shown in red at the top
        trace     -- ?trace=1, the host call trace (LL_HOST_TRACE, kernel32.c)
+       trapcontinue -- ?trapcontinue=1, generated traps print and return (LL_TRAP_CONTINUE)
 
      PORT-B4 added the two things a run needs to be steerable and comparable:
        args      ?args=-nointro+-nomusic+WINDEBUG -- the game's command line,
@@ -92,6 +93,7 @@
   var traceEl = document.getElementById('trace');
 
   var tracing = /[?&]trace=1/.test(location.search);
+  var trapcont = /[?&]trapcontinue=1/.test(location.search);   /* PORT-A5: LL_TRAP_CONTINUE */
   traceEl.checked = tracing;
 
   // ?args=... -- the game's command line (PORT-B4). main() in main.c joins argv
@@ -159,7 +161,8 @@
     canvas: document.getElementById('canvas'),
     // argv[1..] for main(). Absent (null) means main.c's own default switches.
     arguments: gameArgs || undefined,
-    preRun: [function () { if (tracing) ENV.LL_HOST_TRACE = '1'; }],
+    preRun: [function () { if (tracing) ENV.LL_HOST_TRACE = '1';
+                           if (trapcont) ENV.LL_TRAP_CONTINUE = '1'; }],
     print: function (t) {
       logLine(t); console.log(t);
       if (/^TRAP\b/.test(t)) noteTrap(t);
