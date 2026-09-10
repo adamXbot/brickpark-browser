@@ -69,6 +69,16 @@ set(LL_WASM_COMMON_LINK
   --js-library "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/ll_canvas.js"
   --shell-file "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/index.html")
 
+# The JS library and the shell page are INPUTS to the link, but they arrive as
+# link options, which CMake does not scan for dependencies -- so editing either
+# one left ninja saying "no work to do" and the browser silently running the
+# previous build. That wasted a debugging round in PORT-B2 (a change to
+# ll_canvas.js appeared not to take effect, twice). LINK_DEPENDS makes them
+# real dependencies of every target that uses LL_WASM_COMMON_LINK.
+set(LL_WASM_LINK_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/ll_canvas.js"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/index.html")
+
 # ---- legoland_shimtest: the shim on its own --------------------------------
 add_executable(legoland_shimtest EXCLUDE_FROM_ALL
   "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/shimtest.c")
@@ -76,7 +86,8 @@ target_link_libraries(legoland_shimtest PRIVATE legoland_hostwin)
 target_compile_options(legoland_shimtest PRIVATE -w)
 target_link_options(legoland_shimtest PRIVATE ${LL_WASM_COMMON_LINK})
 set_target_properties(legoland_shimtest PROPERTIES
-  SUFFIX ".html" OUTPUT_NAME "shimtest")
+  SUFFIX ".html" OUTPUT_NAME "shimtest"
+  LINK_DEPENDS "${LL_WASM_LINK_DEPENDS}")
 
 # ---- legoland_browser: the game ---------------------------------------------
 #
@@ -154,4 +165,5 @@ target_link_options(legoland_browser PRIVATE
   # reached. Drop this once the closure is closed.
   -sERROR_ON_UNDEFINED_SYMBOLS=0)
 set_target_properties(legoland_browser PROPERTIES
-  SUFFIX ".html" OUTPUT_NAME "legoland")
+  SUFFIX ".html" OUTPUT_NAME "legoland"
+  LINK_DEPENDS "${LL_WASM_LINK_DEPENDS}")

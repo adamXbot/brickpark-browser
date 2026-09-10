@@ -19,7 +19,7 @@
 // HEADLESS / NODE SAFETY (PORT-B2). legoland_hostwin is linked into
 // legoland_tests and legoland_headless, which run under node where there is no
 // `document`, no `window` and no canvas. Every function below therefore has to
-// work with neither: LL.headless is decided once, the display becomes a plain
+// work with neither: LL.isHeadless() is decided once, the display becomes a plain
 // counter plus a sampled checksum (enough for a headless test to prove that
 // pixels are changing), the event queue stays a JS array that simply never
 // receives anything, and NOTHING throws. A ReferenceError in here would abort
@@ -29,10 +29,25 @@
 
 var LibraryLLCanvas = {
   $LL: {
-    // Decided once, at module scope, before any C code runs. `typeof` never
-    // throws on an undeclared name, which is the whole reason it is spelled
-    // this way rather than as a property test on a global object.
-    headless: (typeof document === 'undefined' || typeof window === 'undefined'),
+    // Decided ONCE, LAZILY, and through `globalThis` property lookups.
+    //
+    // All three of those matter. Lazily and through globalThis because emcc's
+    // -O2 JS optimizer constant-folds `typeof document === 'undefined'` at BUILD
+    // time -- it minifies the library with no DOM in scope, decides the answer
+    // is `true`, and bakes `headless: true` into the output, so the browser page
+    // then runs headless and paints nothing. (That is not hypothetical; it is
+    // what the first version of this file did, and the symptom was a black
+    // canvas with the frame counter happily climbing.) A property access on
+    // globalThis is opaque to the optimizer. Once, because the answer cannot
+    // change during a run and every present would otherwise re-test it.
+    _headless: undefined,
+    isHeadless: function () {
+      if (LL._headless === undefined) {
+        var d = globalThis['document'], w = globalThis['window'];
+        LL._headless = !(d && w && typeof d.getElementById === 'function');
+      }
+      return LL._headless;
+    },
 
     canvas: null,
     ctx: null,
@@ -123,7 +138,7 @@ var LibraryLLCanvas = {
     },
 
     bind: function () {
-      if (LL.bound || LL.headless) return;
+      if (LL.bound || LL.isHeadless()) return;
       LL.bound = true;
       var c = LL.canvas;
 
@@ -197,7 +212,7 @@ var LibraryLLCanvas = {
 
   ll_js_display_open: function (w, h) {
     LL.w = w; LL.h = h;
-    if (LL.headless) {
+    if (LL.isHeadless()) {
       // No DOM: the display is a counter. ll_js_present16 still runs, so a
       // headless harness sees frames and a checksum and the game's control flow
       // is identical to the browser's.
@@ -233,7 +248,7 @@ var LibraryLLCanvas = {
 
     LL.frames++;
 
-    if (LL.headless || !LL.ctx) {
+    if (LL.isHeadless() || !LL.ctx) {
       // A sampled FNV-1a over every 17th pixel of every 7th row: cheap enough
       // to run every frame for hundreds of frames under node, and specific
       // enough that "the checksum changed" means the game really drew
@@ -302,7 +317,7 @@ var LibraryLLCanvas = {
     var caption = UTF8ToString(captionPtr);
     LL.lastBox = caption + ': ' + text + '  [answered ' + answer + ']';
     LL.tell('llMessageBox', LL.lastBox, answer);
-    if (LL.headless && typeof console !== 'undefined')
+    if (LL.isHeadless() && typeof console !== 'undefined')
       console.log('[MessageBox] ' + LL.lastBox);
   },
 
