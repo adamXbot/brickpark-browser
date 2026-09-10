@@ -208,9 +208,16 @@ void test_tri_raster(void)
 
     /* ---- the reciprocal table ----------------------------------------- */
     BuildRecipTable();
+    /* CORRECTED by scope PORT-M5.  The shipped BuildRecipTable converts with a
+     * CALL to 0x00458930 (`0x00486564: fdivr qword ptr [0x4ab558] / call
+     * 0x458930`), and that helper is a bare `fistp` under the game's
+     * round-to-nearest control word -- so the table is ROUNDED, not truncated.
+     * `65536 / 30` in C is 2184 and the shipped value is 2185; `65536 / 99` is
+     * 661 and the shipped value is 662.  The C integer division was the wrong
+     * expectation; see docs/lanes/scope-port-m5.md section 3b. */
     LL_CHECK_INT("g_recip[1] is 1.0 in 16.16", g_recip[1], 0x10000);
-    LL_CHECK_INT("g_recip[30] is 65536/30", g_recip[30], 65536 / 30);
-    LL_CHECK_INT("g_recip[99] is 65536/99", g_recip[99], 65536 / 99);
+    LL_CHECK_INT("g_recip[30] is ROUND(65536/30)", g_recip[30], 2185);
+    LL_CHECK_INT("g_recip[99] is ROUND(65536/99)", g_recip[99], 662);
 
     /* ---- the ramps and the texture ------------------------------------ */
     for (k = 0; k < TRAMPS; k++) {
