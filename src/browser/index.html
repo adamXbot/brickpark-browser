@@ -28,7 +28,24 @@
                  under ASYNCIFY it is the game's own loop that decides when it
                  presents. 33.5 fps in the front end, which is the 28 ms floor
                  FlipPrimary/PresentFlip spin on (~35 Hz) -- i.e. at the ceiling
+
+     PORT-B6 added what a TOOL needs, because driving this page from an agent or
+     a test runner is how the front end actually gets walked:
+       host calls  a collapsible panel holding the last 300 HOST/[hostwin] trace
+                 lines only -- #log holds everything and a traced run buries the
+                 six lines you wanted under thousands of Sleep()s
+       window.llFrameHash()  FNV-1a over the whole canvas, as a hex string. THE
+                 way to prove a click did something: hash, click, hash again.
+                 Returns null before the first present.
+       window.llSnapshot()   the canvas as a PNG data: URL. A download link or a
+                 download button cannot work -- the artifact/preview sandbox
+                 makes <a download> and script-driven saves inert for a viewer --
+                 so the data URL is the deliverable and the caller saves it.
+       window.llStats()      everything the panel shows, as an object: frames,
+                 fps, hash, nonBlack, traps, trace length, the last modal.
+       window.llTrace(n)     the last n trace lines as an array.
 -->
+
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -63,6 +80,13 @@
          padding: 8px; color: #9aa3b2; }
   .err { color: #ff8e8e; }
   .trapline { color: #ff9c9c; font-weight: 600; }
+  /* PORT-B6: the host-call trace, on its own, collapsed by default. */
+  #tracepanel { margin-top: 8px; }
+  #tracepanel summary { cursor: pointer; color: #6d7685; }
+  #tracelines { margin-top: 6px; max-height: 220px; overflow: auto;
+                white-space: pre-wrap; background: #0e1014;
+                border: 1px solid #2a2f37; padding: 6px 8px; color: #8fb7d9; }
+  #hash { color: #b9a6ff; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -74,9 +98,14 @@
     <span class="cell"><span class="k">fps</span> <span id="fps" class="v">&mdash;</span></span>
     <span class="cell"><span class="k">modal</span> <span id="modal" class="v">&mdash;</span></span>
     <span class="cell"><span class="k">args</span> <span id="args" class="v">&mdash;</span></span>
+    <span class="cell"><span class="k">hash</span> <span id="hash" class="v">&mdash;</span></span>
     <span class="cell"><label><input type="checkbox" id="trace"> host call trace (<code>?trace=1</code>)</label></span>
   </div>
   <div id="trap"></div>
+  <details id="tracepanel">
+    <summary>host calls (last <span id="tracecount">0</span>) &mdash; <code>window.llTrace()</code></summary>
+    <div id="tracelines"></div>
+  </details>
 </header>
 <div id="wrap">
   <canvas id="canvas" width="640" height="480" tabindex="0"></canvas>
@@ -91,6 +120,9 @@
   var argsEl = document.getElementById('args');
   var trapEl = document.getElementById('trap');
   var traceEl = document.getElementById('trace');
+  var hashEl = document.getElementById('hash');
+  var traceLinesEl = document.getElementById('tracelines');
+  var traceCountEl = document.getElementById('tracecount');
 
   var tracing = /[?&]trace=1/.test(location.search);
   var trapcont = /[?&]trapcontinue=1/.test(location.search);   /* PORT-A5: LL_TRAP_CONTINUE */
@@ -149,6 +181,99 @@
     }
   }
 
+  // ---- PORT-B6: the host-call trace panel --------------------------------
+  //
+  // #log holds every line the program prints, which under ?trace=1 is thousands
+  // a second; the six lines that say what the host was asked for are then
+  // unfindable. ll_host_trace (user32.c) and kernel32.c's own copy both prefix
+  // with "HOST ", and ddraw.c's one-off window line with "[hostwin] ", so those
+  // two prefixes are the filter. Capped at 300: this is a tail, not a log.
+  var LL_TRACE_KEEP = 300;
+  var traceLog = [];
+  function noteTrace(text) {
+    traceLog.push(text);
+    if (traceLog.length > LL_TRACE_KEEP) traceLog.shift();
+    traceCountEl.textContent = traceLog.length;
+    // Only paint the DOM when the panel is actually open -- a traced run would
+    // otherwise spend its whole budget in layout.
+    if (document.getElementById('tracepanel').open) {
+      traceLinesEl.textContent = traceLog.join('\n');
+      traceLinesEl.scrollTop = traceLinesEl.scrollHeight;
+    }
+  }
+  document.getElementById('tracepanel').addEventListener('toggle', function () {
+    if (this.open) {
+      traceLinesEl.textContent = traceLog.join('\n');
+      traceLinesEl.scrollTop = traceLinesEl.scrollHeight;
+    }
+  });
+
+  // ---- PORT-B6: the tooling hooks ----------------------------------------
+  //
+  // An agent or a test runner driving this page needs one question answered --
+  // "did that click change the frame?" -- and the answer has to come from the
+  // pixels, because every other signal (the frame counter, fps) keeps moving
+  // whether or not the game reacted.
+  //
+  // llFrameHash(): FNV-1a over the canvas's whole RGBA buffer. Deliberately NOT
+  // the sampled checksum ll_canvas.js computes for the headless path (every 17th
+  // pixel of every 7th row): a front-end screen can differ from the next one in
+  // a single 8x8 caption cell, and a sampled hash will say they are identical.
+  // The full hash costs one getImageData and about 1.2 M byte reads, which is
+  // fine for a tool calling it between clicks and is why nothing calls it per
+  // frame.
+  //
+  // A "download the canvas" BUTTON is not possible for a viewer: the sandbox the
+  // page is served in makes <a download> (data: and blob: hrefs included) and
+  // every script-driven save inert. So the snapshot is handed back as a data URL
+  // and the caller does what it likes with it.
+  function canvasPixels() {
+    var c = Module.canvas;
+    if (!c || !c.width || !c.height) return null;
+    try { return c.getContext('2d').getImageData(0, 0, c.width, c.height); }
+    catch (e) { return null; }      // tainted or zero-sized: say so, don't throw
+  }
+  window.llFrameHash = function () {
+    var img = canvasPixels();
+    if (!img || !framesPresented) return null;
+    var d = img.data, h = 0x811c9dc5;
+    for (var i = 0; i < d.length; i++)
+      h = ((h ^ d[i]) * 0x01000193) >>> 0;
+    return '0x' + ('00000000' + h.toString(16)).slice(-8);
+  };
+  // How much of the frame is not black. "The screen changed" and "the screen is
+  // not blank" are different questions and a walk needs both.
+  window.llNonBlack = function () {
+    var img = canvasPixels();
+    if (!img) return null;
+    var d = img.data, n = 0;
+    for (var i = 0; i < d.length; i += 4)
+      if (d[i] | d[i + 1] | d[i + 2]) n++;
+    return { nonBlack: n, pixels: d.length / 4,
+             percent: +(100 * n / (d.length / 4)).toFixed(1) };
+  };
+  window.llSnapshot = function (type) {
+    var c = Module.canvas;
+    if (!c) return null;
+    try { return c.toDataURL(type || 'image/png'); } catch (e) { return null; }
+  };
+  window.llTrace = function (n) {
+    return n ? traceLog.slice(-n) : traceLog.slice();
+  };
+  window.llStats = function () {
+    var nb = window.llNonBlack();
+    return {
+      frames: framesPresented,
+      fps: fpsEl.textContent,
+      hash: window.llFrameHash(),
+      nonBlackPercent: nb ? nb.percent : null,
+      traps: traps.slice(),
+      traceLines: traceLog.length,
+      modal: modalEl.textContent,
+      args: argsEl.textContent
+    };
+  };
+
   // fps. llFrame(n) is called by ll_canvas.js once per PRESENTED frame, so this
   // measures what the game actually puts on the canvas, not requestAnimationFrame
   // -- which is the number that matters, because under ASYNCIFY the game's own
@@ -157,6 +282,7 @@
   // wildly while the front end loads sprites, and the average is what a run is
   // comparable on (PORT-B4).
   var t0 = 0, lastFrames = 0, lastT = 0, firstFrame = 0;
+  var framesPresented = 0;        // PORT-B6: llStats/llFrameHash read this
   var Module = {
     canvas: document.getElementById('canvas'),
     // argv[1..] for main(). Absent (null) means main.c's own default switches.
@@ -173,12 +299,14 @@
       logLine(t, trap ? 'trapline' : 'err');
       console.error(t);
       if (trap) noteTrap(t);
+      else if (/^(HOST |\[hostwin\])/.test(t)) noteTrace(t);   // PORT-B6
     },
     setStatus: function (t) { if (t) statusEl.textContent = t; },
     // ll_canvas.js calls these three.
     llStatus: function (t) { statusEl.textContent = t; },
     llFrame: function (n) {
       framesEl.textContent = n;
+      framesPresented = n;
       var now = performance.now();
       if (!t0) { t0 = now; lastT = now; lastFrames = n; firstFrame = n; return; }
       if (now - lastT >= 500) {
@@ -194,6 +322,15 @@
   // clicking the page first is what browsers want before they deliver keys.
   window.addEventListener('load', function () { Module.canvas.focus(); });
   Module.canvas.addEventListener('click', function () { Module.canvas.focus(); });
+
+  // PORT-B6: the frame hash in the panel, every 2 s. One full-canvas hash per
+  // two seconds is nothing next to a 33 fps RGB565 conversion, and having it on
+  // screen is what makes "I clicked and the screen did not change" a reading
+  // rather than an impression. Not per frame: see llFrameHash.
+  setInterval(function () {
+    var h = window.llFrameHash();
+    if (h) hashEl.textContent = h;
+  }, 2000);
 </script>
 {{{ SCRIPT }}}
 </body>

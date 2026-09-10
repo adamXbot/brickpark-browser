@@ -101,6 +101,81 @@ var LibraryLLCanvas = {
       PageDown: 0xd1, Insert: 0xd2, Delete: 0xd3
     },
 
+    // PORT-B6: KeyboardEvent.key -> DIK, for every source that does not fill in
+    // `code`.
+    //
+    // `code` is the PHYSICAL key and is the right thing to read, but it is
+    // optional in practice and a real browser hands out keydown events without
+    // it: an on-screen or virtual keyboard, an IME commit, a remote-desktop or
+    // accessibility client, a `dispatchEvent` from a page script, and -- the one
+    // that made this visible -- the Chrome DevTools Protocol's
+    // Input.dispatchKeyEvent, which is how this page gets driven from a test
+    // runner or an agent. MEASURED in a real tab: `{code: "", key: "A",
+    // keyCode: 0, isTrusted: true}`. `LL.dik[""]` is undefined, so `dik` came out
+    // 0 and EVERY such keystroke was silently dropped -- name entry on the
+    // PLAYER DETAILS screen typed nothing, and there was no way to tell that
+    // from "the game ignores the keyboard".
+    //
+    // So: `code` first (authoritative), then `key`, then `keyCode`. The `key`
+    // table only needs the names that differ from a `code` name -- Escape,
+    // Enter, Tab, Backspace, Arrow*, F1..F12, Home/End/Page*/Insert/Delete and
+    // CapsLock all spell themselves the same way in both, so LL.dik already
+    // covers them; what is left is the printable characters, which name the
+    // CHARACTER and not the key.
+    //
+    // Shifted characters map to their unshifted physical key, because that is
+    // what a scan code IS: input2.c's 59-entry DIK->character table at
+    // 0x004bad58 does the shifting itself from the DIK plus the shift state.
+    // Keyed by CHARACTER CODE, not by a character literal: this file is
+    // re-parsed by emcc's JS optimizer during the link, and a table containing
+    // a quote or a backslash literal made acorn report "Unterminated string
+    // constant" and failed the build. Codes cost nothing and cannot do that.
+    charDik: {
+      32: 0x39,                                          /* space */
+      45: 0x0c, 95: 0x0c,                                /* minus  underscore */
+      61: 0x0d, 43: 0x0d,                                /* equal  plus */
+      91: 0x1a, 123: 0x1a,                               /* [ { */
+      93: 0x1b, 125: 0x1b,                               /* ] } */
+      59: 0x27, 58: 0x27,                                /* semicolon colon */
+      39: 0x28, 34: 0x28,                                /* quote  doublequote */
+      96: 0x29, 126: 0x29,                               /* backquote tilde */
+      92: 0x2b, 124: 0x2b,                               /* backslash pipe */
+      44: 0x33, 60: 0x33,                                /* comma  less */
+      46: 0x34, 62: 0x34,                                /* period greater */
+      47: 0x35, 63: 0x35,                                /* slash  question */
+      33: 0x02, 64: 0x03, 35: 0x04, 36: 0x05, 37: 0x06,  /* shifted digits 1-5 */
+      94: 0x07, 38: 0x08, 42: 0x09, 40: 0x0a, 41: 0x0b   /* shifted digits 6-0 */
+    },
+    // Win32 VK -> DIK, the last resort. Only the keys the game reads: it is a
+    // fallback for a source that fills in neither `code` nor a usable `key`.
+    vkDik: {
+      0x1b: 0x01, 0x08: 0x0e, 0x09: 0x0f, 0x0d: 0x1c, 0x20: 0x39,
+      0x25: 0xcb, 0x26: 0xc8, 0x27: 0xcd, 0x28: 0xd0,
+      0x10: 0x2a, 0x11: 0x1d, 0x12: 0x38, 0x14: 0x3a, 0x2e: 0xd3
+    },
+
+    dikOf: function (e) {
+      var d = LL.dik[e.code];
+      if (d) return d;
+      var k = e.key;
+      if (k) {
+        d = LL.dik[k];                       /* Escape, Enter, Tab, ArrowUp ... */
+        if (d) return d;
+        if (k.length === 1) {
+          var u = k.toUpperCase();
+          if (u >= 'A' && u <= 'Z') return LL.dik['Key' + u];
+          if (u >= '0' && u <= '9') return LL.dik['Digit' + u];
+          d = LL.charDik[k.charCodeAt(0)];
+          if (d) return d;
+        }
+      }
+      var vk = e.keyCode || e.which || 0;
+      if (LL.vkDik[vk]) return LL.vkDik[vk];
+      if (vk >= 65 && vk <= 90) return LL.dik['Key' + String.fromCharCode(vk)];
+      if (vk >= 48 && vk <= 57) return LL.dik['Digit' + String.fromCharCode(vk)];
+      return 0;
+    },
+
     // KeyboardEvent.code -> Win32 virtual key. The game asks GetKeyState about
     // exactly one (VK_CAPITAL 0x14, input2.c:325 inside GetInputChar) and reads
     // WM_CHAR for exactly one character (backspace, input2.c's
@@ -121,10 +196,15 @@ var LibraryLLCanvas = {
 
     vkOf: function (e) {
       if (LL.vk[e.code] !== undefined) return LL.vk[e.code];
+      /* PORT-B6: the same `code`-less sources dikOf handles. LL.vk's names are
+       * spelled the same in `key` for every entry it has (Escape, Enter, Tab,
+       * Backspace, Arrow*, CapsLock), so one extra lookup covers them. */
+      if (e.key && LL.vk[e.key] !== undefined) return LL.vk[e.key];
       if (e.key && e.key.length === 1) {
         var ch = e.key.toUpperCase().charCodeAt(0);
         if ((ch >= 48 && ch <= 57) || (ch >= 65 && ch <= 90)) return ch;
       }
+      if (e.keyCode) return e.keyCode;
       return 0;
     },
 
@@ -145,18 +225,20 @@ var LibraryLLCanvas = {
       // The canvas must be focusable for keydown to reach it; listening on the
       // window instead means the page's own chrome steals nothing.
       window.addEventListener('keydown', function (e) {
-        var dik = LL.dik[e.code] || 0;
+        // PORT-B6: dikOf, not LL.dik[e.code] -- a source that fills in no
+        // `code` (a virtual keyboard, an IME, CDP) had every key dropped.
+        var dik = LL.dikOf(e) || 0;
         if (dik) {
           // Backspace is the one character the game handles as WM_CHAR
           // (input2.c's LegoLandWindowProc), so it travels in slot c.
-          LL.push(LL.EV_KEYDOWN, dik, LL.vkOf(e), e.code === 'Backspace' ? 8 : 0);
+          LL.push(LL.EV_KEYDOWN, dik, LL.vkOf(e), dik === 0x0e ? 8 : 0);
           // Tab, the arrows and F-keys are game controls here.
           e.preventDefault();
         }
       }, false);
 
       window.addEventListener('keyup', function (e) {
-        var dik = LL.dik[e.code] || 0;
+        var dik = LL.dikOf(e) || 0;
         if (dik) {
           LL.push(LL.EV_KEYUP, dik, LL.vkOf(e), 0);
           e.preventDefault();

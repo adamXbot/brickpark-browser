@@ -170,6 +170,7 @@ typedef struct LLSurface {
     int             ck_src_set;
     unsigned long   ck_src_low, ck_src_high;
     struct LLSurface* flip_target;   /* for Flip on a (never used) flip chain */
+    struct LLSurface* next_live;     /* PORT-B6: the live-surface registry */
 } LLSurface;
 
 typedef struct LLDraw {
@@ -225,6 +226,10 @@ static long ll_surf_QueryInterface(LLSurface* s, const void* iid, void** out)
     *out = s;
     return DD_OK;
 }
+/* PORT-B6: the live-surface registry, defined with new_surface below (which is
+ * where its reason lives). Declared here because Release unlinks. */
+static void ll_surface_unlink(LLSurface* s);
+
 static long ll_surf_AddRef(LLSurface* s) { return ++s->refs; }
 
 static long ll_surf_Release(LLSurface* s)
@@ -234,6 +239,7 @@ static long ll_surf_Release(LLSurface* s)
         return s->refs;
     if (g_ll_primary == s)
         g_ll_primary = 0;
+    ll_surface_unlink(s);
     free(s->bits);
     free(s);
     return 0;
@@ -540,6 +546,57 @@ static const ll_slot g_surface_vtbl[] = {
     (ll_slot)ll_surf_unsupported        /* 0x8c UpdateOverlayZOrder */
 };
 
+/* ---- the live-surface registry (PORT-B6) --------------------------------
+ *
+ * `ll_host_surface_pixels` is handed an HDC and has to answer "is this one of
+ * mine, and where are its pixels". It used to answer by casting the handle to
+ * an LLSurface* and reading `s->vtbl` -- which is only safe if every HDC in the
+ * program is either null or a real surface pointer, and it is not:
+ *
+ *     fpui2.c 0x00470... HTBubbleHelp
+ *         dc = CreateCompatibleDC(0);          <- gdi32.c: a COOKIE, 0x4c47xxxx
+ *         SetBkMode(dc, 1);
+ *         oldfont = SelectFont(dc, font);
+ *         h = DrawTextA(dc, text, strlen(text), &rc, 0x410);   /. DT_CALCRECT ./
+ *
+ * A GDI object handle in this shim is `0x4c470000 | class << 12 | slot`, i.e.
+ * about 1.28 GB, and the wasm heap is 256 MB -- so reading `((LLSurface*)dc)
+ * ->vtbl` was a hard `RuntimeError: memory access out of bounds`, in
+ * `ll_host_dc_target`, from `DrawTextA`, from `HTBubbleHelp`, from
+ * `ProcessFrontEndHelp`, from `GameFrame`. `DrawTextA` was already written to
+ * cope with "no target" (a DT_CALCRECT measure needs no pixels); it never got
+ * the chance to.
+ *
+ * Why it had never fired: `ProcessFrontEndHelp` only runs when an icon is under
+ * the cursor, and no front-end icon could ever be focussed while the mouse-hit
+ * record at 0x004bdd00 was split into three objects (docs/lanes/scope-port-b6.md
+ * §3 B1). The two defects hid each other.
+ *
+ * So the registry: every surface this file makes is linked in and unlinked on
+ * the last Release, and the lookup is a walk of that list. No unknown pointer is
+ * ever dereferenced. The list is short -- the primary, the back buffer and the
+ * handful of offscreen surfaces the text cache and the bubble help hold -- and
+ * the lookup happens once per DrawTextA/TextOutA, not per pixel. */
+static LLSurface* g_ll_surfaces;          /* singly linked through ->next_live */
+
+static int ll_surface_live(const LLSurface* s)
+{
+    const LLSurface* p;
+    for (p = g_ll_surfaces; p; p = p->next_live)
+        if (p == s)
+            return 1;
+    return 0;
+}
+
+static void ll_surface_unlink(LLSurface* s)
+{
+    LLSurface** link = &g_ll_surfaces;
+    while (*link) {
+        if (*link == s) { *link = s->next_live; return; }
+        link = &(*link)->next_live;
+    }
+}
+
 static LLSurface* new_surface(int w, int h, unsigned long caps)
 {
     LLSurface* s;
@@ -559,6 +616,8 @@ static LLSurface* new_surface(int w, int h, unsigned long caps)
         free(s);
         return 0;
     }
+    s->next_live = g_ll_surfaces;
+    g_ll_surfaces = s;
     return s;
 }
 
@@ -872,7 +931,11 @@ int ll_host_surface_pixels(void* hdc, unsigned short** bits,
                            int* w, int* h, int* pitch)
 {
     LLSurface* s = (LLSurface*)hdc;
-    if (!s || s->vtbl != (const void*)g_surface_vtbl || !s->bits)
+    /* PORT-B6: membership FIRST. `hdc` may be a gdi32.c object cookie
+     * (0x4c47xxxx, far outside the heap) from CreateCompatibleDC, and reading
+     * s->vtbl to find that out is the out-of-bounds trap itself. See the
+     * registry's comment above new_surface. */
+    if (!s || !ll_surface_live(s) || !s->bits)
         return 0;
     if (bits)  *bits = s->bits;
     if (w)     *w = s->w;
