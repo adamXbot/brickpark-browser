@@ -499,6 +499,62 @@ why `src/browser/main.c` calls `setenv` itself.
 Tests: native ctest 2/2 -> **3/3**, wasm32 ctest 4/5 -> **7/8** (`loadpos` is the
 `RES_CloseFile` conflict, unchanged).
 
+## The front end comes up: sound, the frame loop, and where input stops (scope PORT-B4)
+
+Full notes: [`docs/lanes/scope-port-b4.md`](../docs/lanes/scope-port-b4.md).
+
+**The game reaches its first front-end menu.** `PLAYER DETAILS`, the eight-slot
+profile screen, renders complete — backdrop, artwork, the eight `EMPTY` captions
+in the shim's own bitmap font, the pointer — and the game's own loop runs it at
+**33.5 fps sustained**.
+
+**`DirectSoundCreate` succeeds now**, and that is what unblocked the title
+screen. The old failure was defended on the grounds that every *sample* entry
+point is guarded by `g_samples_ready` — true, but `InitSoundSystem`
+(lifecycle.c 0x004964f0) is not one: `if (!ok) return ok;` skips
+`InitMusicSystem`, so nothing ever writes `g_music_disabled` and `RunGame`
+(gamemain.c:370) spins on it for ever. **A failing sample system makes `-nomusic`
+unreachable.** So `dsound.c` is a silent `IDirectSound` with the full
+`IDirectSoundBuffer` vtable over a malloc'd PCM block. The part that could not be
+stubbed is the **play cursor**: `KLIBAUDIO_LockAVISoundBuffer` (input2.c
+0x004963f0) spins while the cursor is inside the window it wants to lock, and
+`PumpNarration` (narration2.c 0x00498b40 — the first call in every `GameFrame`)
+latches on the cursor reaching the next fill block while decrementing a counter
+tested with `== 0`, so a frozen cursor drives it negative and never ends. Every
+buffer therefore advances by wall clock times its byte rate, wrapping if looped
+and stopping at the end if not. ole32's two DirectMusic imports live in the same
+file; `CoCreateInstance` reports `REGDB_E_CLASSNOTREG`, which is the game's own
+designed no-DirectMusic path.
+
+**The loop is at its ceiling.** 33.5 fps is the 28 ms floor `FlipPrimary` and
+`PresentFlip` spin on (35.7 Hz), so nothing in the shim stalls it and PORT-B's
+ASYNCIFY design needed no change under the real game.
+
+**The page takes a command line.** `?args=-nointro+-nomusic+WINDEBUG` becomes
+`Module.arguments` → `lpCmdLine`; the parameter being *absent* is what selects
+`main.c`'s default, so an empty `?args=` means "no switches". `?trace=1` also
+shows fps now, rolling and average, over *presented* frames.
+
+**Input is delivered and ignored.** `dinput.c` traces the mouse state reads that
+carry something: holding a button for 30 presented frames gives exactly 30 state
+reads, and a (+199,+200) move arrives whole. The front end acts on none of it —
+the frame is byte-identical over 3,700 frames. Ruled out: the `g_screen`
+clamp (the image really does hold 640x480), `g_game->in_game`, the `Controller`
+layout, a second `GetDeviceState` caller, an unported asm body, a stale present.
+What is left is the chain `UpdateControllerFromMouseData` → `ReadGameButtons` →
+`g_input.point`, and the shape to suspect is a live global resolving to two
+objects — the defect class PORT-A3 found with `g_key_state` and `g_gpu_state`.
+Notes §5.
+
+**Blockers handed on**: `CreateThread` refusing means the music-*on* command line
+still hangs (PORT-A, kernel32.c — one caller in the tree, and running the start
+routine inline is measured to work); `_findclose(-1)` traps the module (PORT-A,
+msvcrt.c:204 — `if (handle == -1 || !f) return -1;`); 41 unwritten GAME functions,
+of which `ODFError`/`ObjDefFinalize` (llidb_odf.c), `WindowProc` (screen.c) and
+eight in `screens3.c` are the front end's (matching lanes); and `gen_link.py`'s
+trap helper has no log-and-continue mode, which is what hides nine blockers
+behind the first one.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
