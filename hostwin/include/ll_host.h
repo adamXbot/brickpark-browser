@@ -132,6 +132,20 @@ BOOL  FileTimeToDosDateTime(const FILETIME* ft, WORD* date, WORD* time);
 extern void (*ll_host_sleep_hook)(unsigned int ms);
 void Sleep(DWORD ms);
 
+/* The shim's one path entry point (PORT-A2). Turns a path the game wrote for
+ * a 1999 Windows install into one that exists here:
+ *   - "D:\x" -> "$LL_CD_DIR/x", backslashes -> slashes (the old ll_host_path);
+ *   - then, unless `create`, each component is matched case-insensitively
+ *     against the directory that holds it ("LEGOLAND.ICM" -> `Legoland.icm`);
+ *   - and if a DIRECTORY component does not exist at all, the last component
+ *     of the path is looked for in the deepest directory that did match, which
+ *     is what makes the flattened `gamedata/main` work: the game asks for
+ *     ".\strings\stab.str" and the file is `stab.str` in the game directory.
+ * `create` (CREATE_NEW / CREATE_ALWAYS / OPEN_ALWAYS, or an O_CREAT open)
+ * takes the name as written -- a file being made must not be renamed.
+ * msvcrt.c routes _open/fopen/_chdir/_findfirst through this too. */
+void ll_host_resolve_path(char* out, unsigned int cap, const char* in, int create);
+
 /* Files. Thin wrappers over POSIX (open/read/write/lseek), which under node
  * with -sNODERAWFS=1 is the real filesystem, so gamedata/ is read in place.
  * Paths may use backslashes; they are normalised. */

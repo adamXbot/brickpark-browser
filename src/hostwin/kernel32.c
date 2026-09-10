@@ -32,11 +32,13 @@
  */
 #include "ll_host.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>          /* strcasecmp, for the case-insensitive lookup */
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -115,6 +117,144 @@ static void ll_host_path(char* out, unsigned int cap, const char* in)
     for (; i + 1 < cap && *in; in++, i++)
         out[i] = *in == '\\' ? '/' : *in;
     out[i] = 0;
+}
+
+/* ---- resolving a path the game wrote for a 1999 Windows install ----------
+ *
+ * Two things are wrong with those paths on any host that is not FAT/NTFS, and
+ * both are fatal rather than cosmetic:
+ *
+ * 1. CASE. The game asks for "LEGOLAND.ICM" and the file is `Legoland.icm`;
+ *    it asks for "Stab.str" and gets `stab.str`. APFS is case-insensitive by
+ *    default so this works on this Mac by luck, and it fails on Linux CI, in
+ *    the browser's preloaded MEMFS (which is case-SENSITIVE whatever the
+ *    machine that packaged it), and under NODERAWFS on ext4.
+ *
+ * 2. LAYOUT. The paths carry the install's directories -- ".\strings\stab.str",
+ *    ".\3ddata\%s", ".\graphics\%s", ".\volumes\%s.res", ".\CompSprite\%s",
+ *    ".\dlls\%s" -- and the asset tree in `gamedata/main` is FLAT: all 331
+ *    files in one directory, `stab.str` among them. The first casualty is the
+ *    string table, and it is not a soft failure: LoadStrings (narration2.c
+ *    0x00498d00) reproduces the original's `if (!f) exit(1)`, so the whole
+ *    program vanished with status 1 and no message, right after the volumes
+ *    mounted.
+ *
+ * So: try the path as written; then match each component case-insensitively
+ * against the directory that holds it; then, if a DIRECTORY component cannot
+ * be matched at all, look for the remaining name in the deepest directory that
+ * did match. That last step is what makes a flattened install work, and it can
+ * only ever find a file the game asked for by name.
+ *
+ * Read-only lookups only. A path that is being created must not be rewritten,
+ * so callers pass `create` for those and get the plain normalisation.
+ */
+static int ll_dir_find(const char* dir, const char* name, char* out, size_t cap)
+{
+    DIR*           d;
+    struct dirent* e;
+    int            found = 0;
+    d = opendir(dir[0] ? dir : ".");
+    if (!d)
+        return 0;
+    while ((e = readdir(d)) != 0) {
+        if (strcasecmp(e->d_name, name) == 0) {
+            if (strlen(e->d_name) + 1 <= cap) {
+                strcpy(out, e->d_name);
+                found = 1;
+            }
+            break;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+/* `built` (the resolved prefix so far, "" meaning the working directory) plus
+ * one component, into `out`. Returns 0 if it would not fit. */
+static int ll_join(char* out, size_t cap, const char* built, const char* name)
+{
+    size_t n = strlen(built);
+    size_t m = strlen(name);
+    int    sep = n && built[n - 1] != '/';
+    if (n + (size_t)sep + m + 1 > cap)
+        return 0;
+    memcpy(out, built, n);
+    if (sep)
+        out[n++] = '/';
+    memcpy(out + n, name, m + 1);
+    return 1;
+}
+
+/* `path` is normalised and rewritten in place. Returns 1 if it now names
+ * something that exists. */
+static int ll_resolve_inplace(char* path, size_t cap)
+{
+    char        built[1024];
+    char        cand[1024];
+    char        comp[256];
+    char        match[256];
+    struct stat st;
+    const char* p = path;
+
+    if (stat(path, &st) == 0)
+        return 1;
+
+    built[0] = 0;
+    if (*p == '/') {                       /* keep an absolute root */
+        strcpy(built, "/");
+        p++;
+    }
+    while (*p) {
+        const char* slash = strchr(p, '/');
+        size_t      len = slash ? (size_t)(slash - p) : strlen(p);
+        if (len == 0 || (len == 1 && p[0] == '.')) {     /* "//", "./", "." */
+            if (!slash)
+                break;
+            p = slash + 1;
+            continue;
+        }
+        if (len >= sizeof comp)
+            return 0;
+        memcpy(comp, p, len);
+        comp[len] = 0;
+
+        if (ll_join(cand, sizeof cand, built, comp) && stat(cand, &st) == 0) {
+            strcpy(built, cand);           /* exact */
+        } else if (ll_dir_find(built, comp, match, sizeof match) &&
+                   ll_join(cand, sizeof cand, built, match)) {
+            strcpy(built, cand);           /* same name, different case */
+        } else if (slash) {
+            /* A missing DIRECTORY component: the install was flattened. Look
+             * for the LAST component of the whole path right here, which can
+             * only ever find a file the game asked for by name. */
+            const char* last = strrchr(p, '/');
+            last = last ? last + 1 : p;
+            if (!ll_dir_find(built, last, match, sizeof match) ||
+                !ll_join(cand, sizeof cand, built, match) ||
+                strlen(cand) + 1 > cap)
+                return 0;
+            strcpy(path, cand);
+            return stat(path, &st) == 0;
+        } else {
+            return 0;
+        }
+        if (!slash)
+            break;
+        p = slash + 1;
+    }
+    if (strlen(built) + 1 > cap)
+        return 0;
+    strcpy(path, built);
+    return stat(path, &st) == 0;
+}
+
+/* The shim's one path entry point; msvcrt.c uses it too (ll_host.h). */
+void ll_host_resolve_path(char* out, unsigned int cap, const char* in, int create)
+{
+    ll_host_path(out, cap, in);
+    if (create || !out[0])
+        return;
+    ll_resolve_inplace(out, cap);
 }
 
 /* ---- handles ------------------------------------------------------------- */
@@ -388,7 +528,10 @@ HANDLE CreateFileA(LPCSTR name, DWORD access, DWORD share, SECURITY_ATTRIBUTES* 
     (void)flags;
     (void)template_file;
 
-    ll_host_path(path, sizeof path, name);
+    /* CREATE_NEW/CREATE_ALWAYS/OPEN_ALWAYS may be making the file, so the name
+     * must be taken as written; everything else gets the tolerant lookup. */
+    ll_host_resolve_path(path, sizeof path, name,
+                         disposition == 1 || disposition == 2 || disposition == 4);
     if ((access & 0x40000000u) && (access & 0x80000000u))
         oflag = O_RDWR;
     else if (access & 0x40000000u)
@@ -536,7 +679,7 @@ BOOL SetCurrentDirectoryA(LPCSTR path)
 {
     LL_TRACE("SetCurrentDirectoryA(\"%s\")", path ? path : "");
     char p[1024];
-    ll_host_path(p, sizeof p, path);
+    ll_host_resolve_path(p, sizeof p, path, 0);
     return chdir(p) == 0;
 }
 
