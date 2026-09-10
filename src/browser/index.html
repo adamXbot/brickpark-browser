@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- LEGOLAND portable build -- the Emscripten shell page (scopes PORT-B, PORT-B2).
+<!-- LEGOLAND portable build -- the Emscripten shell page (scopes PORT-B, PORT-B2, PORT-B4).
      Used as emcc's --shell-file, so {{{ SCRIPT }}} is where the generated
      loader is substituted. The canvas id MUST be "canvas": ll_canvas.js looks
      it up by that id when ddraw.c's SetDisplayMode opens the display.
@@ -14,6 +14,19 @@
                    the whole explanation for a run that stops dead, so it is
                    pulled out of the log and shown in red at the top
        trace     -- ?trace=1, the host call trace (LL_HOST_TRACE, kernel32.c)
+
+     PORT-B4 added the two things a run needs to be steerable and comparable:
+       args      ?args=-nointro+-nomusic+WINDEBUG -- the game's command line,
+                 echoed in the panel. main.c applies its own default only when
+                 the parameter is ABSENT, so an empty ?args= means "no switches
+                 at all" and not "the default"
+       fps       now rolling AND average-since-the-first-frame. The rolling
+                 figure swings while the front end loads sprites; the average is
+                 what two runs are comparable on. Both count PRESENTED frames
+                 (ll_canvas.js's llFrame), not requestAnimationFrame, because
+                 under ASYNCIFY it is the game's own loop that decides when it
+                 presents. 33.5 fps in the front end, which is the 28 ms floor
+                 FlipPrimary/PresentFlip spin on (~35 Hz) -- i.e. at the ceiling
 -->
 <html lang="en">
 <head>
@@ -59,6 +72,7 @@
     <span class="cell"><span class="k">frames</span> <span id="frames" class="v">0</span></span>
     <span class="cell"><span class="k">fps</span> <span id="fps" class="v">&mdash;</span></span>
     <span class="cell"><span class="k">modal</span> <span id="modal" class="v">&mdash;</span></span>
+    <span class="cell"><span class="k">args</span> <span id="args" class="v">&mdash;</span></span>
     <span class="cell"><label><input type="checkbox" id="trace"> host call trace (<code>?trace=1</code>)</label></span>
   </div>
   <div id="trap"></div>
@@ -73,11 +87,31 @@
   var framesEl = document.getElementById('frames');
   var fpsEl = document.getElementById('fps');
   var modalEl = document.getElementById('modal');
+  var argsEl = document.getElementById('args');
   var trapEl = document.getElementById('trap');
   var traceEl = document.getElementById('trace');
 
   var tracing = /[?&]trace=1/.test(location.search);
   traceEl.checked = tracing;
+
+  // ?args=... -- the game's command line (PORT-B4). main() in main.c joins argv
+  // into the lpCmdLine it hands WinMain, and startup.c's GameMain parses the
+  // switches out of it with FindCommandSwitch, so anything the original
+  // accepted works: -nointro, -nomusic, WINDEBUG, -nocd. With the parameter
+  // absent main.c applies its own default ("-nointro -nomusic"), which is why
+  // this is not filled in with one here: an empty ?args= has to mean "no
+  // switches at all" and not "the default".
+  //
+  // Emscripten reads Module.arguments as argv[1..], so each switch must be its
+  // own element; `+` is decoded to a space because a URL-encoded query does
+  // that, and empty elements are dropped so `?args=+-nomusic` is not argv[1]="".
+  var argsParam = /[?&]args=([^&]*)/.exec(location.search);
+  var gameArgs = null;
+  if (argsParam) {
+    gameArgs = decodeURIComponent(argsParam[1].replace(/\+/g, ' '))
+                 .split(/\s+/).filter(function (s) { return s.length > 0; });
+  }
+  argsEl.textContent = gameArgs ? gameArgs.join(' ') : '-nointro -nomusic (default)';
   // LL_HOST_TRACE is read once, from the environment, the first time a shim
   // function traces (kernel32.c's ll_tracing caches it), so the toggle cannot
   // take effect mid-run: it reloads instead. See docs/lanes/scope-port-b2.md §6.
@@ -113,9 +147,18 @@
     }
   }
 
-  var t0 = 0, lastFrames = 0, lastT = 0;
+  // fps. llFrame(n) is called by ll_canvas.js once per PRESENTED frame, so this
+  // measures what the game actually puts on the canvas, not requestAnimationFrame
+  // -- which is the number that matters, because under ASYNCIFY the game's own
+  // loop decides when it presents. Both a rolling figure over the last second
+  // and the average since the first frame are shown: the rolling one swings
+  // wildly while the front end loads sprites, and the average is what a run is
+  // comparable on (PORT-B4).
+  var t0 = 0, lastFrames = 0, lastT = 0, firstFrame = 0;
   var Module = {
     canvas: document.getElementById('canvas'),
+    // argv[1..] for main(). Absent (null) means main.c's own default switches.
+    arguments: gameArgs || undefined,
     preRun: [function () { if (tracing) ENV.LL_HOST_TRACE = '1'; }],
     print: function (t) {
       logLine(t); console.log(t);
@@ -134,9 +177,11 @@
     llFrame: function (n) {
       framesEl.textContent = n;
       var now = performance.now();
-      if (!t0) { t0 = now; lastT = now; lastFrames = n; return; }
-      if (now - lastT >= 1000) {
-        fpsEl.textContent = ((n - lastFrames) * 1000 / (now - lastT)).toFixed(1);
+      if (!t0) { t0 = now; lastT = now; lastFrames = n; firstFrame = n; return; }
+      if (now - lastT >= 500) {
+        var inst = (n - lastFrames) * 1000 / (now - lastT);
+        var avg = (n - firstFrame) * 1000 / (now - t0);
+        fpsEl.textContent = inst.toFixed(1) + ' (avg ' + avg.toFixed(1) + ')';
         lastT = now; lastFrames = n;
       }
     },

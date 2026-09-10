@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "ll_host.h"
@@ -54,6 +55,39 @@ int main(int argc, char** argv)
     if (chdir(LL_GAMEDATA) != 0)
         fprintf(stderr, "[browser] chdir(%s) failed; resource volumes will not open\n",
                 LL_GAMEDATA);
+
+    /* The profile directory (PORT-B4). The shipped install had `profiles\` and
+     * the asset extraction has no subdirectories at all, so the preloaded tree
+     * arrives without it. Goto_ProfileDir (profiles.c 0x00491360) would create
+     * it -- `if (!isdir) return _mkdir(g_str_profiles) == 0;` -- except that it
+     * gets there through
+     *
+     *     h = _findfirst("profiles", &fd);
+     *     if (h != -1) { do ... while (_findnext(h, &fd) != -1); }
+     *     _findclose(h);                      <-- UNCONDITIONAL, as shipped
+     *
+     * and msvcrt.c's _findclose dereferences the handle after only a NULL
+     * check, so _findclose(-1) reads address 0xffffffff and the module traps
+     * with "memory access out of bounds". That is a one-line fix in a file this
+     * lane does not own; see docs/lanes/scope-port-b4.md §4.
+     *
+     * Creating the directory here is not a workaround for that bug -- it is
+     * what the host owes the game either way, because MEMFS starts empty and
+     * every profile the player makes is written into it (UpDateCurrentProfile,
+     * profiles.c 0x00491680). It does mean the page does not hit the bug.
+     * MEMFS is per-tab and vanishes on reload: persisting profiles wants IDBFS
+     * mounted here instead, which is noted in scope-port-b4.md §6.
+     *
+     * EEXIST is the normal answer on a reload-free rebuild; only a real failure
+     * is worth a line. */
+    if (mkdir(LL_GAMEDATA "/profiles", 0777) != 0) {
+        /* errno is not checked against EEXIST because MEMFS has no persistence
+         * across page loads: a second run always starts with the directory
+         * absent, so a failure here is always real. */
+        fprintf(stderr, "[browser] mkdir(%s/profiles) failed; "
+                        "the front end's profile screens will not load\n",
+                LL_GAMEDATA);
+    }
 
     printf("[browser] LEGOLAND portable: WinMain(\"%s\")\n", cmdline);
     fflush(stdout);

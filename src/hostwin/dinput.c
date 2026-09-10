@@ -177,6 +177,18 @@ static long dev_GetDeviceState(LLDIDevice* d, unsigned long size, void* data)
         ms->lY = g_mouse_dy;
         ms->lZ = g_mouse_dz;
         memcpy(ms->rgbButtons, g_mouse_buttons, 4);
+        /* PORT-B4: trace only the calls that carry something, which is a few
+         * per gesture rather than one per frame. This is the line that says
+         * whether a click that "did nothing" was never delivered or was
+         * delivered and ignored -- the question that cost this lane an hour,
+         * because the browser event queue draining to empty proves only that
+         * SOMETHING consumed it. */
+        if (g_mouse_dx || g_mouse_dy || g_mouse_dz || g_mouse_buttons[0]
+            || g_mouse_buttons[1] || g_mouse_buttons[2])
+            ll_host_trace("DINPUT mouse state dx=%d dy=%d dz=%d buttons=%d%d%d",
+                          g_mouse_dx, g_mouse_dy, g_mouse_dz,
+                          g_mouse_buttons[0] ? 1 : 0, g_mouse_buttons[1] ? 1 : 0,
+                          g_mouse_buttons[2] ? 1 : 0);
         g_mouse_dx = g_mouse_dy = g_mouse_dz = 0;   /* relative axes: consumed */
         return DI_OK;
     }
