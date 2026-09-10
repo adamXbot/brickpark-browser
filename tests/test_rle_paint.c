@@ -410,7 +410,7 @@ void test_rle_paint(void)
     surf_fill(g_surf);
     SoftBlitRLEFrameRecolour(row0(), a, b, c, ROWS, SURF_PITCH, TOP, LEFT,
                              VISW, 0, (void*)&g_surf[3 * SURF_W + 10]);
-    LL_CHECK_INT("the recolour leaf hits in the unwritten right tail",
+    LL_CHECK_INT("the recolour leaf hits past the pixels it wrote",
                  g_blit_hit, 1);
     g_blit_hit = 0;
     surf_fill(g_surf);
