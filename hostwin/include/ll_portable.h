@@ -95,6 +95,82 @@ static inline int ll_rle_hit_run(const void* mouse, const void* dst,
     return (unsigned int)((int)d >> 1) < len;
 }
 
+/* ---- the type-2 LLS control stream (softblit.c / softblit2.c) -----------
+ *
+ * The animation painters walk a DIFFERENT stream from the type-3 painters
+ * above: `ebp` steps 32-bit control words, `ebx` holds the word being
+ * consumed, and `g_zb_bits` counts the codes left in it. The refill idiom is
+ *
+ *     mov eax,g_zb_bits / shr ebx,2 / dec eax / jns have
+ *     mov eax,0Fh / mov ebx,[ebp] / add ebp,4
+ *   have: mov g_zb_bits,eax
+ *
+ * -- the shift happens unconditionally and is thrown away when the word runs
+ * out, and the code is then the LOW TWO BITS of ebx. An 8-bit run length is
+ * spliced out of the low byte (`shr ebx,2 / movzx ecx,bl / shr ebx,6`) and
+ * costs four codes, so its own underflow reloads with a count of 0Ch and
+ * takes the length from the NEW word's low byte, discarding what was left of
+ * the old one.
+ *
+ * Grammar: bit1 = 0 -> one index byte; bit1 = 1, bit0 = 0 -> one transparent
+ * pixel; bit1 = 1, bit0 = 1 -> a length follows, zero ends the row, and a
+ * second code says skip (bit1 = 1), copy `n` index bytes (00) or repeat one
+ * index byte `n` times (01). The pixels are 8-bit indices through
+ * `g_sp_pal16`, not the u16 words of the type-3 stream. */
+typedef struct LLAnimCtl {
+    const unsigned char* w;     /* ebp: the next control dword       */
+    unsigned int         cur;   /* ebx: the word being consumed      */
+    int                  bits;  /* g_zb_bits: codes left in `cur`    */
+} LLAnimCtl;
+
+static inline void ll_anim_open(LLAnimCtl* s, const void* words)
+{
+    s->w = (const unsigned char*)words;
+    s->cur = 0;
+    s->bits = 0;
+}
+
+static inline unsigned int ll_anim_code(LLAnimCtl* s)
+{
+    s->cur >>= 2;
+    if (--s->bits < 0) {
+        s->bits = 15;
+        __builtin_memcpy(&s->cur, s->w, 4);
+        s->w += 4;
+    }
+    return s->cur & 3u;
+}
+
+static inline unsigned int ll_anim_count(LLAnimCtl* s)
+{
+    unsigned int n;
+
+    s->cur >>= 2;
+    s->bits -= 4;
+    n = s->cur & 0xffu;
+    if (s->bits < 0) {
+        s->bits = 12;
+        __builtin_memcpy(&s->cur, s->w, 4);
+        s->w += 4;
+        n = s->cur & 0xffu;
+    }
+    s->cur >>= 6;
+    return n;
+}
+
+/* `cmp edi,mouse / movzx eax,g_sp_hit_armed / sbb ecx,-1 / and eax,ecx`, with
+ * ecx zero after the `rep`: sbb turns the borrow into `dst >= mouse`, and the
+ * result is OR'ed into the LOW BYTE of g_blit_hit (the animation painters
+ * address the flag as a byte; the type-3 painters use `or dword`). */
+static inline void ll_anim_hit(const void* dst, const void* mouse,
+                               unsigned char armed, int* flag)
+{
+    unsigned int inr = ((const unsigned char*)dst
+                        >= (const unsigned char*)mouse);
+    unsigned char* b = (unsigned char*)flag;
+    *b = (unsigned char)((armed & inr) | *b);
+}
+
 /* The two straight-line software blits that the game writes as inline asm
  * in softblit.c and bigrender.c: an 8-bit paletted source and a 16-bit
  * source, both into the locked 16-bpp surface, skipping the transparent
