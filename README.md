@@ -90,14 +90,24 @@ to a non-x86 compiler, so each site has a C fallback:
   `ll_FastRSqrt`), and unref7.c's hand-written texture sampler
   `SampleTexturePixel`.
 - **Stubbed with `LL_UNPORTED_ASM()`** (aborts when reached): the four
-  triangle rasterisers in tri3d.c, the eight RLE painters in rlepaint.c and
-  two in rlepaint2.c, the RLE animation blitters in softblit.c/softblit2.c,
+  triangle rasterisers in tri3d.c, the RLE animation blitters in
+  softblit.c/softblit2.c,
   the z-buffer RLE walker in bigrender.c, the two blits in blitmisc.c, the
   50% blend blit in popup.c, the Gouraud span fillers `Span_FillShade` /
   `Span_FillShadeZ` (coastershade2.c) and the textured `TrackShade_FillPoly`
   (coaster13.c), and the ST(0)-ABI helpers `sub_458930`, `FastSqrt`,
   `FastRSqrt`. About 6,000 lines of hand-written blitter asm; the full list
   is the "Unported inline-asm bodies" section of `linkreport.md`.
+- **The ten type-3 RLE sprite painters** (scope PORT-B3): the eight in
+  rlepaint.c and the two in rlepaint2.c are now C, which is what lets the
+  title screen draw. Their shared decode -- the rotating 2-bit control-stream
+  reader (`LLRleCtl`, `ll_rle_open`, `ll_rle_code`, `LL_RLE_HI`/`LL_RLE_LO`)
+  and the run hit test `ll_rle_hit_run` -- lives in
+  `portable/hostwin/include/ll_portable.h` next to `ll_blit8`/`ll_blit16`, so
+  all ten spell the decode once. Five of the ten mishandle primary code 1 in
+  their top-skip pass and the two recolouring ones have three hit-test
+  divergences of their own; all of that is REPRODUCED, not fixed, and
+  `docs/lanes/scope-port-b3.md` says which leaf does what.
 - Structured exception handling in exceptlog.c and winmain.c compiles to
   plain blocks (`__try` -> `if (1)`, `__except` -> `else if (0)`).
 - castleobj.c's `Track_Update` (0x00427b20) collides with coaster.c's
@@ -496,7 +506,11 @@ Tests: native ctest 2/2 -> **3/3**, wasm32 ctest 4/5 -> **7/8** (`loadpos` is th
    `IDirectDraw*` vtables in gpu.c/surface.c), DirectInput-shaped keyboard
    and mouse state, `GetTickCount`/`timeSetEvent`, DirectSound over SDL
    audio, GDI text via a bitmap font. Stub movies, music and printing.
-2. **Port the stubbed blitters** as they are reached.
+2. **Port the stubbed blitters** as they are reached. The RLE sprite
+   painters are done (PORT-B3); the next ones the front end will want are
+   softblit.c/softblit2.c's `SoftBlitAnim`/`SoftBlitAnimPlain` (ImageRec
+   type 2, the same control stream over an 8-bit index block and a palette)
+   and bigrender.c's z-buffer RLE walker.
 3. **Emscripten job** mirroring isle-portable's CI row: `emcmake`,
    pthreads, WASMFS fetch backend streaming assets from a host URL, OPFS
    saves, COOP/COEP on the host.
