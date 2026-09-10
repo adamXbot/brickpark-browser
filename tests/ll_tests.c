@@ -47,6 +47,12 @@ void ll_note(const char* what, const char* fmt, ...)
     printf("\n");
 }
 
+void ll_skip(const char* what, const char* why)
+{
+    /* Not counted as a check: a skip must not look like coverage. */
+    printf("skip     %s: %s\n", what, why);
+}
+
 ll_u64 ll_fnv_init(void) { return LL_FNV_BASIS; }
 
 ll_u64 ll_fnv_bytes(ll_u64 h, const void* p, unsigned int n)
@@ -81,6 +87,10 @@ struct entry {
 static const struct entry entries[] = {
     { "save_framing",  test_save_framing,
       "BeginMeasuredBlock/EndMeasuredBlock/SaveGameWrite/SaveGameRead/FindeIneList" },
+#ifndef LL_TESTS_NO_GAMEDATA
+    /* The four whose oracles read the shipped volumes. Without gamedata/ their
+     * sources are not compiled at all (portable/cmake/tests.cmake, PORT-A4), so
+     * the driver's usage listing shows exactly what this build can run. */
     { "tile_geometry", test_tile_geometry,
       "GetTileCentre/GetTileBounds/GetTileDimensions/OverNewTile/CrossTileCentre" },
     { "res_archive",   test_res_archive,
@@ -89,6 +99,7 @@ static const struct entry entries[] = {
       "LLIDB_LoadICM/LLIDB_GetCount/LLIDB_GetElement/LLIDB_FindElement/ElemID" },
     { "loadpos",       test_loadpos,
       "LoadPos/BuildYRotationMatrix/MatrixMultiply/CopyMatrix/UnloadPos" },
+#endif
     /* PORT-A3: gen_link.py's interior aliases. The oracle is the original's own
      * layout, so this one drives no decoder and needs no gamedata/. */
     { "keystate",      test_keystate,
