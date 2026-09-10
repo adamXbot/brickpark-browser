@@ -105,7 +105,9 @@ set(LL_TEST_SOURCES
   # PORT-B5 (docs/lanes/scope-port-b5.md): the remaining inline-asm bodies.
   "${LL_TESTS_DIR}/test_anim_recolour.c"
   "${LL_TESTS_DIR}/test_tri_raster.c"
-  "${LL_TESTS_DIR}/test_zbuf_blit.c")
+  "${LL_TESTS_DIR}/test_zbuf_blit.c"
+  # PORT-M5 (docs/lanes/scope-port-m5.md): the last three asm span fillers.
+  "${LL_TESTS_DIR}/test_coaster_span.c")
 
 if(LL_HAVE_GAMEDATA)
   ll_oracle(tilegeom)
@@ -256,6 +258,9 @@ endif()
 ll_add_test(anim_recolour "${CMAKE_BINARY_DIR}"       FALSE)
 ll_add_test(tri_raster    "${CMAKE_BINARY_DIR}"       FALSE)
 ll_add_test(zbuf_blit     "${CMAKE_BINARY_DIR}"       FALSE)
+
+# PORT-M5: synthetic key/edge lists into local row buffers, both toolchains.
+ll_add_test(coaster_span  "${CMAKE_BINARY_DIR}"       FALSE)
 
 # ---- PORT-M3: compile-time callback type check (the check IS the compile) --
 # Every callback slot's call-site pointer type against every body registered

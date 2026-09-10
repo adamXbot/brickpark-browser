@@ -98,5 +98,7 @@ void test_anim_recolour(void); /* SoftBlitAnim, the recolouring type-2 painter *
 void test_tri_raster(void);    /* tri3d.c's four triangle rasterisers */
 void test_zbuf_blit(void);     /* ZBufferHelper and BltAdvisor */
 #endif
+/* ---- scope PORT-M5: the last three inline-asm span fillers --------------- */
+void test_coaster_span(void);  /* Span_FillShade/_FillShadeZ, TrackShade_FillPoly */
 
 #endif /* LL_TESTS_H */

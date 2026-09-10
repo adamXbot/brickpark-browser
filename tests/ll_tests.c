@@ -119,6 +119,11 @@ static const struct entry entries[] = {
       "DrawFlatTri/DrawGouraudTri/DrawFlatTexTri/DrawGouraudTexTri; sqrt hooks" },
     { "zbuf_blit",     test_zbuf_blit,
       "ZBufferHelper (the RLE Z walker) and BltAdvisor (the bottom-up DIB)" },
+    /* PORT-M5: the last three asm span fillers, driven with synthetic key and
+     * edge lists.  Span_FillFlat, ported earlier, validates the plumbing. */
+    { "coaster_span",  test_coaster_span,
+      "Span_FillShade/Span_FillShadeZ/TrackShade_FillPoly: the carry-chained "
+      "shade, the packed z and the texel address" },
 };
 
 int main(int argc, char** argv)
