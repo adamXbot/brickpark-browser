@@ -108,6 +108,50 @@ the clang build breaks: wrap it in `#ifndef LEGOLAND_PORTABLE` and give the
 `#else` arm a C fallback or `LL_UNPORTED_ASM()`. The guard lines go INSIDE
 the function body, never between a `// FUNCTION:` marker and its signature.
 
+## Headless behaviour tests (scope PORT-C)
+
+`portable/tests/` plus `portable/cmake/tests.cmake` build `legoland_tests`, one
+executable with a subcommand per test, linked the way `legoland_linkcheck` is
+(whole-archive `legoland_core` + the generated closure). Each test drives real
+recovered entry points over the real `gamedata/` and compares against a
+`tools/oracle_*.py` built on the clean-room Python decoders. Nothing derived
+from the game's assets is committed: the oracles generate their expectations
+into `<build>/gen-tests/` at build time.
+
+```bash
+ninja -C portable/build legoland_tests
+ctest --test-dir portable/build --output-on-failure       # the ILP32-safe tests
+ninja -C portable/build-wasm legoland_tests               # needs the wasm32 closure
+ctest --test-dir portable/build-wasm --output-on-failure  # run under node
+```
+
+| test | what it drives | oracle | where it runs |
+| --- | --- | --- | --- |
+| `save_framing` | `BeginMeasuredBlock` / `EndMeasuredBlock` / `SaveGameWrite` / `SaveGameRead` / `FindeIneList` | `tools/oracle_savechunks.py` | native + wasm32 |
+| `tile_geometry` | `GetTileDimensions` / `GetTileCentre` / `GetTileBounds` / `OverNewTile` / `CrossTileCentre` | `tools/oracle_tilegeom.py` over `tools/tilemap.py` | native + wasm32 |
+| `res_archive` | `RES_OpenVolume` / `RES_LoadDirectory` / `RES_OpenFileFromVolume` / `RES_ReadFile` / `RES_SetFilePointer` | `tools/oracle_res.py` over `tools/resfile.py` | wasm32 only |
+| `llidb_icm` | `LLIDB_LoadICM` / `LLIDB_GetElement` / `LLIDB_FindElement` / `ElemID` | `tools/oracle_icm.py` over `tools/tilemap.py` | wasm32 only |
+| `loadpos` | `LoadPos` / `BuildYRotationMatrix` / `MatrixMultiply` / `CopyMatrix` | `tools/oracle_geom.py` over `tools/geom.py` | wasm32 only |
+
+A test is wasm32-only when its **serialised** layout is ILP32, and each test's
+header comment says exactly which field makes it so. The two sharpest cases are
+worth repeating here, because they are the concrete content of "ILP32 is the
+real target" above:
+
+- `RES_LoadDirectory` (0x004895a0) rewrites the directory image's links in
+  place with `node->sub += (int)base`, where `base` is a malloc'd pointer. On
+  wasm32 that is exactly the format; on a 64-bit host the pointer is truncated
+  and the walk segfaults.
+- `LLIDB_LoadICM` (0x0047aff0) bulk-reads records with
+  `_read(fd, page, n * sizeof(LLElem))`, and `LLElem` is 20 bytes on ILP32 and
+  40 on LP64.
+
+Findings, the full result table and the census delta are in
+`docs/lanes/scope-port-c.md`. Two of them matter to the other lanes: the host
+shim must answer `GetVolumeInformationA` with a CDFS volume named `"LEGOLAND"`
+or `RES_OpenFile` never returns, and `RES_LowSeek` / `RES_LowRead` are
+`SetFilePointer` / `ReadFile` under local names rather than missing work.
+
 ## Next
 
 1. **Host shim on SDL3, native desktop first**: window and message pump,
