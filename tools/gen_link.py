@@ -43,7 +43,6 @@ Two things are decided by the object format, not by a flag:
   `void name(void)` bodies and the assembler-level aliases.
 """
 import argparse
-import collections
 import os
 import struct
 import sys
@@ -58,194 +57,19 @@ IMAGE_BASE = 0x400000
 # known. Generous, because some of these names are structs.
 UNKNOWN_DATA_SIZE = 256
 
-# ---- wasm object signatures ----------------------------------------------
-# wasm valtype -> (C type, zero literal). i32 covers every 32-bit C type and
-# every pointer on wasm32, which is what the game's prototypes lower to.
-WASM_TYPES = {0x7f: ('unsigned int', '0'), 0x7e: ('long long', '0'),
-              0x7d: ('float', '0'), 0x7c: ('double', '0')}
-
-
-def _leb(b, i):
-    r = s = 0
-    while True:
-        x = b[i]
-        i += 1
-        r |= (x & 0x7f) << s
-        if not x & 0x80:
-            return r, i
-        s += 7
-
-
-def _skip_limits(b, i):
-    flags = b[i]
-    i += 1
-    _, i = _leb(b, i)
-    if flags & 1:
-        _, i = _leb(b, i)
-    return i
-
-
-def wasm_object_sigs(path):
-    """(imported, defined): name -> (params, results) for the functions this
-    wasm object imports (the signature the compiler gave the call site) and
-    the functions it defines (the signature the body really has). Returns
-    (None, None) for anything that is not a wasm object.
-
-    The function index space is imports first, then the Function section in
-    order; the names of the defined ones come from the "linking" custom
-    section's symbol table."""
-    with open(path, 'rb') as f:
-        b = f.read()
-    if b[:4] != b'\0asm':
-        return None, None, None
-    types = []
-    imported = {}
-    import_fns = 0                 # how many function indices the imports take
-    local_types = []               # type index per locally defined function
-    symtab = None
-    i = 8
-    while i < len(b):
-        sid = b[i]
-        i += 1
-        size, i = _leb(b, i)
-        end = i + size
-        if sid == 1:                                   # type section
-            n, i = _leb(b, i)
-            for _ in range(n):
-                if b[i] != 0x60:
-                    break
-                i += 1
-                np, i = _leb(b, i)
-                params = list(b[i:i + np])
-                i += np
-                nr, i = _leb(b, i)
-                results = list(b[i:i + nr])
-                i += nr
-                types.append((params, results))
-        elif sid == 2:                                 # import section
-            n, i = _leb(b, i)
-            for _ in range(n):
-                ml, i = _leb(b, i)
-                i += ml
-                fl, i = _leb(b, i)
-                field = b[i:i + fl].decode('utf-8', 'replace')
-                i += fl
-                kind = b[i]
-                i += 1
-                if kind == 0:                          # function
-                    t, i = _leb(b, i)
-                    import_fns += 1
-                    if t < len(types):
-                        imported[field] = types[t]
-                elif kind == 1:                        # table
-                    i += 1
-                    i = _skip_limits(b, i)
-                elif kind == 2:                        # memory
-                    i = _skip_limits(b, i)
-                elif kind == 3:                        # global
-                    i += 2
-                elif kind == 4:                        # tag
-                    i += 1
-                    _, i = _leb(b, i)
-                else:
-                    break
-        elif sid == 3:                                 # function section
-            n, i = _leb(b, i)
-            for _ in range(n):
-                t, i = _leb(b, i)
-                local_types.append(t)
-        elif sid == 0:                                 # custom section
-            nl, j = _leb(b, i)
-            name = b[j:j + nl]
-            if name == b'linking':
-                symtab = (j + nl, end)
-        i = end
-
-    defined = {}
-    undef_data = set()
-    if symtab is not None:
-        i, end = symtab
-        _version, i = _leb(b, i)
-        while i < end:
-            sub = b[i]
-            i += 1
-            sz, i = _leb(b, i)
-            stop = i + sz
-            if sub == 8:                               # WASM_SYMBOL_TABLE
-                count, i = _leb(b, i)
-                for _ in range(count):
-                    kind = b[i]
-                    i += 1
-                    flags, i = _leb(b, i)
-                    undef = bool(flags & 0x10)
-                    if kind == 1:                      # DATA: name always
-                        nl, i = _leb(b, i)
-                        nm = b[i:i + nl].decode('utf-8', 'replace')
-                        i += nl
-                        if not undef:
-                            _, i = _leb(b, i)          # segment
-                            _, i = _leb(b, i)          # offset
-                            _, i = _leb(b, i)          # size
-                        else:
-                            undef_data.add(nm)
-                        continue
-                    index, i = _leb(b, i)
-                    nm = None
-                    if not undef or (flags & 0x40):    # EXPLICIT_NAME
-                        nl, i = _leb(b, i)
-                        nm = b[i:i + nl].decode('utf-8', 'replace')
-                        i += nl
-                    if kind == 0 and nm and not undef:
-                        k = index - import_fns
-                        if 0 <= k < len(local_types) and local_types[k] < len(types):
-                            defined[nm] = types[local_types[k]]
-            i = stop
-    return imported, defined, undef_data
-
-
-def collect_wasm_sigs(objs):
-    """(imported, defined, undefined-data, conflicts) over every object, or
-    (None, None, None, []) when the objects are not wasm: Mach-O and ELF need
-    neither signature nor function/data agreement, and carry no such
-    information for undefined symbols."""
-    votes = collections.defaultdict(collections.Counter)
-    defined = {}
-    undef_data = set()
-    any_wasm = False
-    for obj in objs:
-        try:
-            imp, dfn, udata = wasm_object_sigs(obj)
-        except (IndexError, ValueError):
-            continue
-        if imp is None:
-            continue
-        any_wasm = True
-        for name, sig in imp.items():
-            votes[name][(tuple(sig[0]), tuple(sig[1]))] += 1
-        for name, sig in dfn.items():
-            defined.setdefault(name, (tuple(sig[0]), tuple(sig[1])))
-        undef_data |= udata
-    if not any_wasm:
-        return None, None, None, []
-    out = {}
-    conflicts = []
-    for name, counter in votes.items():
-        winner, _ = counter.most_common(1)[0]
-        out[name] = winner
-        if len(counter) > 1:
-            conflicts.append(name)
-    return out, defined, undef_data, sorted(conflicts)
-
 
 def sig_decl(sig):
     """(return type, [param types], [param names]) for a wasm signature, or
-    (None, None, None) when it uses a type this emitter does not map."""
+    (None, None, None) when it uses a type this emitter does not map.
+
+    The signatures themselves come from linkreport.py, which reads them out of
+    the wasm objects (lr.collect_wasm_sigs)."""
     params, results = sig
-    if any(p not in WASM_TYPES for p in params) or len(results) > 1 or \
-            (results and results[0] not in WASM_TYPES):
+    if any(p not in lr.WASM_TYPES for p in params) or len(results) > 1 or \
+            (results and results[0] not in lr.WASM_TYPES):
         return None, None, None
-    ret = WASM_TYPES[results[0]][0] if results else 'void'
-    types = [WASM_TYPES[p][0] for p in params]
+    ret = lr.WASM_TYPES[results[0]][0] if results else 'void'
+    types = [lr.WASM_TYPES[p][0] for p in params]
     return ret, types, [f'a{i}' for i in range(len(params))]
 
 
@@ -394,7 +218,7 @@ def main():
     externs, defined_at, _stubs = lr.scan_sources()
     cats = lr.classify(defined, undefined, externs, defined_at, win32)
     read = load_image(args.exe)
-    wasm_sigs, wasm_defs, wasm_undef_data, sig_conflicts = collect_wasm_sigs(all_objs)
+    wasm_sigs, wasm_defs, wasm_undef_data, sig_conflicts = lr.collect_wasm_sigs(all_objs)
 
     def sig_of(name):
         """The signature the callers emitted for an undefined symbol."""
