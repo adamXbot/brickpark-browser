@@ -26,6 +26,31 @@ re-points the original's pointer tables at the rebuilt symbols. On a 64-bit
 host the raw bytes are kept and such tables are wrong by construction; the
 64-bit build is a link census, not a runnable game.
 
+**Pointers INTO a global, not AT one.** Requiring the word to equal a symbol
+address exactly is not enough, and it was the port's first real blocker: the
+literals a pointer table points at mostly have no extern name of their own.
+`g_volume_names` (0x004bcba4) holds three `const char*` into the `.rdata`
+strings "Legoland.res", "Graphics2.res", "Graphics1.res", which sit at
+0x004bcbf8..0x004bcc18 — INSIDE the block this generator emits for 0x004bcbf4
+(`g_map` and thirteen other names for it), because every global is sized by
+the gap to the next named address and so swallows the unnamed literals that
+follow it. With the words left raw the game opened `"D:\\.res"` and the browser
+page died in `RES_OpenVolume`.
+
+So a word that is a pointer is re-pointed to `base + offset` of whatever
+rebuilt block contains it, and to a synthetic `ll_gap_<start>` block
+(initialised from the exe like any other global) when nothing does.
+
+Which words are pointers is decided by the game's own C, not by what the value
+looks like: `scan_pointer_decls()` reads the pointer depth and the array extent
+out of the `extern` declaration, so only the three words of
+`extern const char* g_volume_names[3]` are candidates. Guessing from the value
+instead is catastrophic here -- a three-character string at the end of a word
+("tan\0" = 0x006e6174) lands squarely inside the image, and a value-only rule
+re-points 1,650 words of which 1,209 are string TEXT, 264 of them inside the
+`GUID_NULL` block alone. The declaration rule re-points 441, every one of them
+a real string pointer.
+
 Two things are decided by the object format, not by a flag:
 
 * **Declaration agreement.** A global re-pointed this way is emitted as
@@ -43,7 +68,10 @@ Two things are decided by the object format, not by a flag:
   `void name(void)` bodies and the assembler-level aliases.
 """
 import argparse
+import bisect
+import glob
 import os
+import re
 import struct
 import sys
 
@@ -56,6 +84,49 @@ IMAGE_BASE = 0x400000
 # sources give it no address, so neither its real size nor its contents are
 # known. Generous, because some of these names are structs.
 UNKNOWN_DATA_SIZE = 256
+
+# The initialised data sections: a pointer re-pointed by offset has to land in
+# one of these. .text is excluded on purpose -- a wasm function "address" is a
+# table index, so an offset into the middle of a function body means nothing,
+# and a word that equals a function's address exactly is handled by the
+# exact-match path with a real function declaration.
+DATA_LO, DATA_HI = 0x4ab000, 0x836000
+
+# `extern <type> <name><dims>;   /* 0x... */` -- the declaration, not the value,
+# is what says whether a word is a pointer. <type> must end in whitespace or a
+# star, which is what separates it from <name>.
+DECL_RE = re.compile(
+    r'^\s*extern\s+(?P<type>[A-Za-z_][\w\s*]*?[\s*])(?P<name>[A-Za-z_]\w*)\s*'
+    r'(?P<dims>(?:\[[^\]]*\])*)\s*;.*?/\*\s*(?P<addr>0x[0-9a-fA-F]+)')
+
+
+def scan_pointer_decls():
+    """name -> [(address, pointer depth, element count or None)] for every
+    `extern` data declaration that carries an address comment.
+
+    The count is the product of the array dimensions, 1 for a scalar and None
+    for an unbounded `[]` (whose real extent is then bounded by the data: see
+    `ptr_slot_count`)."""
+    out = {}
+    for path in sorted(glob.glob(os.path.join(lr.SRC, '*.c'))):
+        for line in open(path, encoding='utf-8', errors='replace'):
+            m = DECL_RE.match(line)
+            if not m:
+                continue
+            count = 1
+            for dim in re.findall(r'\[([^\]]*)\]', m.group('dims')):
+                dim = dim.strip()
+                if not dim:
+                    count = None
+                    break
+                try:
+                    count *= int(dim, 0)
+                except ValueError:
+                    count = None
+                    break
+            out.setdefault(m.group('name'), []).append(
+                (int(m.group('addr'), 16), m.group('type').count('*'), count))
+    return out
 
 
 def sig_decl(sig):
@@ -124,20 +195,24 @@ def emit_bytes(name, size, data, align=16):
     return f'__attribute__((aligned({align}))) unsigned char {name}[{size}] = {{\n    {body}\n}};\n'
 
 
-def emit_words(name, size, data, symbol_at, refs, align=16):
-    """ILP32: 4-byte words, with exact symbol addresses re-pointed.
+def emit_words(name, size, data, resolve, n_ptr, refs, align=16):
+    """ILP32: 4-byte words, with addresses re-pointed at the rebuilt symbols.
 
+    `resolve(word, is_pointer_slot)` returns `(symbol, offset)` or None; the
+    first `n_ptr` words are the slots the declaration says hold pointers.
     Every symbol named here is added to `refs`; the caller declares them in
     the prologue, with the types the definitions use."""
     words = []
     for i in range(0, size, 4):
         w = struct.unpack_from('<I', data, i)[0]
-        if w in symbol_at:
-            sym = symbol_at[w]
-            refs.add(sym)
-            words.append(f'(unsigned int)(__UINTPTR_TYPE__)&{sym}')
-        else:
+        hit = resolve(w, i // 4 < n_ptr)
+        if hit is None:
             words.append(f'0x{w:08x}u')
+            continue
+        sym, off = hit
+        refs.add(sym)
+        words.append(f'(unsigned int)(__UINTPTR_TYPE__)&{sym}' if off == 0 else
+                     f'(unsigned int)(__UINTPTR_TYPE__)((char*)({sym}) + {off})')
     n = len(words)
     while n > 0 and words[n - 1] == '0x00000000u':
         n -= 1
@@ -294,6 +369,117 @@ def main():
         plan.append((addr, primary, size, data, rest, words))
         symbol_at[addr] = primary
 
+    # ---- which words are pointers, and what they point INTO ----------------
+    # The declaration decides (see scan_pointer_decls and the module docstring):
+    # the leading `n_ptr` words of a global are pointers when any extern
+    # declaration of a name at that address has pointer depth >= 1. An
+    # unbounded `[]` is bounded by the data itself -- the table ends at the
+    # first word that could not be a pointer, which is where the literals it
+    # points at usually begin.
+    decls = scan_pointer_decls()
+    fn_names = {name for name, _file in defined_at.values()}
+    fn_names |= {n for n, (_a, kind) in externs.items() if kind == 'fn'}
+
+    def ptr_slot_count(addr, names, size, data):
+        declared, unbounded = 0, False
+        for nm in names:
+            for daddr, depth, count in decls.get(nm, []):
+                if daddr != addr or depth < 1:
+                    continue
+                if count is None:
+                    unbounded = True
+                else:
+                    declared = max(declared, count)
+        n = min(max(declared, size // 4 if unbounded else 0), size // 4)
+        if unbounded and data is not None:
+            for k in range(n):                      # stop where the table does
+                w = struct.unpack_from('<I', data, k * 4)[0]
+                if not (w == 0 or DATA_LO <= w < DATA_HI or w in symbol_at):
+                    return k
+        return n
+
+    blocks = {}               # start -> (name, size): every rebuilt data block
+    for addr, primary, size, _d, _r, _w in plan:
+        blocks[addr] = (primary, size)
+    block_starts = sorted(blocks)
+    gaps = []                 # (addr, name, size, data): synthesised blocks
+    ptr_cache = {}            # target address -> (symbol, offset) or None
+
+    def containing(addr):
+        i = bisect.bisect_right(block_starts, addr) - 1
+        if i < 0:
+            return None
+        start = block_starts[i]
+        name, size = blocks[start]
+        return (name, addr - start) if addr < start + size else None
+
+    def resolve_pointer(w):
+        """(symbol, offset) for a pointer into the image, or None."""
+        if w in ptr_cache:
+            return ptr_cache[w]
+        hit = containing(w)
+        if hit is None:
+            # Nothing rebuilt covers it. The region between the two nearest
+            # known addresses is unnamed data (a string literal, a switch
+            # table); give it a name of its own, initialised from the exe.
+            i = bisect.bisect_right(known, w) - 1
+            base = known[i] if i >= 0 else None
+            if base is None or read is None:
+                hit = None
+            else:
+                end = next_addr.get(base, base + 4)
+                owner = symbol_at.get(base)
+                if owner and owner not in fn_names:
+                    # The game itself defines an object at `base`: an offset
+                    # into it is an offset into that object, which is right.
+                    hit = (owner, w - base)
+                else:
+                    name = f'll_gap_{base:08x}'
+                    if base not in blocks:
+                        gaps.append((base, name, end - base, read(base, end - base)))
+                        blocks[base] = (name, end - base)
+                        block_starts.insert(bisect.bisect_left(block_starts, base), base)
+                    hit = (blocks[base][0], w - base)
+        ptr_cache[w] = hit
+        return hit
+
+    n_exact = n_interior = n_raw_ptr = 0
+
+    def resolve(w, is_ptr_slot):
+        nonlocal n_exact, n_interior, n_raw_ptr
+        if w in symbol_at:                          # a symbol's own address
+            n_exact += 1
+            return (symbol_at[w], 0)
+        if not is_ptr_slot or not (DATA_LO <= w < DATA_HI):
+            if is_ptr_slot and w:
+                n_raw_ptr += 1
+            return None
+        hit = resolve_pointer(w)
+        if hit is None:
+            n_raw_ptr += 1
+            return None
+        n_interior += 1
+        return hit
+
+    # Resolution runs over every pointer slot BEFORE anything is emitted, so
+    # the synthesised gap blocks are part of the plan (and of the prologue's
+    # declarations) by the time the first global is written.
+    n_ptr_of = {}
+    for addr, primary, size, data, _rest, words in plan:
+        n = ptr_slot_count(addr, sorted(data_names[addr]), size, data) if words else 0
+        n_ptr_of[addr] = n
+        for k in range(n):
+            w = struct.unpack_from('<I', data, k * 4)[0]
+            if w and w not in symbol_at and DATA_LO <= w < DATA_HI:
+                resolve_pointer(w)
+    n_exact = n_interior = n_raw_ptr = 0          # the real count is the emission
+    for base, name, size, data in sorted(gaps):
+        # Bytes, never words: a gap block is unnamed data (string literals,
+        # switch tables), nothing declares it, so it has no pointer slots and
+        # its start need not even be 4-aligned.
+        plan.append((base, name, size, data, [], False))
+    plan.sort(key=lambda p: p[0])
+
     decl_of = {}              # name -> (type, element count) as defined here
     for _addr, primary, size, _data, _rest, words in plan:
         decl_of[primary] = ('unsigned int', size // 4) if words else ('unsigned char', size)
@@ -305,7 +491,8 @@ def main():
         sec = next((s for s, a, b in lr.SECTIONS if a <= addr < b), '?')
         body.append(f'/* 0x{addr:08x} {sec} {size} bytes{" (+" + ", ".join(rest) + ")" if rest else ""} */')
         if words:
-            body.append(emit_words(primary, size, data, symbol_at, refs))
+            body.append(emit_words(primary, size, data, resolve,
+                                   n_ptr_of.get(addr, 0), refs))
         else:
             body.append(emit_bytes(primary, size, data))
         typ, count = decl_of[primary]
@@ -319,8 +506,7 @@ def main():
     # pointer in a table is a table index, not an address), so a re-pointed
     # word that names a function has to be declared as one -- with the
     # signature the body has, or wasm-ld puts a trapping stub in the table.
-    fn_names = {name for name, _file in defined_at.values()}
-    fn_names |= {n for n, (_a, kind) in externs.items() if kind == 'fn'}
+    # (`fn_names` is built above, before the pointer resolution that needs it.)
     prologue = ['/* Forward declarations for every symbol the tables below point at.',
                 ' * Types match the definitions: a re-pointed global is unsigned int[],',
                 ' * and a function keeps its real signature. */']
@@ -410,6 +596,11 @@ def main():
         f'- exe: {args.exe if read else "not available, globals zero-initialised"}',
         f'- globals defined: {n_def} ({total_bytes} bytes), data aliases: {n_alias_data}',
         f'- symbols re-pointed into (ilp32): {len(refs)}',
+        f'- words re-pointed at a symbol address (ilp32): {n_exact}',
+        f'- pointer words re-pointed INTO a block (ilp32): {n_interior}',
+        f'- synthesised ll_gap_ blocks for unnamed data: {len(gaps)}'
+        f' ({sum(g[2] for g in gaps)} bytes)',
+        f'- pointer words left raw (outside {DATA_LO:#x}..{DATA_HI:#x}): {n_raw_ptr}',
         f'- function aliases (stale extern names): {n_alias_fn}',
         f'- data names the game defines under another name (no alias possible): {len(cross_tu_alias)}',
         f'- unwritten game function stubs: {len(game_fn)}',

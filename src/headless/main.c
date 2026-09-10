@@ -46,9 +46,61 @@ extern int WinMain(void* hinst, void* hprev, char* cmdline, int ncmdshow);
  * next. */
 extern int   RES_EnsureMounted(const char* volume);   /* 0x004515e0 */
 extern void* RES_OpenVolume(const char* name);        /* 0x00489750 */
-extern void  RES_CloseVolume(void* vol);              /* 0x00489dc0 */
+/* 0x00489dc0. `int`, NOT the `void` startup.c declares it with: sweep4.c
+ * defines it as `int RES_CloseVolume(RVol*)`, and on wasm the two prototypes
+ * are two different function types, so a `void`-typed call is replaced by
+ * wasm-ld with a trapping stub -- a bare `RuntimeError: unreachable` with no
+ * symbol name, which is exactly what this probe hit before. The game's own
+ * calls (startup.c:140/153/161/183) carry the `void` prototype and WILL trap
+ * the same way: it is one of the 542 prototype conflicts in
+ * docs/lanes/scope-port-a.md, and the first one proved to be live. */
+extern int   RES_CloseVolume(void* vol);
 extern const char* g_volume_names[3];                 /* 0x004bcba4 */
 extern char  g_res_path[];                            /* 0x00813b04 */
+
+/* The mounted-volume records, as LEGOLAND/resaudio2.c declares them (the same
+ * layout portable/tests/test_res_archive.c checks field by field). Walking
+ * them is how the probe proves the directory really was parsed: a volume whose
+ * name table was still full of raw x86 addresses opened a file called ".res"
+ * and produced no members at all. */
+typedef struct LLResEnt {
+    struct LLResEnt* anext;   /* +0x00 every member of every volume */
+    struct LLResEnt* next;    /* +0x04 next in the directory bucket */
+    struct LLResEnt* vnext;   /* +0x08 next in THIS volume */
+    void*            dir;     /* +0x0c */
+    void*            vol;     /* +0x10 */
+    int              size;    /* +0x14 */
+    int              base;    /* +0x18 offset in the volume */
+    char*            name;    /* +0x1c */
+} LLResEnt;
+
+typedef struct LLResVol {
+    struct LLResVol* next;    /* +0x00 */
+    LLResEnt*        files;   /* +0x04 */
+    char             name[0x14];  /* +0x08 upper-cased */
+    int              handle;  /* +0x1c */
+} LLResVol;
+
+#define LL_RES_SHOW 6         /* members printed per volume */
+
+static void ll_res_list(void* v)
+{
+    LLResVol* vol = (LLResVol*)v;
+    LLResEnt* e;
+    int n = 0;
+    long bytes = 0;
+
+    for (e = vol->files; e; e = e->vnext) {
+        if (n < LL_RES_SHOW)
+            fprintf(stderr, "legoland_headless:     %-16s %8d bytes @ %d\n",
+                    e->name ? e->name : "(null)", e->size, e->base);
+        n++;
+        bytes += e->size;
+    }
+    fprintf(stderr, "legoland_headless:   volume \"%s\" handle %d: %d members,"
+                    " %ld bytes%s\n", vol->name, vol->handle, n, bytes,
+            n > LL_RES_SHOW ? " (first few shown)" : "");
+}
 
 static int ll_resmount(void)
 {
@@ -69,7 +121,9 @@ static int ll_resmount(void)
                 g_volume_names[i], v);
         if (!v)
             return 1;
-        RES_CloseVolume(v);
+        ll_res_list(v);
+        fprintf(stderr, "legoland_headless:   RES_CloseVolume = %d\n",
+                RES_CloseVolume(v));
     }
     return 0;
 }
