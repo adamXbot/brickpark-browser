@@ -494,11 +494,29 @@ unsigned int midiOutShortMsg(void* handle, unsigned long msg);
 unsigned int midiOutReset(void* handle);
 
 /* ---- DSOUND (portable/src/hostwin/dsound.c) ---------------------------- */
-/* Returns DSERR_NODRIVER (0x88780078) so the game runs silent. The game
- * tolerates it: InitSoundSampleSystem (audio4.c 0x00492130) clears g_dsound
- * and g_samples_ready and returns 0, InitSoundSystem propagates the 0, and
- * RunGame (gamemain.c 0x00459520) ignores the result. Every later sample call
- * is guarded by g_samples_ready. */
+/* PORT-B4: this SUCCEEDS now, returning a silent IDirectSound with the full
+ * IDirectSoundBuffer vtable and a play cursor driven by wall clock.
+ *
+ * It used to return DSERR_NODRIVER on the reasoning that every sample entry
+ * point is guarded by g_samples_ready -- true, but InitSoundSystem
+ * (lifecycle.c 0x004964f0) is not one: `if (!ok) return ok;` skips
+ * InitMusicSystem, so nothing ever sets g_music_disabled and RunGame
+ * (gamemain.c 0x00459520) spins on it for ever. A failing sample system makes
+ * -nomusic unreachable. dsound.c's header comment has the whole chain, the
+ * swept list of call sites, and why the cursor has to move (two loops in the
+ * game spin on it). */
 long  DirectSoundCreate(void* guid, void** out, void* outer);
+
+/* ---- ole32 (portable/src/hostwin/dsound.c) ------------------------------ */
+/* The program's only two COM imports, both DirectMusic's, both called only by
+ * MusicThread (musicthread.c 0x00492db0). CoInitialize reports success (its
+ * result is discarded at the one call site); CoCreateInstance reports
+ * REGDB_E_CLASSNOTREG, which takes the thread straight to its `shutdown:` rung
+ * -- the designed no-DirectMusic path, and the one that sets g_music_disabled.
+ * They live in dsound.c because they are the audio shim's business and nothing
+ * else in the program uses COM. */
+long  CoInitialize(void* reserved);
+long  CoCreateInstance(const void* clsid, void* outer, unsigned long context,
+                       const void* iid, void** out);
 
 #endif /* LL_HOST_H */
