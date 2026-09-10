@@ -126,32 +126,78 @@ extern int        RES_CloseFile(void* f);             /* sweep4.c 0x00489de0 -- 
 extern char*      GetGFXFName(const char* name, unsigned char type, char* buf);
 extern char* g_gfx_dirs[7];                    /* rin.c 0x004b81c0 */
 
-#define LL_STAGE(what) \
-    do { fprintf(stderr, "legoland_headless: --- %s\n", what); fflush(stderr); } while (0)
+extern void       RunGame(void);                      /* gamemain.c 0x00459520 */
+
+/* A stage can be skipped: `--stages loadsprite,rungame`. A live prototype
+ * conflict inside the game kills the process, so without this one defect hides
+ * every defect behind it, and the only way to enumerate the list PORT-M1 needs
+ * is to step over the one just found. The names are the `LL_STAGE` tags below,
+ * lower-cased and without punctuation. */
+static const char* ll_skip_list = "";
+
+static int ll_skip(const char* tag)
+{
+    const char* p = ll_skip_list;
+    size_t n = strlen(tag);
+
+    while (*p) {
+        if (strncmp(p, tag, n) == 0 && (p[n] == 0 || p[n] == ','))
+            return 1;
+        while (*p && *p != ',')
+            p++;
+        while (*p == ',')
+            p++;
+    }
+    return 0;
+}
+
+#define LL_STAGE(tag, what)                                                   \
+    if (ll_skip(tag)) {                                                       \
+        fprintf(stderr, "legoland_headless: --- %s SKIPPED\n", what);          \
+        fflush(stderr);                                                       \
+    } else {                                                                  \
+        fprintf(stderr, "legoland_headless: --- %s\n", what);                  \
+        fflush(stderr);
+
+#define LL_STAGE_END }
 
 static int ll_stages(void)
 {
     char* s;
+    int   i;
+    static const char* const sprites[] = {
+        "erase it.lls", "erase it2.lls", "no build.lls", "yes build.lls",
+        "rab over icon.lls", "rab over icon2.lls", "question it.lls",
+        "question it2.lls"
+    };
+    static const char* const menus[] = {
+        "BUILD MENU", "ATTRACTIONS MENU", "FOOD STORES MENU", "SCENERY MENU",
+        "SHOPS MENU"
+    };
 
-    LL_STAGE("LoadStrings()");
+    LL_STAGE("loadstrings", "LoadStrings()");
     LoadStrings();
     s = GetString(0xcb);
     fprintf(stderr, "legoland_headless: GetString(0xcb) = \"%s\"\n", s ? s : "(null)");
+    LL_STAGE_END
 
-    LL_STAGE("InitHostSystemGPU()");
+    LL_STAGE("inithostsystemgpu", "InitHostSystemGPU()");
     fprintf(stderr, "legoland_headless: = %d\n", InitHostSystemGPU());
+    LL_STAGE_END
 
-    LL_STAGE("InitScreen()");
+    LL_STAGE("initscreen", "InitScreen()");
     fprintf(stderr, "legoland_headless: = %d\n", InitScreen());
+    LL_STAGE_END
 
-    LL_STAGE("InitInputSystem()");
+    LL_STAGE("initinputsystem", "InitInputSystem()");
     fprintf(stderr, "legoland_headless: = %d\n", InitInputSystem());
+    LL_STAGE_END
 
     /* Before LoadSprite, prove that the member IS reachable through the
      * mounted volumes: it is in Graphics1.res (1402 bytes, COMP 34x30 bpp16).
      * If this works and LoadSprite does not, the loader's failure is not the
      * archive. */
-    LL_STAGE("RES_OpenFile(GetGFXFName(\"erase it.lls\", kind, 0))");
+    LL_STAGE("resopenfile", "RES_OpenFile(GetGFXFName(\"erase it.lls\", kind, 0))");
     {
         int   kind;
         for (kind = 0; kind <= 2; kind++) {
@@ -163,18 +209,36 @@ static int ll_stages(void)
                 RES_CloseFile(f);
         }
     }
+    LL_STAGE_END
 
-    LL_STAGE("LoadSprite(\"erase it.lls\")");
-    fprintf(stderr, "legoland_headless: = %p\n", LoadSprite("erase it.lls", 0));
+    /* InitSession's own eight cursor sprites, in its order. */
+    LL_STAGE("loadsprite", "LoadSprite() x8, InitSession's cursor set");
+    for (i = 0; i < (int)(sizeof sprites / sizeof sprites[0]); i++)
+        fprintf(stderr, "legoland_headless:   %-20s = %p\n", sprites[i],
+                LoadSprite(sprites[i], 0));
+    LL_STAGE_END
 
-    LL_STAGE("LLIDB_LoadICM()");
+    LL_STAGE("llidbloadicm", "LLIDB_LoadICM()");
     fprintf(stderr, "legoland_headless: LLIDB_LoadICM() = %d\n", LLIDB_LoadICM());
+    LL_STAGE_END
 
-    LL_STAGE("LLIDB_RegisterNewElement(\"BUILD MENU\")");
-    fprintf(stderr, "legoland_headless: = %d\n",
-            LLIDB_RegisterNewElement("BUILD MENU", 0, 0x200));
+    LL_STAGE("llidbregister", "LLIDB_RegisterNewElement() x5, InitSession's menus");
+    for (i = 0; i < (int)(sizeof menus / sizeof menus[0]); i++)
+        fprintf(stderr, "legoland_headless:   %-20s = %d\n", menus[i],
+                LLIDB_RegisterNewElement((char*)menus[i], 0, 0x200));
+    LL_STAGE_END
 
-    LL_STAGE("done");
+    /* The last thing InitSession does, and the whole front end. It does not
+     * return until the player quits, so under node it runs until the caller's
+     * alarm -- which is fine: the point is which prototype conflict it hits
+     * first. Off by default for that reason; `--stages none` asks for
+     * it. */
+    LL_STAGE("rungame", "RunGame()   -- the front end; runs until it is killed");
+    RunGame();
+    fprintf(stderr, "legoland_headless: RunGame() returned\n");
+    LL_STAGE_END
+
+    fprintf(stderr, "legoland_headless: --- done\n");
     return 0;
 }
 
@@ -232,6 +296,13 @@ int main(int argc, char** argv)
     /* --stages: mount the volumes, then walk InitSession's own sequence one
      * named step at a time. */
     if (argc > 1 && strcmp(argv[1], "--stages") == 0) {
+        /* `--stages [<skip list>]`. The default skips RunGame, which does not
+         * return; `--stages none` runs every stage; `--stages loadsprite,rungame`
+         * steps over a stage whose prototype conflict would otherwise hide
+         * everything behind it. */
+        ll_skip_list = argc > 2 ? argv[2] : "rungame";
+        if (strcmp(ll_skip_list, "none") == 0)
+            ll_skip_list = "";
         r = ll_resmount_ex(1);
         return r ? r : ll_stages();
     }
