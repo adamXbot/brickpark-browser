@@ -106,6 +106,8 @@ static const struct entry entries[] = {
       "SoftBlitAnim: the recolour mask and its divergences from the plain one" },
     { "tri_raster",    test_tri_raster,
       "DrawFlatTri/DrawGouraudTri/DrawFlatTexTri/DrawGouraudTexTri; sqrt hooks" },
+    { "zbuf_blit",     test_zbuf_blit,
+      "ZBufferHelper (the RLE Z walker) and BltAdvisor (the bottom-up DIB)" },
 };
 
 int main(int argc, char** argv)
