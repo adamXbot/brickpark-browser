@@ -37,6 +37,43 @@ extern int WinMain(void* hinst, void* hprev, char* cmdline, int ncmdshow);
 
 #define LL_DEFAULT_SWITCHES "-nointro -nomusic WINDEBUG"
 
+/* --resmount: the one piece of the spine that sits BEHIND the DirectDraw call
+ * and can still be reached without a host surface -- finding and opening the
+ * resource volumes (sysmisc.c / sysmisc2.c / data2.c). InitSession does this
+ * after CheckHostSystemGPU, so a whole-game run cannot get here until PORT-B
+ * lands; calling it directly is how the file and drive half of the KERNEL32
+ * shim was tested, and it is the cheapest way to find what the loaders need
+ * next. */
+extern int   RES_EnsureMounted(const char* volume);   /* 0x004515e0 */
+extern void* RES_OpenVolume(const char* name);        /* 0x00489750 */
+extern void  RES_CloseVolume(void* vol);              /* 0x00489dc0 */
+extern const char* g_volume_names[3];                 /* 0x004bcba4 */
+extern char  g_res_path[];                            /* 0x00813b04 */
+
+static int ll_resmount(void)
+{
+    int i;
+
+    /* startup.c passes the literal 1: the parameter is only tested for
+     * truthiness, and non-zero means "look for the CD on every drive". */
+    if (!RES_EnsureMounted((const char*)1)) {
+        fprintf(stderr, "legoland_headless: RES_EnsureMounted failed"
+                        " (no CD: set LL_CD_DIR to the directory holding"
+                        " Legoland.res)\n");
+        return 1;
+    }
+    fprintf(stderr, "legoland_headless: volumes mounted, g_res_path=\"%s\"\n", g_res_path);
+    for (i = 0; i < 3; i++) {
+        void* v = RES_OpenVolume(g_volume_names[i]);
+        fprintf(stderr, "legoland_headless: RES_OpenVolume(\"%s\") = %p\n",
+                g_volume_names[i], v);
+        if (!v)
+            return 1;
+        RES_CloseVolume(v);
+    }
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     const char* data_dir = getenv("LL_DATA_DIR");
@@ -55,6 +92,9 @@ int main(int argc, char** argv)
     }
     if (getcwd(cwd, sizeof cwd))
         fprintf(stderr, "legoland_headless: data directory %s\n", cwd);
+
+    if (argc > 1 && strcmp(argv[1], "--resmount") == 0)
+        return ll_resmount();
 
     cmdline[0] = 0;
     for (i = 1; i < argc; i++) {

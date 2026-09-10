@@ -75,15 +75,45 @@ static int ll_tracing(void)
 
 /* ---- paths --------------------------------------------------------------- */
 
+/* The game's resource volumes live on a CD, and once it has found that CD it
+ * builds absolute paths from the drive letter ("D:\Legoland.res"). $LL_CD_DIR
+ * points the shim at a directory to present as that drive -- gamedata/disc in
+ * this checkout, which holds Legoland.res, Graphics1.res and Graphics2.res.
+ * Unset, there is no CD and the game takes its local-path branch. */
+#define LL_CD_LETTER 'D'
+
+static const char* ll_cd_dir(void)
+{
+    const char* d = getenv("LL_CD_DIR");
+    return (d && *d) ? d : 0;
+}
+
+static int ll_is_cd_root(const char* p)
+{
+    return p && (p[0] == LL_CD_LETTER || p[0] == LL_CD_LETTER + 32) && p[1] == ':';
+}
+
 static void ll_host_path(char* out, unsigned int cap, const char* in)
 {
-    unsigned int i;
+    const char*  cd = ll_cd_dir();
+    unsigned int i = 0;
     if (!in) {
         out[0] = 0;
         return;
     }
-    for (i = 0; i + 1 < cap && in[i]; i++)
-        out[i] = in[i] == '\\' ? '/' : in[i];
+    if (cd && ll_is_cd_root(in)) {           /* "D:\x" -> "<LL_CD_DIR>/x" */
+        while (cd[i] && i + 1 < cap) {
+            out[i] = cd[i];
+            i++;
+        }
+        in += 2;
+        if (*in == '\\' || *in == '/')
+            in++;
+        if (i + 1 < cap)
+            out[i++] = '/';
+    }
+    for (; i + 1 < cap && *in; in++, i++)
+        out[i] = *in == '\\' ? '/' : *in;
     out[i] = 0;
 }
 
@@ -540,33 +570,42 @@ LPSTR GetCommandLineA(void)
 DWORD GetLogicalDrives(void)
 {
     LL_TRACE("GetLogicalDrives");
-    return 0x4;                  /* C: only */
+    return ll_cd_dir() ? 0x4 | (1u << (LL_CD_LETTER - 'A')) : 0x4;
 }
 
 UINT GetDriveTypeA(LPCSTR root)
 {
-    LL_TRACE("GetDriveTypeA(\"%s\")", root ? root : "");
-    (void)root;
-    return 3;                    /* DRIVE_FIXED */
+    UINT type = (ll_cd_dir() && ll_is_cd_root(root)) ? 5 : 3;  /* CDROM : FIXED */
+    LL_TRACE("GetDriveTypeA(\"%s\") = %u", root ? root : "", type);
+    return type;
 }
 
+/* The label the game looks for is kVolLegoland, "LEGOLAND", and it insists on
+ * CDFS as well (sysmisc2.c RES_FindVolumeOnAnyDrive); answering both is what
+ * makes RES_EnsureMounted stop asking for the disc and set g_res_path to the
+ * drive root. */
 BOOL GetVolumeInformationA(LPCSTR root, LPSTR name, DWORD name_size, DWORD* serial,
                            DWORD* max_component, DWORD* flags, LPSTR fs_name,
                            DWORD fs_name_size)
 {
-    LL_TRACE("GetVolumeInformationA(\"%s\"): no label", root ? root : "");
-    (void)root;
-    if (name && name_size)
-        name[0] = 0;
+    int cd = ll_cd_dir() && ll_is_cd_root(root);
+    LL_TRACE("GetVolumeInformationA(\"%s\"): %s", root ? root : "",
+             cd ? "LEGOLAND on CDFS" : "no label");
+    if (name && name_size) {
+        strncpy(name, cd ? "LEGOLAND" : "", name_size - 1);
+        name[name_size - 1] = 0;
+    }
     if (serial)
-        *serial = 0;
+        *serial = cd ? 0x1e60a4d0u : 0;
     if (max_component)
         *max_component = 255;
     if (flags)
         *flags = 0;
-    if (fs_name && fs_name_size)
-        fs_name[0] = 0;
-    return 0;
+    if (fs_name && fs_name_size) {
+        strncpy(fs_name, cd ? "CDFS" : "", fs_name_size - 1);
+        fs_name[fs_name_size - 1] = 0;
+    }
+    return cd;
 }
 
 BOOL DeviceIoControl(HANDLE h, DWORD code, void* in, DWORD in_size,
