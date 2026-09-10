@@ -70,5 +70,8 @@ ll_u64 ll_fnv_int(ll_u64 h, long long v);
 /* Each test: returns nothing, reports through the macros above. */
 void test_save_framing(void);
 void test_tile_geometry(void);
+void test_res_archive(void);
+void test_llidb_icm(void);
+void test_loadpos(void);
 
 #endif /* LL_TESTS_H */

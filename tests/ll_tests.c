@@ -83,6 +83,12 @@ static const struct entry entries[] = {
       "BeginMeasuredBlock/EndMeasuredBlock/SaveGameWrite/SaveGameRead/FindeIneList" },
     { "tile_geometry", test_tile_geometry,
       "GetTileCentre/GetTileBounds/GetTileDimensions/OverNewTile/CrossTileCentre" },
+    { "res_archive",   test_res_archive,
+      "RES_OpenVolume/RES_LoadDirectory/RES_OpenFileFromVolume/RES_ReadFile" },
+    { "llidb_icm",     test_llidb_icm,
+      "LLIDB_LoadICM/LLIDB_GetCount/LLIDB_GetElement/LLIDB_FindElement/ElemID" },
+    { "loadpos",       test_loadpos,
+      "LoadPos/BuildYRotationMatrix/MatrixMultiply/CopyMatrix/UnloadPos" },
 };
 
 int main(int argc, char** argv)
