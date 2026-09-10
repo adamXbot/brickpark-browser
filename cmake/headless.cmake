@@ -100,4 +100,72 @@ if(EMSCRIPTEN)
   # ASYNCIFY at all.
   ll_headless_target(legoland_headless_debug)
   target_link_options(legoland_headless_debug PRIVATE -O0 -g2)
+
+  # ---- the spine as a CI gate ---------------------------------------------
+  # The browser page and this harness now stop at the same place for the same
+  # reason (docs/lanes/scope-port-a3.md §3), so the startup spine can be a test
+  # instead of something a human looks at in a tab. `--stages` walks
+  # InitSession's own order with the prototypes the DEFINING files use, so it
+  # gets further than the game's own InitSession can while the live prototype
+  # conflicts stand: `loadsprite` is skipped because __BMPLoader's
+  # `RES_CloseFile` call is poisoned and `rungame` because the front end does
+  # not return. Both skips are work items for a matching lane, and each one
+  # should be deleted from this line as that lane closes it -- which is what
+  # makes this test a ratchet rather than a snapshot.
+  #
+  # ctest runs it only when gamedata/ is there: the mount, the directories and
+  # the string table are the substance of the test.
+  if(EXISTS "${LL_ROOT}/gamedata/disc/Legoland.res")
+    enable_testing()
+    add_test(NAME headless_spine
+             COMMAND node "$<TARGET_FILE_DIR:legoland_headless>/legoland_headless.js"
+                     --stages loadsprite,rungame)
+    set_tests_properties(headless_spine PROPERTIES
+      ENVIRONMENT "LL_CD_DIR=${LL_ROOT}/gamedata/disc;LL_DATA_DIR=${LL_ROOT}/gamedata/main"
+      PASS_REGULAR_EXPRESSION "--- done"
+      FAIL_REGULAR_EXPRESSION "TRAP|unreachable|RuntimeError|cannot chdir"
+      TIMEOUT 300)
+  else()
+    message(STATUS "PORT-A headless: gamedata/ not present, "
+                   "headless_spine not registered")
+  endif()
+
+  # ---- install-path resolution over a PRELOADED MEMFS ----------------------
+  # `ll_host_resolve_path` is what makes the paths the game wrote for a 1999
+  # install resolve on a modern host, and on this Mac it could not have had a
+  # useful test: every other node target uses -sNODERAWFS=1, which goes straight
+  # to APFS, and APFS is case-insensitive by default, so the case-folding code
+  # never runs (`ls gamedata/main/LEGOLAND.ICM` lists `Legoland.icm`). The
+  # browser's preloaded MEMFS is the opposite and the one that matters: it is
+  # case-SENSITIVE whatever machine packaged it, and so is Linux CI on ext4.
+  #
+  # So this target is the browser's filesystem under node: no NODERAWFS, a
+  # --preload-file tree, and nothing else. The fixture below is generated from
+  # nothing -- empty files whose NAMES mirror the real install's mixed case -- so
+  # no game asset is involved and the test runs with or without gamedata/.
+  set(LL_PATHFIX "${CMAKE_BINARY_DIR}/gen-pathfix")
+  file(WRITE "${LL_PATHFIX}/main/Legoland.icm" "")              # asked for as LEGOLAND.ICM
+  file(WRITE "${LL_PATHFIX}/main/stab.str" "")                  # asked for as .\strings\Stab.str
+  file(WRITE "${LL_PATHFIX}/main/Graphics/Erase It.lls" "")     # real subdir, mixed case, a space
+  file(WRITE "${LL_PATHFIX}/cd/Legoland.res" "")                # the emulated D: drive
+  add_executable(legoland_pathtest EXCLUDE_FROM_ALL
+    src/headless/pathtest.c src/hostwin/kernel32.c)
+  target_include_directories(legoland_pathtest PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/hostwin/include")
+  target_compile_options(legoland_pathtest PRIVATE
+    -Wall -Wextra -Wno-unused-parameter)
+  target_link_options(legoland_pathtest PRIVATE
+    -sEXIT_RUNTIME=1 -sALLOW_MEMORY_GROWTH=1
+    "SHELL:--preload-file ${LL_PATHFIX}/main@/gamedata"
+    "SHELL:--preload-file ${LL_PATHFIX}/cd@/cd")
+  enable_testing()
+  add_test(NAME install_paths
+           COMMAND node "$<TARGET_FILE_DIR:legoland_pathtest>/legoland_pathtest.js")
+  # No ENVIRONMENT here on purpose: emscripten seeds its environment from the
+  # host's process.env only under NODERAWFS, so a MEMFS build cannot be told
+  # $LL_CD_DIR that way and the test sets it itself -- which is exactly what
+  # PORT-B's src/browser/main.c has to do for the page.
+  set_tests_properties(install_paths PROPERTIES
+    FAIL_REGULAR_EXPRESSION "FAIL"
+    TIMEOUT 120)
 endif()
