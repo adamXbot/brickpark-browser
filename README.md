@@ -108,6 +108,50 @@ the clang build breaks: wrap it in `#ifndef LEGOLAND_PORTABLE` and give the
 `#else` arm a C fallback or `LL_UNPORTED_ASM()`. The guard lines go INSIDE
 the function body, never between a `// FUNCTION:` marker and its signature.
 
+## The browser host shim (scope PORT-B)
+
+`src/hostwin/{ddraw,user32,gdi32,dinput,winmm,dsound}.c` is a host shim for the
+six DLLs the *graphics and input* half of the game imports; `src/browser/` is
+the Emscripten page around it and `cmake/browser.cmake` its targets. Full notes,
+including the vtable slot table with the source line that pins each slot, are in
+[`docs/lanes/scope-port-b.md`](../docs/lanes/scope-port-b.md).
+
+**The main loop is `-sASYNCIFY`.** The recovered game has no one-frame function:
+every frame is produced inside synchronous spin loops (`FlipPrimary`'s 28 ms
+`while (timeGetTime() - g_flip_time < 0x1c);`, `PresentFlip`'s `GetFlipStatus`
+spin, the `PeekMessageA` drain, the `WaitMessage` focus idle, `RunGame`'s
+`PeekMessageA; Sleep(100)` music wait). ASYNCIFY runs that control flow
+unchanged, with the yields inside the shim: `PeekMessageA` when the queue goes
+empty (once per frame), `WaitMessage`, `Sleep`, `GetFlipStatus`, the present
+path, and `timeGetTime` whenever 4 ms has passed — the last is what bounds
+*every* wall-clock spin. Two rules follow for other lanes: **`Sleep` must yield,
+never be a no-op**, and **nothing may call into wasm while a yield is unwound**
+(canvas events only enqueue; `timeSetEvent` callbacks are dispatched from the
+pump, not a JS timer).
+
+| target | toolchain | state |
+| --- | --- | --- |
+| `legoland_hostwin` | all (in the default build) | the shim; 70 of `gen_link.py`'s 149 host traps are now real code, and 0 remain in DDRAW/USER32/GDI32/DINPUT/WINMM/DSOUND |
+| `legoland_shimtest` | wasm32 | drives the shim through the startup spine's exact call sequence and paints a frame. **Runs**: 640x480 RGB565 on a canvas at ~87 fps with the page responsive, keyboard and mouse read back through DirectInput |
+| `legoland_browser` | wasm32 | the game itself. Wired and complete; **blocked** on `gen_link.py`, which does not compile on wasm32 (the 12 `globals.c` redeclarations, plus `aliases.c`'s `__attribute__((alias))` on an incomplete array type off Apple) |
+
+```bash
+emcmake cmake -S portable -B portable/build-wasm -G Ninja -DLL_ILP32=ON \
+    -DPython3_EXECUTABLE=$HOME/.venvs/legoland/bin/python
+ninja -C portable/build-wasm legoland_shimtest
+cd portable/build-wasm && python3 -m http.server 8791   # /shimtest.html
+```
+
+Assets are `--preload-file`d: `gamedata/main` at `/gamedata`, and (option
+`LL_PRELOAD_RES`, default ON) the three RES volumes at `/gamedata/volumes/`,
+because `RES_OpenVolume` opens `.\volumes\<stem>.res` first and `InitSession`
+mounts them *before* DirectDraw exists. That is a 170 MB `.data` file — fine over
+localhost, and the reason a WASMFS fetch backend is the next step.
+
+What is not there yet: GDI text (invisible; the layout maths still runs), the AVI
+frames, sound, MIDI, printing and dialogs. Each returns a documented failure or a
+successful no-op; none of them traps.
+
 ## Next
 
 1. **Host shim on SDL3, native desktop first**: window and message pump,
