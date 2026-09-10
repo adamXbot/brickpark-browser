@@ -80,3 +80,9 @@ add_executable(legoland_linkcheck EXCLUDE_FROM_ALL src/linkcheck.c)
 target_link_libraries(legoland_linkcheck PRIVATE
   "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_core>"
   "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_gen>")
+
+# ---- port wave lanes (docs/SCOPE_PORT_WAVE.md) ------------------------------
+# Each lane owns one of these files so three agents never edit this one.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/headless.cmake")   # PORT-A: wasm32 link closure + node startup harness
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/browser.cmake")    # PORT-B: Emscripten canvas host shim
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests.cmake")      # PORT-C: headless subsystem tests against gamedata/
