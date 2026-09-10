@@ -392,6 +392,11 @@ static long ll_surf_GetDC(LLSurface* s, void** hdc)
 {
     if (!hdc) return DDERR_INVALIDPARAMS;
     *hdc = (void*)s;
+    /* A DC from GetDC is a FRESH DC: black text, white opaque background, no
+     * clip region. text.c relies on that -- PrintLimitedText (0x00454c70) calls
+     * SetTextColor and never restores it, and the next Print must still draw in
+     * black. PORT-B2. */
+    ll_host_dc_reset((void*)s);
     return DD_OK;
 }
 static long ll_surf_ReleaseDC(LLSurface* s, void* hdc) { (void)s; (void)hdc; return DD_OK; }
@@ -841,3 +846,27 @@ long DirectDrawCreate(void* guid, void** out, void* outer)
 
 /* For the page's status line / the headless harness. */
 int ll_host_frames_presented(void) { return g_present_count; }
+
+/* ---- the surface behind an HDC (PORT-B2) -------------------------------- */
+/* GetDC hands out the LLSurface pointer itself, so gdi32.c can draw straight
+ * into the surface's 16-bpp buffer -- which is what makes GDI text visible
+ * instead of a no-op. The vtable pointer is the identity check: a cookie from
+ * CreateCompatibleDC or CreateDCA (gdi32.c's printer/memory DCs) is not a
+ * surface and must be rejected, not dereferenced.
+ *
+ * Lock state is deliberately not consulted. text.c unlocks before GetDC
+ * (PushRenderingStatusAndUnlockVideoSurface, because real GDI needs an unlocked
+ * surface) and InfoPrintCent assumes its caller already did, but in this shim
+ * the pixel buffer is a plain malloc'd block that is valid either way. */
+int ll_host_surface_pixels(void* hdc, unsigned short** bits,
+                           int* w, int* h, int* pitch)
+{
+    LLSurface* s = (LLSurface*)hdc;
+    if (!s || s->vtbl != (const void*)g_surface_vtbl || !s->bits)
+        return 0;
+    if (bits)  *bits = s->bits;
+    if (w)     *w = s->w;
+    if (h)     *h = s->h;
+    if (pitch) *pitch = s->pitch;
+    return 1;
+}

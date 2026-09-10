@@ -26,6 +26,10 @@ set(LL_HOSTWIN_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/ddraw.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/user32.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/gdi32.c"
+  # PORT-B2: the bitmap face and the DrawText layout engine that gdi32.c's
+  # TextOutA and user32.c's DrawTextA draw and MEASURE with. Not optional --
+  # eleven DT_CALCRECT call sites lay the front end out around its answers.
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/ll_font.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/dinput.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/winmm.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/dsound.c")

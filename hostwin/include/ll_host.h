@@ -272,10 +272,27 @@ void ll_host_mouse_button(int button, int down);
  * once per message-pump pass. */
 void ll_host_pump_timers(void);
 
+/* The last MessageBoxA the shim answered, for the page's status line: the text,
+ * the caption, and the button id it answered with. PORT-B2; user32.c. */
+const char* ll_host_last_messagebox(void);
+int         ll_host_last_messagebox_answer(void);
+
 /* ---- DDRAW (portable/src/hostwin/ddraw.c) ------------------------------- */
 /* The one exported entry; everything else is reached through the C vtables it
  * hands back. Returns DD_OK (0) and a fully populated IDirectDraw. */
 long DirectDrawCreate(void* guid, void** out, void* outer);
+
+/* How many frames have reached the canvas. */
+int ll_host_frames_presented(void);
+
+/* Resolve an HDC that IDirectDrawSurface::GetDC handed out (ddraw.c returns the
+ * surface pointer itself) to the surface's 16-bpp pixels. Returns 0 when the
+ * handle is not one of ddraw.c's surfaces -- a memory DC from
+ * CreateCompatibleDC, say -- in which case there is nothing to draw into and
+ * the GDI call becomes the no-op it was before. PORT-B2; the vtable pointer is
+ * the identity check, so a stray cookie cannot be mistaken for a surface. */
+int ll_host_surface_pixels(void* hdc, unsigned short** bits,
+                           int* w, int* h, int* pitch);
 
 /* ---- USER32 (portable/src/hostwin/user32.c) ----------------------------- */
 /* Rect maths: real implementations, Win32 semantics (exclusive right/bottom).
@@ -333,10 +350,73 @@ int   FillRect(void* hdc, const LLRect* rc, void* brush);
 int   DrawTextA(void* hdc, const char* text, int len, LLRect* rc,
                 unsigned int format);
 
+/* ---- the bitmap font (portable/src/hostwin/ll_font.c, PORT-B2) ---------- */
+/* GDI text is the game's only text: text.c's Print* routines borrow a DC from
+ * the DirectDraw draw surface and let GDI draw into it, and eleven DrawTextA
+ * call sites MEASURE with DT_CALCRECT and lay out around the answer. So one
+ * engine does both halves and they agree by construction. See ll_font.c's
+ * header for the face, the metrics and what they are derived from. */
+typedef struct LLFontMetrics {
+    int cell_h;     /* the LOGFONT's lfHeight: a cell height */
+    int weight;     /* the LOGFONT's lfWeight */
+    int bold;       /* weight >= 600 */
+    int gw, gh;     /* the ink box one glyph is scaled into */
+    int advance;    /* pen movement per character (this face is monospaced) */
+    int line_h;     /* baseline-to-baseline, == cell_h */
+    int ascent;
+} LLFontMetrics;
+
+/* Where text goes: a 16-bpp surface plus the clip box already intersected from
+ * the DC's clip region and the surface bounds. Half-open, like every Win32
+ * rect. */
+typedef struct LLFontTarget {
+    unsigned short* bits;
+    int             w, h, pitch;
+    LLRect          clip;
+} LLFontTarget;
+
+void ll_font_metrics(int cell_h, int weight, LLFontMetrics* m);
+void ll_font_default_metrics(LLFontMetrics* m);
+int  ll_font_text_width(const LLFontMetrics* m, const char* s, int n);
+
+/* TextOutA's engine: (x, y) is the top-left of the cell (TA_TOP|TA_LEFT). */
+void ll_font_text_out(const LLFontTarget* t, const LLFontMetrics* m,
+                      int x, int y, const char* s, int n,
+                      unsigned short fg, int opaque, unsigned short bg);
+
+/* DrawTextA's engine. Honours DT_CENTER/RIGHT/VCENTER/BOTTOM/WORDBREAK/
+ * SINGLELINE/NOCLIP/CALCRECT, returns the text height, and under DT_CALCRECT
+ * writes the measured rect back instead of drawing. `t` may be NULL when only
+ * measuring. */
+int  ll_font_draw_text(const LLFontTarget* t, const LLFontMetrics* m,
+                       LLRect* rc, const char* s, int n, unsigned int format,
+                       unsigned short fg, int opaque, unsigned short bg);
+
+unsigned short ll_font_colorref_to_565(unsigned long colorref);
+
 /* ---- GDI32 (portable/src/hostwin/gdi32.c) ------------------------------- */
 /* Handle factories hand back distinct non-null cookies; the drawing calls are
  * no-ops that report success; printing reports failure so the print path
  * aborts at its first check. Nothing here traps. */
+
+/* Reset a DC's attributes to GDI's defaults (black text on a white opaque
+ * background, no clip region, the 20-pixel font). IDirectDrawSurface::GetDC
+ * hands out a FRESH DC every call, so ddraw.c calls this from its GetDC --
+ * without it PrintLimitedText's SetTextColor, which it never restores, would
+ * leak into the next Print. gdi32.c. */
+void ll_host_dc_reset(void* hdc);
+
+/* Resolve a DC to a drawing target: the surface behind it plus the DC's current
+ * clip box. Returns 0 when the DC is not over a surface. gdi32.c. */
+int  ll_host_dc_target(void* hdc, LLFontTarget* t);
+
+/* The DC's selected font's metrics, its text colour, its background colour and
+ * whether the background is opaque (SetBkMode(OPAQUE) == 2). gdi32.c. */
+void ll_host_dc_font(void* hdc, LLFontMetrics* m);
+unsigned short ll_host_dc_fg(void* hdc);
+unsigned short ll_host_dc_bg(void* hdc);
+int  ll_host_dc_opaque(void* hdc);
+unsigned long  ll_host_brush_colour(void* brush);
 int   AddFontResourceA(const char* file);
 int   RemoveFontResourceA(const char* file);
 void* CreateFontIndirectA(const void* logfont);
