@@ -30,6 +30,7 @@ import collections
 import glob
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -73,11 +74,48 @@ def is_crt(name):
     return name in CRT or name.startswith('__') or name.startswith('_Default')
 
 
-def find_nm():
-    for cand in ('llvm-nm', 'nm'):
-        if subprocess.call(['which', cand], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
-            return cand
-    sys.exit('nm not found')
+def nm_candidates():
+    """The nm programs to try, best first.
+
+    The wasm objects emcc writes carry symbol flags older readers reject
+    ("invalid symbol type: 16" from the nm Xcode ships), so the llvm-nm that
+    belongs to the Emscripten install is tried before the system one. $LL_NM
+    overrides everything."""
+    cands = []
+    if os.environ.get('LL_NM'):
+        cands.append(os.environ['LL_NM'])
+    em_config = shutil.which('em-config')
+    if em_config:
+        # em-config is Emscripten's own answer for where its llvm lives, and
+        # the layouts differ (Homebrew keeps it under libexec, emsdk under
+        # upstream/bin).
+        try:
+            root = subprocess.run([em_config, 'LLVM_ROOT'], capture_output=True,
+                                  text=True, timeout=30).stdout.strip()
+            if root:
+                cands.append(os.path.join(root, 'llvm-nm'))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    cands += ['llvm-nm', 'nm']
+    out = []
+    for c in cands:
+        p = c if os.path.sep in c else shutil.which(c)
+        if p and os.path.exists(p) and p not in out:
+            out.append(p)
+    if not out:
+        sys.exit('nm not found')
+    return out
+
+
+def find_nm(sample=None):
+    """The first candidate that can actually read `sample`."""
+    cands = nm_candidates()
+    if sample is None:
+        return cands[0]
+    for nm in cands:
+        if subprocess.run([nm, '-P', sample], capture_output=True).returncode == 0:
+            return nm
+    sys.exit(f'no usable nm: none of {", ".join(cands)} could read {sample}')
 
 
 def run_nm(nm, path):
@@ -103,20 +141,29 @@ def collect_objects(build_dir, only_game=True):
     objs.sort()
     if not objs:
         sys.exit(f'no object files under {build_dir}; build first')
-    nm = find_nm()
-    defined = collections.defaultdict(set)     # name -> {object basename}
-    strong = collections.defaultdict(set)      # non-common definitions
-    undefined = collections.defaultdict(set)
-    for obj in objs:
-        base = os.path.basename(obj).replace('.c.o', '.c').replace('.o', '')
-        for name, typ in run_nm(nm, obj):
-            if typ == 'U':
-                undefined[name].add(base)
-            elif typ in GLOBAL_TYPES:
-                defined[name].add(base)
-                if typ != 'C':
-                    strong[name].add(base)
-    return objs, defined, strong, undefined
+    # One nm has to read every object: the system one may manage the game's
+    # and then choke on a shim object (see nm_candidates), so a failure
+    # restarts the scan with the next candidate rather than losing symbols.
+    cands = nm_candidates()
+    for attempt, nm in enumerate(cands):
+        defined = collections.defaultdict(set)     # name -> {object basename}
+        strong = collections.defaultdict(set)      # non-common definitions
+        undefined = collections.defaultdict(set)
+        try:
+            for obj in objs:
+                base = os.path.basename(obj).replace('.c.o', '.c').replace('.o', '')
+                for name, typ in run_nm(nm, obj):
+                    if typ == 'U':
+                        undefined[name].add(base)
+                    elif typ in GLOBAL_TYPES:
+                        defined[name].add(base)
+                        if typ != 'C':
+                            strong[name].add(base)
+        except subprocess.CalledProcessError as e:
+            if attempt + 1 == len(cands):
+                sys.exit(f'{nm} cannot read {e.cmd[-1]}: {e.stderr.strip()}')
+            continue
+        return objs, defined, strong, undefined
 
 
 def load_win32():
