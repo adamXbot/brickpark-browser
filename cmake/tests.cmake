@@ -88,9 +88,35 @@ add_executable(legoland_tests EXCLUDE_FROM_ALL
 target_include_directories(legoland_tests PRIVATE
   "${LL_TESTS_DIR}" "${LL_ORACLE_DIR}")
 target_compile_options(legoland_tests PRIVATE -Wall -Wno-unused-function)
-target_link_libraries(legoland_tests PRIVATE
-  "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_core>"
-  "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_gen>")
+
+# PORT-C is closed; PORT-A2 owns this block (docs/lanes/scope-port-a2.md §3).
+#
+# `loadpos` traps in USER32's ShowWindow because the closure the tests link,
+# legoland_gen, has a TRAPPING STUB for every DDRAW/USER32/GDI32/DINPUT/WINMM
+# name -- PORT-B's real shim lives in legoland_hostwin, which nothing here
+# linked. Linking it means also swapping the closure for legoland_gen_browser,
+# the same closure with those stubs filtered out (browser.cmake's
+# closure_filter.py); linking both would be a duplicate definition of every
+# one of them.
+#
+# The shim needs five browser-only symbols under node: the four ll_canvas.js
+# entry points (--js-library, not linked here, and its ll_js_display_open
+# touches `document`) and emscripten_sleep (ASYNCIFY, which the tests do not
+# want). src/headless/node_shim.c stubs exactly those five, as the brief
+# requires -- PORT-B's user32.c and ddraw.c are NOT edited. They tolerate node
+# otherwise: the shim only reaches JS through those four calls.
+if(EMSCRIPTEN)
+  target_sources(legoland_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/headless/node_shim.c")
+  target_link_libraries(legoland_tests PRIVATE
+    legoland_hostwin
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_core>"
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_gen_browser>")
+else()
+  target_link_libraries(legoland_tests PRIVATE
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_core>"
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_gen>")
+endif()
 
 if(EMSCRIPTEN)
   # NODERAWFS: the game's own relative paths read straight off the disk, so a
@@ -98,7 +124,10 @@ if(EMSCRIPTEN)
   # are a few megabytes of .data, hence the memory settings.
   target_link_options(legoland_tests PRIVATE
     -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728
-    -sSTACK_SIZE=4194304 -sEXIT_RUNTIME=1)
+    -sSTACK_SIZE=4194304 -sEXIT_RUNTIME=1
+    # Keep the wasm name section: a prototype conflict is not a TRAP, it is a
+    # poisoned call site, and without this it reads `wasm-function[112]`.
+    --profiling-funcs)
 endif()
 
 # ---- ctest -----------------------------------------------------------------
@@ -121,8 +150,16 @@ function(ll_add_test name cwd ilp32_only)
   add_test(NAME ${name}
            COMMAND legoland_tests ${name}
            WORKING_DIRECTORY "${cwd}")
+  # LL_CD_DIR: with PORT-B's shim linked (above), a test that reaches
+  # RES_EnsureMounted no longer trips over a generated trap -- it runs
+  # sysmisc.c's real missing-CD loop, `while (!RES_FindVolumeOnAnyDrive(...))
+  # MessageBoxA("Please insert the LEGOLAND CD-ROM")`, which has NO other exit
+  # and spun `loadpos` until ctest's timeout. Pointing the emulated CD drive at
+  # the volumes is the answer for a test; the answer for the page is PORT-B's
+  # MessageBoxA returning IDCANCEL.
   set_tests_properties(${name} PROPERTIES
     FAIL_REGULAR_EXPRESSION "FAIL|TRAP|unwritten|unhosted"
+    ENVIRONMENT "LL_CD_DIR=${LL_ROOT}/gamedata/disc"
     TIMEOUT 300)
 endfunction()
 

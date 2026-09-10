@@ -95,8 +95,15 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/closure_filter.py"
           --gen "${LL_BROWSER_GEN_DIR}"
           --objs "${CMAKE_BINARY_DIR}/CMakeFiles/legoland_hostwin.dir"
+  # linkreport.py is not a bystander: gen_link.py imports it and gets its
+  # object scanner, its source scanner, its classifier and its wasm signature
+  # reader from it, so a change there changes the generated closure. Without
+  # this line an edit to linkreport.py leaves gen-browser stale, which cost an
+  # afternoon once (PORT-A2). portable/CMakeLists.txt's own `gen` command has
+  # the same gap; nobody but the integrator may edit that file.
   DEPENDS legoland_core legoland_hostwin
           "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_link.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tools/linkreport.py"
           "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/closure_filter.py"
   COMMENT "gen_link.py + closure_filter.py: the browser target's link closure"
   VERBATIM)
@@ -145,9 +152,14 @@ target_compile_options(legoland_browser PRIVATE -w)
 target_link_options(legoland_browser PRIVATE
   ${LL_WASM_COMMON_LINK}
   ${LL_PRELOAD}
-  # Until PORT-A's closure is complete, an undefined symbol must be a runtime
-  # trap rather than a link failure, so the page still loads and says what it
-  # reached. Drop this once the closure is closed.
-  -sERROR_ON_UNDEFINED_SYMBOLS=0)
+  # The closure closes, so an undefined symbol is a build failure again
+  # (PORT-A2; it was 0 while PORT-A's --ilp32 work was in flight). Turning it
+  # on changes nothing else: the link is clean, and the page still runs the
+  # spine to exactly the same point. Keeping it at 0 would hide the next
+  # missing name behind a bare `RuntimeError: unreachable`, which is precisely
+  # the failure mode that made this lane's prototype conflicts so expensive to
+  # find. NOTE: it does NOT catch those conflicts -- a signature mismatch is a
+  # wasm-ld WARNING and a poisoned call site, not an undefined symbol.
+  -sERROR_ON_UNDEFINED_SYMBOLS=1)
 set_target_properties(legoland_browser PROPERTIES
   SUFFIX ".html" OUTPUT_NAME "legoland")
