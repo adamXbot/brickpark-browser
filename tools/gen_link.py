@@ -101,6 +101,52 @@ IMAGE_BASE = 0x400000
 # known. Generous, because some of these names are structs.
 UNKNOWN_DATA_SIZE = 256
 
+# ---- records whose extent is a STRUCT, not an array ------------------------
+# The interior-alias pass below takes an object's extent from the game's own
+# declaration, which works when the declaration is `extern unsigned char
+# g_key_state[256]` -- array bounds times an element size that is a language
+# fact. It gives NOTHING for `extern GameInput g_input;`: a struct type has no
+# size until somebody writes the struct out, and gen_link does not parse C. Such
+# an object therefore falls back to the gap tiling, which sizes it by the
+# distance to the next NAMED address -- and for a record whose fields other
+# files declare individually, the next named address is its own SECOND FIELD. The
+# record comes out as one block per field, 16-byte aligned, in declaration order,
+# and the two halves of the game disagree about where every field is: the files
+# that write `g_input.point` write at `g_input + 4` (inside a FOUR-byte block,
+# i.e. into the padding after it), the files that read `g_gfx_point` read a
+# different block entirely. Silent, and total.
+#
+# This table is the extent for those records, and a row is only allowed when the
+# game's own sources pin it TWICE -- the struct's last field offset, and an
+# independent `extern` at that field's own address whose comment gives the same
+# address. Both citations are in the row. Anything merged here still goes through
+# the pass's clamp (rule 2: stop at any address a game object defines), so a row
+# can only ever claim storage that was going to be tiled to these names anyway.
+#
+# Found by: every extern whose address comment attributes it to a record
+# (`/* 0x007cad80  g_temp_profile.age */`) -- see docs/lanes/scope-port-a5.md for
+# the tree-wide sweep and for the three live records it turned up.
+STRUCT_EXTENTS = {
+    # GameInput @ 0x00813a40, the one the front end reads every frame.
+    # bighelp.c:35 lays it out to `move_tick` at +0xa0 (0x00813ae0), and
+    # bubblecache.c:120 declares 0x00813a70 as `g_input.fp_h` (+0x30). Split, it
+    # was nine blocks: the cursor point (+4), fp_w (+0x2c), fp_h (+0x30) and the
+    # five GameButton pairs from +0x84 on were all separate objects, so
+    # ReadGameButtons (bighelp.c 0x00452460) wrote a record nothing read.
+    0x00813a40: (0xa4, 'GameInput, bighelp.c:35-64 (move_tick +0xa0); '
+                       'bubblecache.c:120 g_input.fp_h +0x30'),
+    # PopUpUI @ 0x007fdea4. popup.c:474-507 ends at `spr_happy` +0x174, whose
+    # comment gives 0x007fe018 = 0x007fdea4 + 0x174; misc3.c:216 declares
+    # 0x007fdfc4 as `g_popup.icon_next` (+0x120).
+    0x007fdea4: (0x178, 'PopUpUI, popup.c:474-507 (spr_happy +0x174 = 0x007fe018); '
+                        'misc3.c:216 g_popup.icon_next +0x120'),
+    # Profile @ 0x007cad60, the PLAYER DETAILS screen's scratch profile.
+    # profiles.c:64-77 is 0x110 bytes (`f10f` at +0x10f); unref7.c:276 declares
+    # 0x007cad80 as `g_temp_profile.age` (+0x20, the `f20` of that layout).
+    0x007cad60: (0x110, 'Profile, profiles.c:64-77 (0x110, f10f +0x10f); '
+                        'unref7.c:276 g_temp_profile.age +0x20'),
+}
+
 # The initialised data sections: a pointer re-pointed by offset has to land in
 # one of these. .text is excluded on purpose -- a wasm function "address" is a
 # table index, so an offset into the middle of a function body means nothing,
@@ -707,7 +753,7 @@ def main():
     def declared_extent(addr):
         """The byte extent the game's own declarations give the object at
         `addr`, or 0 when no declaration there has a computable size."""
-        best = 0
+        best = STRUCT_EXTENTS.get(addr, (0, ''))[0]
         for nm in data_names.get(addr, ()):
             for daddr, _depth, _count, nbytes in decls.get(nm, []):
                 if daddr == addr and nbytes:
