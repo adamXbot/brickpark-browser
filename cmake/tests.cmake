@@ -75,6 +75,8 @@ ll_oracle(tilegeom)
 ll_oracle(res)
 ll_oracle(icm)
 ll_oracle(geom)
+# PORT-B3: one real 16-bpp COMP frame decoded by tools/comp.py.
+ll_oracle(rlepaint)
 
 # ---- the driver ------------------------------------------------------------
 add_executable(legoland_tests EXCLUDE_FROM_ALL

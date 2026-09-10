@@ -28,6 +28,10 @@
  * involved.  No host shim either -- a painter touches nothing but its
  * arguments, `g_blit_hit` and `g_sp_recolour`. */
 #include "ll_tests.h"
+#include <stdlib.h>
+#include "oracle_rlepaint.h"
+
+static void real_sprite(void);
 
 /* ---- the painters, declared exactly as softblit2.c declares them --------- */
 extern void RLEPaintHitClipLR(void* dst, void* a, void* b, void* c, int h,
@@ -488,4 +492,91 @@ void test_rle_paint(void)
         expect(defect, TOP, ROWS, 0, SPR_W, 0xffffu, 0);
         compare("RLEPaintHitClipLR's top-skip is the correct one");
     }
+
+    /* ---- 7. one REAL sprite, against the Python decoder ------------------ */
+    real_sprite();
+}
+
+/* ---- a real shipped frame, against tools/comp.py ------------------------- */
+/* Everything above is the test's own idea of what a frame looks like. This is
+ * one frame of one sprite out of gamedata/disc/Graphics1.res, painted by the
+ * recovered C and compared -- as an FNV-1a 64 digest of the whole scratch
+ * surface -- against tools/oracle_rlepaint.py's decode of the same bytes with
+ * the clean-room reader in tools/comp.py. The oracle picks the member and
+ * emits its byte range, the sentinel to pre-fill with, and the digests; the
+ * frame's own bytes never leave the archive. */
+
+static void real_sprite(void)
+{
+    FILE*           f;
+    unsigned char*  mem;
+    unsigned char*  frame;
+    unsigned short* surf;
+    unsigned int    np;
+    unsigned int    nl;
+    unsigned int    fsize;
+    unsigned int    npix;
+    unsigned int    i;
+    ll_u64          d;
+    void*           a;
+    void*           b;
+    void*           c;
+
+    f = fopen(LL_RLE_RES_PATH, "rb");
+    ll_checks++;
+    if (!f) {
+        ll_fail("open " LL_RLE_MEMBER, "cannot open " LL_RLE_RES_PATH);
+        return;
+    }
+    ll_pass("open the archive holding " LL_RLE_MEMBER);
+
+    mem = (unsigned char*)malloc(LL_RLE_SIZE);
+    if (!mem) { fclose(f); return; }
+    if (fseek(f, (long)LL_RLE_OFFSET, SEEK_SET) != 0
+     || fread(mem, 1, LL_RLE_SIZE, f) != LL_RLE_SIZE) {
+        ll_checks++;
+        ll_fail("read " LL_RLE_MEMBER, "short read");
+        fclose(f);
+        free(mem);
+        return;
+    }
+    fclose(f);
+
+    LL_CHECK_TRUE("the member is a COMP block", memcmp(mem, "COMP", 4) == 0);
+
+    /* COMP header 0x18, then the frame header: size, pixel words, padded
+     * length bytes, padded opcode count -- then A, B, C. */
+    frame = mem + 24;
+    memcpy(&fsize, frame + 0, 4);
+    memcpy(&np, frame + 4, 4);
+    memcpy(&nl, frame + 8, 4);
+    LL_CHECK_INT("frame 0 is the size the oracle read", fsize,
+                 LL_RLE_FRAME_SIZE);
+    a = (void*)(frame + 16);
+    b = (void*)(frame + 16 + 2 * np);
+    c = (void*)(frame + 16 + 2 * np + nl);
+
+    npix = (unsigned int)LL_RLE_W * (unsigned int)LL_RLE_H;
+    surf = (unsigned short*)malloc(npix * 2);
+    if (!surf) { free(mem); return; }
+
+    for (i = 0; i < npix; i++) surf[i] = (unsigned short)LL_RLE_SENTINEL;
+    RLEPaintFast((void*)surf, a, b, c, LL_RLE_H, LL_RLE_W * 2, 0);
+    d = ll_fnv_bytes(ll_fnv_init(), surf, npix * 2);
+    LL_CHECK_HEX("RLEPaintFast reproduces " LL_RLE_MEMBER " exactly",
+                 d, LL_RLE_DIGEST);
+
+    /* The same frame with the right edge cut at half its width: the painter
+     * must write columns 0..CLIP_W-1 and leave the rest at the sentinel, with
+     * the three streams still aligned for every following row -- which is
+     * what makes this a check of the clipping and not just of the decode. */
+    for (i = 0; i < npix; i++) surf[i] = (unsigned short)LL_RLE_SENTINEL;
+    RLEPaintClipR((void*)surf, a, b, c, LL_RLE_H, LL_RLE_W * 2, 0,
+                  0, LL_RLE_CLIP_W, 0, 0);
+    d = ll_fnv_bytes(ll_fnv_init(), surf, npix * 2);
+    LL_CHECK_HEX("RLEPaintClipR cuts " LL_RLE_MEMBER " at half width",
+                 d, LL_RLE_DIGEST_CLIP);
+
+    free(surf);
+    free(mem);
 }
