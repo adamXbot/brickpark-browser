@@ -104,6 +104,8 @@ static const struct entry entries[] = {
      * two asm bodies driven over identical streams. */
     { "anim_recolour", test_anim_recolour,
       "SoftBlitAnim: the recolour mask and its divergences from the plain one" },
+    { "tri_raster",    test_tri_raster,
+      "DrawFlatTri/DrawGouraudTri/DrawFlatTexTri/DrawGouraudTexTri; sqrt hooks" },
 };
 
 int main(int argc, char** argv)

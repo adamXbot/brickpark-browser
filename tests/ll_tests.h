@@ -85,5 +85,6 @@ void test_rle_paint(void);  /* PORT-B3: the ten type-3 RLE painters */
 void test_anim_paint(void); /* PORT-B3: the type-2 LLS animation painter */
 /* ---- scope PORT-B5: the remaining inline-asm bodies --------------------- */
 void test_anim_recolour(void); /* SoftBlitAnim, the recolouring type-2 painter */
+void test_tri_raster(void);    /* tri3d.c's four triangle rasterisers */
 
 #endif /* LL_TESTS_H */
