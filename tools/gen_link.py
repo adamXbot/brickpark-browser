@@ -51,6 +51,22 @@ re-points 1,650 words of which 1,209 are string TEXT, 264 of them inside the
 `GUID_NULL` block alone. The declaration rule re-points 441, every one of them
 a real string pointer.
 
+**ONE block per object.** The same gap tiling that swallows unnamed literals
+also splits a named object that several names reach into at different offsets.
+`extern unsigned char g_key_state[256]` at 0x007fdda0 is also `g_left_ctrl`
+(+0x1d), `g_left_shift` (+0x2a), `g_right_shift` (+0x36) and `g_right_ctrl`
+(+0x9d); tiled, those become five separately aligned arrays, so a 256-byte
+`GetDeviceState` write overruns a 29-byte object and every alias reads a byte
+of the wrong key. `extern char g_gpu_state[0x3d8]` is the same shape over 23
+addresses, one of which is the `DDSURFACEDESC` the renderer locks through, and
+`util.c` clears the lot with one `memset`. So an object whose DECLARED extent
+(the game's own array bounds times a known element size) contains other named
+addresses is emitted once and those names become `.set name, host+off` offset
+aliases -- the only interior-alias form there is, and it survives both the
+Mach-O and the wasm backends. A declaration whose element type has no known
+size hosts nothing and keeps the tiling, and the extent is clamped at any
+address that is not an extern-only data name.
+
 Two things are decided by the object format, not by a flag:
 
 * **Declaration agreement.** A global re-pointed this way is emitted as
@@ -99,14 +115,38 @@ DECL_RE = re.compile(
     r'^\s*extern\s+(?P<type>[A-Za-z_][\w\s*]*?[\s*])(?P<name>[A-Za-z_]\w*)\s*'
     r'(?P<dims>(?:\[[^\]]*\])*)\s*;.*?/\*\s*(?P<addr>0x[0-9a-fA-F]+)')
 
+# ILP32 sizes of the element types the sources declare their globals with. Only
+# the types whose size is a language fact are here: a `Pos`, a `RideDef*` array
+# or an `FXEntry` table has no size until somebody writes the struct, and an
+# extent this table cannot compute is simply not used (see `declared_extent`).
+# Every pointer is 4 bytes, which is the premise of the whole ILP32 target.
+PRIM_SIZES = {
+    'char': 1, 'signed char': 1, 'unsigned char': 1, 'BYTE': 1, 'bool': 1,
+    'short': 2, 'unsigned short': 2, 'WORD': 2, 'SHORT': 2, 'USHORT': 2,
+    'int': 4, 'unsigned int': 4, 'long': 4, 'unsigned long': 4, 'float': 4,
+    'DWORD': 4, 'UINT': 4, 'BOOL': 4, 'LONG': 4, 'ULONG': 4,
+    'double': 8, '__int64': 8,
+}
+
+
+def elem_size(typ):
+    """ILP32 size of one element of `typ`, or None when it is not a language
+    fact (a struct the sources have not laid out)."""
+    t = ' '.join(typ.split())
+    if t.endswith('*'):
+        return 4
+    t = ' '.join(re.sub(r'\b(?:const|volatile|static|struct|enum)\b', ' ', t).split())
+    return PRIM_SIZES.get(t)
+
 
 def scan_pointer_decls():
-    """name -> [(address, pointer depth, element count or None)] for every
-    `extern` data declaration that carries an address comment.
+    """name -> [(address, pointer depth, element count or None, byte extent or
+    None)] for every `extern` data declaration that carries an address comment.
 
     The count is the product of the array dimensions, 1 for a scalar and None
     for an unbounded `[]` (whose real extent is then bounded by the data: see
-    `ptr_slot_count`)."""
+    `ptr_slot_count`). The byte extent is count * element size, and is None
+    whenever either factor is unknown."""
     out = {}
     for path in sorted(glob.glob(os.path.join(lr.SRC, '*.c'))):
         for line in open(path, encoding='utf-8', errors='replace'):
@@ -124,8 +164,10 @@ def scan_pointer_decls():
                 except ValueError:
                     count = None
                     break
+            esz = elem_size(m.group('type'))
             out.setdefault(m.group('name'), []).append(
-                (int(m.group('addr'), 16), m.group('type').count('*'), count))
+                (int(m.group('addr'), 16), m.group('type').count('*'), count,
+                 None if count is None or esz is None else count * esz))
     return out
 
 
@@ -184,9 +226,15 @@ def load_image(exe):
     return read
 
 
-def emit_bytes(name, size, data, align=16):
+def emit_bytes(name, size, data, align=16, nocommon=False):
     if data is None or not any(data):
-        return f'__attribute__((aligned({align}))) unsigned char {name}[{size}];\n'
+        # `= {0}` only where it is needed: a tentative definition becomes a
+        # COMMON symbol under -fcommon, and the assembler cannot resolve
+        # `.set alias, common+off` at all (the alias silently stays undefined).
+        # An explicit initialiser makes it a real .bss definition; the object
+        # is no bigger either way.
+        init = ' = {0}' if nocommon else ''
+        return f'__attribute__((aligned({align}))) unsigned char {name}[{size}]{init};\n'
     # trim trailing zeros: C zero-fills the rest of the array
     n = len(data)
     while n > 0 and data[n - 1] == 0:
@@ -195,7 +243,7 @@ def emit_bytes(name, size, data, align=16):
     return f'__attribute__((aligned({align}))) unsigned char {name}[{size}] = {{\n    {body}\n}};\n'
 
 
-def emit_words(name, size, data, resolve, n_ptr, refs, align=16):
+def emit_words(name, size, data, resolve, n_ptr, refs, align=16, nocommon=False):
     """ILP32: 4-byte words, with addresses re-pointed at the rebuilt symbols.
 
     `resolve(word, is_pointer_slot)` returns `(symbol, offset)` or None; the
@@ -217,7 +265,8 @@ def emit_words(name, size, data, resolve, n_ptr, refs, align=16):
     while n > 0 and words[n - 1] == '0x00000000u':
         n -= 1
     if n == 0:
-        return f'__attribute__((aligned({align}))) unsigned int {name}[{size // 4}];\n'
+        init = ' = {0}' if nocommon else ''     # see emit_bytes
+        return f'__attribute__((aligned({align}))) unsigned int {name}[{size // 4}]{init};\n'
     body = ',\n    '.join(', '.join(words[i:i + 4]) for i in range(0, n, 4))
     return f'__attribute__((aligned({align}))) unsigned int {name}[{size // 4}] = {{\n    {body}\n}};\n'
 
@@ -263,6 +312,27 @@ def data_alias(alias, real, typ, count):
         f'__asm__(".globl _{alias}\\n.set _{alias}, _{real}\\n");\n'
         f'#else\n'
         f'extern {typ} {alias}[{count}] __attribute__((alias("{real}")));\n'
+        f'#endif\n')
+
+
+def data_alias_at(alias, real, off):
+    """Another name for the INTERIOR of storage this file defines.
+
+    Five names in the image are offsets into one 256-byte keyboard array
+    (`g_key_state` + 0x1d/0x2a/0x36/0x9d) and fifteen objects in all are named
+    this way; emitted as separate blocks they get separate addresses, so a
+    256-byte `GetDeviceState` write overruns its object and every alias reads
+    the wrong byte. There is no offset form of `__attribute__((alias))` and
+    none in C at all, but `.set sym, real+off` survives both the Mach-O and
+    the wasm backends -- a wasm data symbol is a (segment, offset) pair, so an
+    interior label is exactly representable. Verified on both."""
+    if off == 0:
+        raise ValueError('use data_alias for a zero offset')
+    return (
+        f'#if defined(__APPLE__)\n'
+        f'__asm__(".globl _{alias}\\n.set _{alias}, _{real}+{off}\\n");\n'
+        f'#else\n'
+        f'__asm__(".globl {alias}\\n.set {alias}, {real}+{off}\\n");\n'
         f'#endif\n')
 
 
@@ -343,14 +413,80 @@ def main():
     host_c = ['/* generated by portable/tools/gen_link.py: host API the shim does not implement yet */',
               '#include "ll_gen.h"', '']
 
+    # The declaration decides which words are pointers (see scan_pointer_decls
+    # and the module docstring) and also how far an object extends, which is
+    # what the interior-alias pass below needs.
+    decls = scan_pointer_decls()
+    fn_names = {name for name, _file in defined_at.values()}
+    fn_names |= {n for n, (_a, kind) in externs.items() if kind == 'fn'}
+
+    def declared_extent(addr):
+        """The byte extent the game's own declarations give the object at
+        `addr`, or 0 when no declaration there has a computable size."""
+        best = 0
+        for nm in data_names.get(addr, ()):
+            for daddr, _depth, _count, nbytes in decls.get(nm, []):
+                if daddr == addr and nbytes:
+                    best = max(best, nbytes)
+        return best
+
+    # ---- ONE object per object: interior aliases ---------------------------
+    # Every global is otherwise sized by the gap to the next named address, so
+    # five names that are offsets into one array become five arrays. The image
+    # says they are one: `extern unsigned char g_key_state[256]` at 0x007fdda0
+    # covers `g_left_ctrl` (+0x1d), `g_left_shift` (+0x2a), `g_right_shift`
+    # (+0x36) and `g_right_ctrl` (+0x9d), and `extern char g_gpu_state[0x3d8]`
+    # covers 23 more addresses that `util.c` clears with one memset. An object
+    # whose declared extent swallows other named addresses is emitted ONCE, and
+    # those names become offset aliases of it.
+    #
+    # A declaration with no computable extent (a struct the sources have not
+    # laid out) hosts nothing; the gap tiling keeps it as it was. The scan stops
+    # at any address that is NOT an extern-only data name -- a function, or data
+    # a game object defines -- and clamps the extent there rather than claiming
+    # storage somebody else owns.
+    absorbed = {}             # absorbed addr -> host addr
+    interiors = {}            # host addr -> [(name, offset)]
+    host_end = {}             # host addr -> end address the merge must cover
+    for addr in sorted(data_names):
+        if addr in absorbed:
+            continue
+        ext = declared_extent(addr)
+        if ext <= 1:
+            continue
+        names = sorted(data_names[addr])
+        if any(n in defined for n in names) or \
+                not [n for n in names if n in missing_data and c_ident_ok(n)]:
+            continue          # no block is emitted here, so it can host nothing
+        taken, end = [], addr + ext
+        i = bisect.bisect_right(known, addr)
+        while i < len(known) and known[i] < end:
+            k = known[i]
+            if k not in data_names or any(n in defined for n in data_names[k]):
+                end = k       # not ours: clamp the extent here
+                break
+            taken.append(k)
+            end = max(end, next_addr.get(k, k + 4))
+            i += 1
+        if not taken:
+            continue
+        for k in taken:
+            absorbed[k] = addr
+            interiors.setdefault(addr, []).extend(
+                (n, k - addr) for n in sorted(data_names[k])
+                if n in missing_data and c_ident_ok(n))
+        host_end[addr] = end
+
     # ---- globals: plan everything before emitting anything ----------------
     # A re-pointed global is `unsigned int[N]`, a plain one `unsigned char[N]`,
     # and the same symbol may be named again later (by a table that points at
     # it, or by an alias of it). Planning first means the prologue's extern
     # declarations can use the types the definitions actually have.
-    plan = []                 # (addr, primary, size, data, rest, mode)
+    plan = []                 # (addr, primary, size, data, rest, mode, interior)
     cross_tu_alias = []       # (alias, real): the game defines the real name
     for addr in sorted(data_names):
+        if addr in absorbed:
+            continue          # storage comes from the object that contains it
         names = sorted(data_names[addr])
         want = [n for n in names if n in missing_data and c_ident_ok(n)]
         if not want:
@@ -361,29 +497,25 @@ def main():
             symbol_at.setdefault(addr, existing[0])
             continue
         primary, rest = want[0], want[1:]
-        size = next_addr.get(addr, 4) - addr
+        size = max(next_addr.get(addr, 4), host_end.get(addr, 0)) - addr
         if size <= 0:
             size = 4
         data = read(addr, size) if read else None
         words = bool(args.ilp32 and data is not None and size % 4 == 0 and addr % 4 == 0)
-        plan.append((addr, primary, size, data, rest, words))
+        plan.append((addr, primary, size, data, rest, words, interiors.get(addr, [])))
         symbol_at[addr] = primary
 
     # ---- which words are pointers, and what they point INTO ----------------
-    # The declaration decides (see scan_pointer_decls and the module docstring):
     # the leading `n_ptr` words of a global are pointers when any extern
     # declaration of a name at that address has pointer depth >= 1. An
     # unbounded `[]` is bounded by the data itself -- the table ends at the
     # first word that could not be a pointer, which is where the literals it
     # points at usually begin.
-    decls = scan_pointer_decls()
-    fn_names = {name for name, _file in defined_at.values()}
-    fn_names |= {n for n, (_a, kind) in externs.items() if kind == 'fn'}
 
     def ptr_slot_count(addr, names, size, data):
         declared, unbounded = 0, False
         for nm in names:
-            for daddr, depth, count in decls.get(nm, []):
+            for daddr, depth, count, _nbytes in decls.get(nm, []):
                 if daddr != addr or depth < 1:
                     continue
                 if count is None:
@@ -399,7 +531,7 @@ def main():
         return n
 
     blocks = {}               # start -> (name, size): every rebuilt data block
-    for addr, primary, size, _d, _r, _w in plan:
+    for addr, primary, size, _d, _r, _w, _i in plan:
         blocks[addr] = (primary, size)
     block_starts = sorted(blocks)
     gaps = []                 # (addr, name, size, data): synthesised blocks
@@ -465,7 +597,7 @@ def main():
     # the synthesised gap blocks are part of the plan (and of the prologue's
     # declarations) by the time the first global is written.
     n_ptr_of = {}
-    for addr, primary, size, data, _rest, words in plan:
+    for addr, primary, size, data, _rest, words, _i in plan:
         n = ptr_slot_count(addr, sorted(data_names[addr]), size, data) if words else 0
         n_ptr_of[addr] = n
         for k in range(n):
@@ -477,28 +609,32 @@ def main():
         # Bytes, never words: a gap block is unnamed data (string literals,
         # switch tables), nothing declares it, so it has no pointer slots and
         # its start need not even be 4-aligned.
-        plan.append((base, name, size, data, [], False))
+        plan.append((base, name, size, data, [], False, []))
     plan.sort(key=lambda p: p[0])
 
     decl_of = {}              # name -> (type, element count) as defined here
-    for _addr, primary, size, _data, _rest, words in plan:
+    for _addr, primary, size, _data, _rest, words, _i in plan:
         decl_of[primary] = ('unsigned int', size // 4) if words else ('unsigned char', size)
 
     refs = set()
-    n_def = n_alias_data = total_bytes = 0
+    n_def = n_alias_data = n_alias_interior = total_bytes = 0
     body = []
-    for addr, primary, size, data, rest, words in plan:
+    for addr, primary, size, data, rest, words, inter in plan:
         sec = next((s for s, a, b in lr.SECTIONS if a <= addr < b), '?')
-        body.append(f'/* 0x{addr:08x} {sec} {size} bytes{" (+" + ", ".join(rest) + ")" if rest else ""} */')
+        body.append(f'/* 0x{addr:08x} {sec} {size} bytes{" (+" + ", ".join(rest) + ")" if rest else ""}'
+                    f'{" interior: " + ", ".join(f"{n}+0x{o:x}" for n, o in inter) if inter else ""} */')
         if words:
             body.append(emit_words(primary, size, data, resolve,
-                                   n_ptr_of.get(addr, 0), refs))
+                                   n_ptr_of.get(addr, 0), refs, nocommon=bool(inter)))
         else:
-            body.append(emit_bytes(primary, size, data))
+            body.append(emit_bytes(primary, size, data, nocommon=bool(inter)))
         typ, count = decl_of[primary]
         for n in rest:
             body.append(data_alias(n, primary, typ, count))
             n_alias_data += 1
+        for n, off in inter:
+            body.append(data_alias_at(n, primary, off))
+            n_alias_interior += 1
         n_def += 1
         total_bytes += size
 
@@ -595,6 +731,8 @@ def main():
         f'- object format: {"wasm (signature-matched stubs and forwarders)" if wasm_sigs is not None else "Mach-O/ELF (untyped stubs, assembler aliases)"}',
         f'- exe: {args.exe if read else "not available, globals zero-initialised"}',
         f'- globals defined: {n_def} ({total_bytes} bytes), data aliases: {n_alias_data}',
+        f'- objects merged from interior-aliased names: {len(interiors)}'
+        f' ({n_alias_interior} offset aliases)',
         f'- symbols re-pointed into (ilp32): {len(refs)}',
         f'- words re-pointed at a symbol address (ilp32): {n_exact}',
         f'- pointer words re-pointed INTO a block (ilp32): {n_interior}',
@@ -612,6 +750,16 @@ def main():
         f'- symbols imported with more than one signature (most common wins): {len(sig_conflicts)}',
         f'- pointer re-pointing (ilp32): {"on" if args.ilp32 else "off"}',
     ]
+    if interiors:
+        manifest += ['', '## Objects whose declared extent contains other named addresses', '',
+                     'One block, the rest offset aliases of it. The extent comes from the',
+                     "game's own `extern` declaration; a struct type with no known size",
+                     'hosts nothing and keeps the gap tiling.', '']
+        for addr in sorted(interiors):
+            host = next(p[1] for p in plan if p[0] == addr)
+            manifest.append(f'- `{host}` 0x{addr:08x} ({blocks[addr][1]} bytes, '
+                            f'declared {declared_extent(addr)}): '
+                            + ', '.join(f'`{n}`+0x{o:x}' for n, o in interiors[addr]))
     if sig_conflicts:
         manifest += ['', '## Conflicting wasm signatures', ''] + \
                     [f'- `{n}`' for n in sig_conflicts]

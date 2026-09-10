@@ -84,6 +84,8 @@ add_executable(legoland_tests EXCLUDE_FROM_ALL
   "${LL_TESTS_DIR}/test_res_archive.c"
   "${LL_TESTS_DIR}/test_llidb_icm.c"
   "${LL_TESTS_DIR}/test_loadpos.c"
+  # PORT-A3 (docs/lanes/scope-port-a3.md): the generator's interior aliases.
+  "${LL_TESTS_DIR}/test_keystate.c"
   ${LL_ORACLE_HEADERS})
 target_include_directories(legoland_tests PRIVATE
   "${LL_TESTS_DIR}" "${LL_ORACLE_DIR}")
@@ -168,3 +170,5 @@ ll_add_test(tile_geometry "${CMAKE_BINARY_DIR}"       FALSE)
 ll_add_test(res_archive   "${LL_ROOT}/gamedata/disc"  TRUE)
 ll_add_test(llidb_icm     "${LL_ROOT}/gamedata/main"  TRUE)
 ll_add_test(loadpos       "${LL_ROOT}/gamedata/disc"  TRUE)
+# PORT-A3: pure layout, no assets and no host shim -- runs on both toolchains.
+ll_add_test(keystate      "${CMAKE_BINARY_DIR}"       FALSE)

@@ -89,6 +89,10 @@ static const struct entry entries[] = {
       "LLIDB_LoadICM/LLIDB_GetCount/LLIDB_GetElement/LLIDB_FindElement/ElemID" },
     { "loadpos",       test_loadpos,
       "LoadPos/BuildYRotationMatrix/MatrixMultiply/CopyMatrix/UnloadPos" },
+    /* PORT-A3: gen_link.py's interior aliases. The oracle is the original's own
+     * layout, so this one drives no decoder and needs no gamedata/. */
+    { "keystate",      test_keystate,
+      "g_key_state/g_gpu_state are ONE object; IsLShiftDown/IsRShiftDown" },
 };
 
 int main(int argc, char** argv)

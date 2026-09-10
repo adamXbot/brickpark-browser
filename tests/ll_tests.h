@@ -80,5 +80,6 @@ void test_tile_geometry(void);
 void test_res_archive(void);
 void test_llidb_icm(void);
 void test_loadpos(void);
+void test_keystate(void);   /* PORT-A3: interior aliases, no oracle */
 
 #endif /* LL_TESTS_H */
