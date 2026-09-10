@@ -8,13 +8,16 @@
  *
  * The shape of the port this assumes, and why each decision is safe:
  *
- *   - **Single-threaded.** The original runs a MIDI/streaming helper thread
- *     (musicthread.c, resaudio2.c) that the port does not start: CreateThread
- *     refuses, so the game keeps its work on the main thread. Mutexes are
- *     therefore always free and a wait on anything returns immediately, which
- *     is exactly what startup.c's one-instance check wants
+ *   - **Single-threaded.** The original starts one helper thread -- the
+ *     DirectMusic pump (musicthread.c), which resaudio2.c suspends and resumes
+ *     -- and this shim runs its start routine INLINE to completion instead of
+ *     concurrently. See the threads section for why that is right for this one
+ *     routine and where it stops being right. Mutexes are therefore always
+ *     free and a wait on one returns immediately, which is exactly what
+ *     startup.c's one-instance check wants
  *     (`WaitForSingleObject(mutex, 0) == WAIT_TIMEOUT` means "already
- *     running", so returning WAIT_OBJECT_0 means "we are the first").
+ *     running", so returning WAIT_OBJECT_0 means "we are the first"). An
+ *     EVENT does NOT work that way: see WaitForSingleObject.
  *   - **Files are POSIX files.** Under node with `-sNODERAWFS=1` the
  *     emscripten FS calls go straight to the real filesystem, so gamedata/ is
  *     read in place with no packaging step; the CRT layer in msvcrt.c already
@@ -35,6 +38,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <setjmp.h>           /* the inline thread's escape, see CreateThread */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -340,37 +344,73 @@ BOOL ResetEvent(HANDLE h)
     return 1;
 }
 
-/* Nothing else runs, so a wait can only succeed (there is no other thread to
- * wait for) -- and succeeding is what the game's checks want. An auto-reset
- * event is consumed by the wait, as on Win32. */
+/* A mutex or a thread handle can only be free here -- there is no other thread
+ * to hold it, and a thread this shim started has already run to completion by
+ * the time anything can wait on it -- so a wait on one succeeds immediately,
+ * which is what startup.c's one-instance check wants.
+ *
+ * An EVENT is different, and getting it wrong is invisible. `WaitForSingleObject
+ * (event, 0)` is a POLL: "has anybody posted this?" MusicThread's message loop
+ * (musicthread.c:686/722) is built out of exactly that, and answering
+ * WAIT_OBJECT_0 to it unconditionally makes the thread act on a command nobody
+ * sent, out of a g_imt_cmd nobody wrote. So an unsignalled event answers
+ * WAIT_TIMEOUT, and only a signalled one succeeds (consumed if auto-reset, as on
+ * Win32). The only game caller of WaitForSingleObject outside MusicThread is
+ * startup.c:239, and its handle is the mutex.
+ *
+ * A wait on an unsignalled event with a REAL timeout cannot be satisfied at all:
+ * nothing else runs to post it. Inside an inline thread that is a deadlock and
+ * ll_thread_deadlock unwinds the routine (see CreateThread); on the main thread
+ * it would be a hang, so it is reported and answered WAIT_TIMEOUT -- no game
+ * code does it. */
+static void ll_thread_deadlock(const char* what);   /* below, with CreateThread */
+
+static DWORD ll_wait_event(LLHandle* o, DWORD ms, const char* what)
+{
+    if (o->signalled) {
+        if (!o->manual)
+            o->signalled = 0;
+        return LL_WAIT_OBJECT_0;
+    }
+    if (ms != 0)
+        ll_thread_deadlock(what);
+    return LL_WAIT_TIMEOUT;
+}
+
 DWORD WaitForSingleObject(HANDLE h, DWORD ms)
 {
     LL_TRACE("WaitForSingleObject(%u, %u)", (unsigned)(__UINTPTR_TYPE__)h, (unsigned)ms);
     LLHandle* o = ll_handle(h);
-    (void)ms;
     if (!o)
         return LL_WAIT_FAILED;
-    if (o->kind == LL_H_EVENT && !o->manual)
-        o->signalled = 0;
+    if (o->kind == LL_H_EVENT)
+        return ll_wait_event(o, ms, "WaitForSingleObject on an unposted event");
     return LL_WAIT_OBJECT_0;
 }
 
 DWORD WaitForMultipleObjects(DWORD count, HANDLE* handles, BOOL wait_all, DWORD ms)
 {
+    DWORD i;
+    int   events = 0;
     LL_TRACE("WaitForMultipleObjects(%u)", (unsigned)count);
-    (void)ms;
     if (!count || !handles)
         return LL_WAIT_FAILED;
-    if (!wait_all) {
-        DWORD i;
-        for (i = 0; i < count; i++) {
-            LLHandle* o = ll_handle(handles[i]);
-            if (o && o->kind == LL_H_EVENT && o->signalled) {
+    for (i = 0; i < count; i++) {
+        LLHandle* o = ll_handle(handles[i]);
+        if (o && o->kind == LL_H_EVENT) {
+            events++;
+            if (!wait_all && o->signalled) {
                 if (!o->manual)
                     o->signalled = 0;
                 return LL_WAIT_OBJECT_0 + i;
             }
         }
+    }
+    /* Every handle is an unposted event and none can be posted from here. */
+    if (events == (int)count) {
+        if (ms != 0)
+            ll_thread_deadlock("WaitForMultipleObjects on unposted events only");
+        return LL_WAIT_TIMEOUT;
     }
     return LL_WAIT_OBJECT_0;
 }
@@ -388,32 +428,155 @@ BOOL CloseHandle(HANDLE h)
     return 1;
 }
 
-/* ---- threads ------------------------------------------------------------- */
-/* The port is single-threaded: refusing here makes the game keep the work on
- * the main thread instead of handing it to a helper that would never run. */
+/* ---- threads -------------------------------------------------------------
+ * There is ONE CreateThread caller in the whole program: sysstubs.c:399's
+ * `InitMusicSystem`, which starts musicthread.c's `MusicThread` (0x00492db0)
+ * and stores the handle at 0x0079a698 for sysmisc3.c's `KillMusicSystem` to
+ * TerminateThread and resaudio2.c to Suspend/Resume. Refusing, as this shim did
+ * until now, is NOT neutral: `InitMusicSystem` reports success on a null handle
+ * anyway ("A null thread handle is still reported as success when the engine
+ * exists", sysstubs.c:394), so nothing ever wrote `g_music_disabled` and
+ * `RunGame`'s
+ *
+ *     while (g_music_disabled == 0) { PeekMessageA(..); Sleep(100); }
+ *
+ * (gamemain.c:370) waited for ever. Without `-nomusic` the port hung there --
+ * PORT-B4's blocker B1.
+ *
+ * WHAT THE FLAG MEANS, and why running the routine is the fix rather than
+ * faking the flag: `g_music_disabled` is not "music is off". MusicThread writes
+ * it on every failure exit AND on its success path, at musicthread.c:678, one
+ * line before `g_music_ready = 1` and the message loop. It means "the music
+ * thread has finished starting up, stop waiting for it". Only the thread itself
+ * knows that, so the host has to run the thread.
+ *
+ * THE DECISION: run the start routine INLINE, to completion, on the main stack,
+ * with an escape for the one thing inline running cannot survive -- a wait that
+ * can never be satisfied because nothing else runs. `ll_thread_deadlock`
+ * longjmps back here, which ends the routine the way returning would and leaves
+ * the rest of the program alive. (setjmp/longjmp were checked on this toolchain
+ * both plain and under -sASYNCIFY before this was written.)
+ *
+ * Why that is the right one of the three shapes available:
+ *
+ *   - Running it inline and letting it finish is what ACTUALLY HAPPENS today.
+ *     ole32's CoCreateInstance reports REGDB_E_CLASSNOTREG by design
+ *     (dsound.c, PORT-B4), so MusicThread takes its first `shutdown:` rung at
+ *     musicthread.c:565 -- `g_music_ready = 0; g_music_disabled = 1; return 0`
+ *     -- before it creates its events, builds a segment, or reaches its message
+ *     loop. 273 of its 3,161 instructions run, it returns, and RunGame proceeds
+ *     WITHOUT `-nomusic`. That is also the brief's option (c), reached by doing
+ *     (a) rather than by special-casing it: the host does not have to know which
+ *     rung the thread will take.
+ *   - A per-frame pump (the brief's option (b), through PORT-B's
+ *     `ll_host_pump_timers`) cannot host this routine. `MusicThread` is one
+ *     function with an infinite message loop, not a step function: calling it
+ *     once per frame would restart its COM bring-up every frame. Hosting it that
+ *     way needs a real coroutine (an ASYNCIFY fiber), and there is nothing to
+ *     host until DirectMusic exists.
+ *   - Faking `g_music_disabled` from the host is out of bounds twice over: the
+ *     flag is game state at 0x007988bc, and writing it would also have to fake
+ *     `g_music_ready` -- and then `SuspendMusicThread`, `ResumeMusicThread` and
+ *     `KillMusicSystem` would be operating on a thread that never existed.
+ *
+ * WHEN THIS STOPS BEING ENOUGH: if DirectMusic ever becomes real, MusicThread
+ * gets all the way to `WaitForMultipleObjects(2, ev, 0, INFINITE)` at
+ * musicthread.c:685 with both events unposted. Inline, that is a deadlock, so
+ * the escape fires, the trace says so, and the music set is built and downloaded
+ * but never played -- no command the game posts afterwards is ever handled. That
+ * is the point at which the loop needs a fiber, and the diagnostic is how you
+ * find out you reached it. It cannot happen silently.
+ */
+
+static jmp_buf g_thread_escape;      /* valid while g_thread_depth > 0 */
+static int     g_thread_depth;
+static int     g_thread_escaped;
+
+static void ll_thread_deadlock(const char* what)
+{
+    if (g_thread_depth > 0) {
+        fprintf(stderr, "HOST CreateThread: %s -- nothing else runs, so the"
+                        " inline thread is unwound here (see the threads note in"
+                        " portable/src/hostwin/kernel32.c)\n", what);
+        fflush(stderr);
+        g_thread_escaped = 1;
+        longjmp(g_thread_escape, 1);
+    }
+    /* The main thread: blocking is not available either, so say so once and let
+     * the caller see a timeout. No game code reaches this. */
+    static int said;
+    if (!said) {
+        said = 1;
+        fprintf(stderr, "HOST %s on the main thread: answered WAIT_TIMEOUT\n", what);
+        fflush(stderr);
+    }
+}
 
 HANDLE CreateThread(SECURITY_ATTRIBUTES* sa, DWORD stack, void* start, void* param,
                     DWORD flags, DWORD* id)
 {
-    LL_TRACE("CreateThread: refused, the port is single-threaded");
+    HANDLE        h;
+    LLHandle*     t;
+    unsigned long rc = 0;
+    unsigned long (*routine)(void*) = (unsigned long (*)(void*))start;
+
     (void)sa;
     (void)stack;
-    (void)start;
-    (void)param;
-    (void)flags;
     if (id)
         *id = 0;
-    g_last_error = 120;          /* ERROR_CALL_NOT_IMPLEMENTED */
-    return 0;
+    if (!start) {
+        g_last_error = 87;           /* ERROR_INVALID_PARAMETER */
+        return 0;
+    }
+    if (g_thread_depth > 0) {
+        /* One jmp_buf, and no caller nests. Refusing is honest; silently
+         * overwriting the escape would lose the outer routine. */
+        LL_TRACE("CreateThread: refused, already inside an inline thread");
+        g_last_error = 120;          /* ERROR_CALL_NOT_IMPLEMENTED */
+        return 0;
+    }
+    h = ll_handle_new(LL_H_THREAD);
+    if (!h) {
+        g_last_error = 8;            /* ERROR_NOT_ENOUGH_MEMORY */
+        return 0;
+    }
+    if (id)
+        *id = (DWORD)(__UINTPTR_TYPE__)h;
+    /* CREATE_SUSPENDED (4) would mean "do not run until ResumeThread". Nothing
+     * passes it, and honouring it would mean keeping a routine to call later
+     * from a ResumeThread the game uses for volume ducking, so it is reported
+     * and ignored rather than half-implemented. */
+    if (flags & 4)
+        LL_TRACE("CreateThread: CREATE_SUSPENDED ignored, the routine runs now");
+    LL_TRACE("CreateThread: running the start routine inline");
+    g_thread_depth++;
+    g_thread_escaped = 0;
+    if (setjmp(g_thread_escape) == 0)
+        rc = routine(param);
+    g_thread_depth--;
+    t = ll_handle(h);
+    if (t)
+        t->signalled = 1;            /* a finished thread is signalled */
+    LL_TRACE("CreateThread: the routine %s, returning %lu",
+             g_thread_escaped ? "was unwound at a wait it could not satisfy"
+                              : "ran to completion", rc);
+    (void)rc;
+    return h;
 }
 
+/* Suspend/Resume are resaudio2.c's volume ducking around the music thread. The
+ * routine has already run, so there is nothing to stop or start; Win32 returns
+ * the previous suspend count, and 0 ("it was running") is the truthful one. */
 DWORD ResumeThread(HANDLE h)  { (void)h; return 0; }
 DWORD SuspendThread(HANDLE h) { (void)h; return 0; }
 
 BOOL TerminateThread(HANDLE h, DWORD exit_code)
 {
-    (void)h;
+    LLHandle* t = ll_handle(h);
     (void)exit_code;
+    if (!t)
+        return 0;
+    t->signalled = 1;
     return 1;
 }
 
