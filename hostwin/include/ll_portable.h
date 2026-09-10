@@ -42,6 +42,59 @@ unsigned int ll_rdtsc(void);
 int stricmp(const char*, const char*);
 int strnicmp(const char*, const char*, __SIZE_TYPE__);
 
+/* ---- the type-3 RLE control stream (rlepaint.c / rlepaint2.c) -----------
+ *
+ * The ten hand-written painters all walk the same stream with a ROTATING
+ * 2-bit mask: ebx starts at 3, `rol ebx,2` after every code, and the dword
+ * pointer edx advances by 4 when the mask has wrapped back to 3
+ * (`and ebx,1` / `lea edx,[edx+ebx*4]`).  The code is never shifted down to
+ * bit 0: the asm keeps the ISOLATED field `word & mask` and asks which half
+ * of the pair is set with `test ebp,0aaaaaaaah` (the high bit) and
+ * `test ebp,55555555h` (the low bit).  ll_rle_code returns that same
+ * isolated field so LL_RLE_HI/LL_RLE_LO read exactly like the two tests.
+ *
+ * C is only 2-byte aligned in the shipped assets (A is `frame+0x10`, B is
+ * `A + 2*pixel_count` with an odd pixel count allowed, and B's padded length
+ * is a multiple of 4), so the dword load must not assume 4-byte alignment. */
+typedef struct LLRleCtl {
+    const unsigned char* w;     /* edx: the current control dword */
+    unsigned int         mask;  /* ebx: the rotating 2-bit mask */
+} LLRleCtl;
+
+static inline void ll_rle_open(LLRleCtl* s, const void* c)
+{
+    s->w = (const unsigned char*)c;
+    s->mask = 3;
+}
+
+static inline unsigned int ll_rle_code(LLRleCtl* s)
+{
+    unsigned int word;
+    unsigned int field;
+    unsigned int rot;
+
+    __builtin_memcpy(&word, s->w, 4);
+    field = word & s->mask;                       /* and ebp, ebx       */
+    rot = (s->mask << 2) | (s->mask >> 30);       /* rol ebx, 2         */
+    s->mask = rot;
+    s->w += (rot & 1u) * 4u;                      /* lea edx,[edx+ebx*4]*/
+    return field;
+}
+
+#define LL_RLE_HI(f) (((f) & 0xaaaaaaaau) != 0u)  /* test ebp,0aaaaaaaah */
+#define LL_RLE_LO(f) (((f) & 0x55555555u) != 0u)  /* test ebp,55555555h  */
+
+/* The run hit test the four plain Hit leaves and both rlepaint2.c leaves
+ * spell as `mov eax,mouse / sub eax,edi / sar eax,1 / cmp eax,ecx / jae`:
+ * a SIGNED halving of the 32-bit byte difference, compared UNSIGNED against
+ * the run length, so a mouse before the run wraps huge and cannot hit. */
+static inline int ll_rle_hit_run(const void* mouse, const void* dst,
+                                 unsigned int len)
+{
+    unsigned int d = (unsigned int)((const char*)mouse - (const char*)dst);
+    return (unsigned int)((int)d >> 1) < len;
+}
+
 /* The two straight-line software blits that the game writes as inline asm
  * in softblit.c and bigrender.c: an 8-bit paletted source and a 16-bit
  * source, both into the locked 16-bpp surface, skipping the transparent
