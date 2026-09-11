@@ -1717,3 +1717,143 @@ int ll_m8_callback_type_pairs(void)
  *                          castleobj.c   ll_cb_b0_Track_Interact
  *                          screen.c      ll_cb_b0_PottingShed_Draw
  *                          screen.c      ll_cb_b0_MechanicsHut_Draw */
+/* ------------------------------------------------------------------------
+ * PORT-M9 -- the callbacks registered as INTEGER LITERALS in the code.
+ *
+ * A third class of port blocker, distinct from a .data pointer table whose
+ * declaration is too small and from a stale declaration typing a forwarder:
+ * `p->f3 = (void*)0x45efe0;` in the recovered C.  The original writes the
+ * function address as an immediate, the recovery spelled the immediate, and
+ * the closure generator can never see it -- on wasm the slot then holds
+ * 4,517,856, which is not a table index, and the first call through it is
+ * `RuntimeError: table index is out of bounds`.  29 such function-pointer
+ * sites in sweep3.c (5) and loaders.c (24); all now carry the SYMBOL in both
+ * builds, so the pairs below are checkable.  See docs/lanes/scope-port-m9.md.
+ * ========================================================================== */
+
+/* ---- m9_cb_90
+ * call site: ObjDef +0x90  eventtick.c:400, gameframe.c:991, mappath.c:585, objmap2.c:556
+ * type:      (i32, i32, i32) -> void  */
+extern void CalcBasicObjectCursor(void*, void*, void*);
+
+typedef void (*ll_fn_m9_cb_90)(void*, void*, void*);
+ll_fn_m9_cb_90 const ll_tab_m9_cb_90[] = {
+    CalcBasicObjectCursor,      /* sweep3.c:167  SetStandardCallbacks f1 */
+    BsWater_CalcCursor,         /* loaders.c     BOATING SCHOOL WATER    */
+    BoatingSchool_Update,       /* loaders.c     BOATING SCHOOL          */
+    Mermaid_CalcCursor,         /* loaders.c     BOATING SCHOOL MERMAID  */
+};
+
+/* ---- m9_cb_94
+ * call site: ObjDef +0x94  gameframe.c:958, eventtick.c:511, mappath.c:478, fpui3.c:295, misc3.c:700
+ * type:      (i32, i32) -> void  */
+extern void BasicObjectDCalcCursor(void*, void*);
+
+typedef void (*ll_fn_m9_cb_94)(void*, void*);
+ll_fn_m9_cb_94 const ll_tab_m9_cb_94[] = {
+    BasicObjectDCalcCursor,     /* sweep3.c      SetStandardCallbacks f2 */
+    BsWater_DrawSelection,
+    BoatingSchool_DrawSelection,
+    Mermaid_CalcCursor2,
+};
+
+/* ---- m9_cb_98
+ * call site: ObjClass +0x98  mapobj.c:49, `cls->place(obj, pos)` in PutObjOnMap
+ *          -- the call that fires on the first perimeter object of EVERY level
+ * type:      (i32, i32) -> void  */
+extern void BsWater_Add(void*, void*);
+extern void BoatingSchool_Add(void*, void*);
+extern void Mermaid_Add(void*, void*);
+
+typedef void (*ll_fn_m9_cb_98)(void*, void*);
+ll_fn_m9_cb_98 const ll_tab_m9_cb_98[] = {
+    BsWater_Add,
+    BoatingSchool_Add,
+    Mermaid_Add,
+};
+/* not named above, and why:
+ *   AddBasicObject  [(i32, i32, i32) -> void: the definition takes a third
+ *                    argument it never reads (objmap2.c:459 -- the slot homes
+ *                    `bp`), so it reaches +0x98 through a registration-site
+ *                    adapter in sweep3.c and, being a file-local static,
+ *                    cannot be named here]
+ */
+
+/* ---- m9_cb_9c
+ * call site: ObjDef +0x9c  objmap2.c:1895, `def->remove(obj, bp, ctx)`
+ * type:      (i32, i32, i32) -> void   (bp is the packed 2-byte map square by
+ *            value, which lowers to one i32)  */
+extern void StandardRemoveObject(void*, void*, void*);
+
+typedef void (*ll_fn_m9_cb_9c)(void*, void*, void*);
+ll_fn_m9_cb_9c const ll_tab_m9_cb_9c[] = {
+    StandardRemoveObject,       /* sweep3.c      SetStandardCallbacks f4 */
+    BoatingSchoolWater_Remove,
+    BoatingSchool_Remove,
+    BsMermaid_Remove,
+};
+
+/* ---- m9_cb_ac / m9_iface_init
+ * call site: ObjDef +0xac  sysmisc.c:664; IfaceTable slot 7 is called once with
+ *          the class's LLIDB element right after the table is installed
+ *          (loaders.c's LoadObjectLibrary)
+ * type:      (i32) -> void  */
+typedef void (*ll_fn_m9_cb_ac)(void*);
+ll_fn_m9_cb_ac const ll_tab_m9_cb_ac[] = {
+    BoatingSchool_Destroy,      /* +0xac */
+    BsWater_LoadResources,      /* init  */
+    BoatingSchool_Create,       /* init  */
+    Mermaid_LoadResources,      /* init  */
+};
+
+/* ---- m9_cb_b0
+ * call site: ObjDef +0xb0  NO call site in the recovered tree (PORT-M3 section 2);
+ *          the type below is PORT-M7's, which the rest of the +0xb0 body set shares
+ * type:      (i32, i32, i32, i32, i32, i32) -> void  */
+extern void BoatingSchool_Draw(void*, void*, void*, void*, void*, void*);
+
+typedef void (*ll_fn_m9_cb_b0)(void*, void*, void*, void*, void*, void*);
+ll_fn_m9_cb_b0 const ll_tab_m9_cb_b0[] = {
+    BoatingSchool_Draw,
+};
+
+/* ---- m9_cb_c0
+ * call site: ObjDef +0xc0  appraisal.c:172, eventtick2.c:232
+ * type:      (i32, i32) -> i32  */
+typedef int (*ll_fn_m9_cb_c0)(void*, void*);
+ll_fn_m9_cb_c0 const ll_tab_m9_cb_c0[] = {
+    BoatingSchool_BestTake,
+};
+/* not named above, and why:
+ *   BoatingSchool_Tick   [() -> void, +0xa8: adapter in loaders.c]
+ *   LoadBoatingSchool    [() -> i32,  +0xb8: adapter in loaders.c]
+ *   SaveBoatingSchool    [() -> i32,  +0xbc: adapter in loaders.c]
+ *   SetEditObjectFromElem BsWater_SelectForPlacement
+ *   BoatingSchool_SelectForPlacement Mermaid_SelectForPlacement
+ *                        [ObjDef +0x8c has NO call site in the recovered tree
+ *                         AND a mixed body set: SetEditObjectFromElem takes the
+ *                         element, the three SelectForPlacement bodies take
+ *                         nothing.  Nothing can be checked until the slot has a
+ *                         call site -- recorded as M9-1]
+ */
+
+/* ---- m9_span_filler
+ * call site: PolyJob +0x38 is a POINTER TO A TWO-ENTRY TABLE; coaster3d.c:1080
+ *          calls `((SpanFiller)jt->shader[mode])(tag, grad, ne, keys, edges)`
+ * type:      (i32, i32, i32, i32, i32) -> void
+ * coaster10.c stored the three tables' .data addresses as literals; naming them
+ * also gives gen_link.py a pointer type for the six words they hold. */
+extern void Span_FillFlat(void*, void*, void*, void*, void*);
+extern void Span_FillFlatZ(void*, void*, void*, void*, void*);
+extern void Span_FillShade(void*, void*, void*, void*, void*);
+extern void Span_FillShadeZ(void*, void*, void*, void*, void*);
+extern void TrackShade_FillPoly(void*, void*, void*, void*, void*);
+
+typedef void (*ll_fn_m9_span_filler)(void*, void*, void*, void*, void*);
+ll_fn_m9_span_filler const ll_tab_m9_span_filler[] = {
+    Span_FillFlat,              /* g_span_fillers_flat[0]  0x004b5648 */
+    Span_FillFlatZ,             /* g_span_fillers_flat[1]  0x004b564c */
+    Span_FillShade,             /* g_span_fillers[0]       0x004b5658 */
+    Span_FillShadeZ,            /* g_span_fillers[1]       0x004b565c */
+    TrackShade_FillPoly,        /* g_span_fillers_track[0] 0x004b5f50 */
+};
