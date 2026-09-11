@@ -255,6 +255,32 @@ void ll_host_yield(unsigned int ms);
  * it with 4. */
 void ll_host_yield_throttled(unsigned int min_gap_ms);
 
+/* ---- PORT-B8: the heartbeat (the wedge detector) -------------------------
+ *
+ * When the game stops reaching a yield the page's main thread stops running
+ * JS entirely: llFrameHash, llStats and every javascript_tool call time out,
+ * so the ONLY channel left out of a wedged tab is stderr, which reaches the
+ * devtools console over CDP without the page's main thread doing anything.
+ *
+ * ll_host_beat is one call at the top of every host entry point that a spin
+ * loop could plausibly sit on. It costs an increment, and once every
+ * LL_BEAT_MS of wall clock it prints one line naming the last entry point and
+ * the per-family counts since the previous line. Reading the console tail of a
+ * wedged tab then answers the only question that matters:
+ *
+ *   the heartbeat keeps ticking  -> the loop IS calling the host and the host
+ *                                   is not yielding: a shim bug, fixable here.
+ *   the heartbeat stops dead     -> the loop calls nothing: it is in the game,
+ *                                   and the last beat line names the host call
+ *                                   it made immediately before.
+ *
+ * Off unless $LL_HOST_BEAT is set (the page's ?beat=1), so a normal run pays
+ * one predictable branch per host call. */
+void ll_host_beat(const char* who);
+/* Non-zero when $LL_HOST_BEAT is set; the entry points test it inline rather
+ * than paying a call. */
+int ll_host_beating(void);
+
 /* Open the canvas at w x h and set the 16-bpp mode the game asked for. Called
  * by ddraw.c's SetDisplayMode; idempotent. */
 void ll_host_display_open(int w, int h);

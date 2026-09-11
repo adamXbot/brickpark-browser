@@ -292,6 +292,7 @@ static long dev_Unacquire(LLDIDevice* d) { d->acquired = 0; return DI_OK; }
 /* ScanKeyboard / ScanMouse retry until this returns 0, so it must succeed. */
 static long dev_GetDeviceState(LLDIDevice* d, unsigned long size, void* data)
 {
+    if (ll_host_beating()) ll_host_beat("dinput.GetDeviceState");
     if (!data)
         return DIERR_INVALIDPARAM;
 
@@ -372,6 +373,7 @@ static long dev_GetDeviceState(LLDIDevice* d, unsigned long size, void* data)
 static long dev_GetDeviceData(LLDIDevice* d, unsigned long size, void* data,
                               unsigned long* count, unsigned long flags)
 {
+    if (ll_host_beating()) ll_host_beat("dinput.GetDeviceData");
     (void)d; (void)size; (void)data; (void)flags;
     if (count) *count = 0;
     return DI_OK;

@@ -273,6 +273,7 @@ int acmStreamUnprepareHeader(void* has, void* phdr, unsigned long flags)
  * the converted length and movie2.c:419 reads it as the decoded block size. */
 int acmStreamConvert(void* has, void* phdr, unsigned long flags)
 {
+    if (ll_host_beating()) ll_host_beat("msacm32.StreamConvert");
     struct ll_acm* s = acm_of(has);
     const unsigned char* src;
     unsigned char* dst;
