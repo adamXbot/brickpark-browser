@@ -713,7 +713,12 @@ class Extent:
             if self.size:
                 self.disagree.append((self.size, self.size, 'superseded'))
             self.size = ext
-            self.type = obj.type
+            # `extern FXEntry g_copters_fx[4]` is an ARRAY here, not one
+            # FXEntry: the field-boundary check walks this type, and against
+            # the element type alone every offset past the first element reads
+            # as "not a field".
+            self.type = (array_of(obj.type, obj.count) if obj.count != 1
+                         else obj.type)
 
     def citation(self):
         """The one-line citation gen_link puts in the generated comment."""
