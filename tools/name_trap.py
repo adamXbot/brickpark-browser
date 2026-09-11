@@ -6,6 +6,8 @@
     python3 portable/tools/name_trap.py --resmount       # (-- is optional)
     python3 portable/tools/name_trap.py --table          # what the table holds
     python3 portable/tools/name_trap.py --at 0x2e9f1c    # explain one call site
+    python3 portable/tools/name_trap.py --at 0x929af --kind table
+    python3 portable/tools/name_trap.py --va-literals    # the B9-4 class, swept
     python3 portable/tools/name_trap.py --continue       # EVERY blocker, one run
 
 `--continue` is the "find every blocker in one run" mode: it sets
@@ -17,7 +19,7 @@ this tree lists nine. The run past a trap is on made-up data -- a returning trap
 hands its caller a zero it never computed -- so the mode produces a LIST OF WORK
 and never the claim that something works; say which mode produced a result.
 
-The port has four ways of dying and only one of them says so by itself:
+The port has six ways of dying and only one of them says so by itself:
 
 * **A generated trap.** `gen_link.py` gives every Win32 import and every
   unwritten body a real C body that prints `TRAP <dll> <symbol> from <callers>`
@@ -48,8 +50,32 @@ The port has four ways of dying and only one of them says so by itself:
   a plain trap before the runtime sees it, in which case the message is
   `unreachable` instead -- `--indirect` forces the same report.
 
-* **A real fault** (out-of-bounds, a null vtable call): also `RuntimeError`, but
-  with a game function at the top of the stack rather than a mismatch stub.
+* **A table index that is not an index.** `RuntimeError: table index is out of
+  bounds`. The slot held a value past the end of the function table -- not a
+  function of the wrong TYPE, a number that was never a table index. This is
+  PORT-B9's **B9-4** class: the recovered C carries function addresses as
+  INTEGER LITERALS, because the original instruction is
+  `mov dword ptr [ecx+0x98], 0x45efe0` and the recovery spelled the immediate
+  instead of the symbol. It matched the original bytes perfectly and is
+  unrepresentable on wasm, where a function "pointer" is a table index and
+  4,587,488 is not one. `sweep3.c:164-168` does it five times in
+  `SetStandardCallbacks`, which runs for EVERY ODF class, so it fires on any
+  park load; `loaders.c:161-191` 21 more and `coaster10.c` three. **The
+  generator can never see these** -- they are immediates in CODE, not pointer
+  words in `.data`, so `gen/pointers.md`'s gate cannot cover them. This script
+  decodes the `call_indirect` at the reported offset, says where its index
+  operand came from, and when the index is a raw x86 VA prints the
+  `// FUNCTION:` marker that owns that address. When the index was LOADED from
+  memory (the usual case, since the literal is stored by a different function)
+  it falls back to sweeping the module for every such literal -- `--va-literals`
+  does that on its own.
+* **A raw address dereferenced.** `RuntimeError: memory access out of bounds`.
+  The `.data` half of the same mistake (`coaster10.c`'s
+  `job.shader = (void*)0x004b5648`): an image address used as a POINTER rather
+  than as a table index.
+* **A real fault** (a null vtable call, an `LL_UNPORTED_ASM` stub): also
+  `RuntimeError`, but with a game function at the top of the stack rather than a
+  mismatch stub, and none of the messages above.
 
 Telling these apart is the whole job, and it needs a link that
 wasm-opt did not touch: `legoland_headless_debug` (portable/cmake/headless.cmake)
@@ -110,6 +136,50 @@ MISMATCH_RE = re.compile(r'^signature_mismatch:(?P<callee>.+)$')
 # the same defect reaches node under two different messages.
 INDIRECT_ERR_RE = re.compile(r'\b(?:null function or )?function signature '
                              r'mismatch\b')
+
+# Two more first-class kinds (PORT-A8). Neither is a signature mismatch and
+# neither is a generated trap, and before this they both landed in the "a real
+# body faulted, good luck" arm.
+#
+#   RuntimeError: table index is out of bounds
+#
+# The index the game loaded was past the end of the function table. That is
+# PORT-B9's B9-4 class: the recovered C carries function ADDRESSES AS INTEGER
+# LITERALS (`p->f3 = (void*)0x45efe0;` -- sweep3.c:164-168, loaders.c:161-191,
+# coaster10.c), because the original instruction is
+# `mov dword ptr [ecx+0x98], 0x45efe0` and the recovery spelled the immediate
+# instead of the symbol. It matched perfectly on x86 and is unrepresentable on
+# wasm, where a function "pointer" is a table index and 4,587,488 is not one.
+# These are literals in CODE, so `gen_link.py` never sees them -- no amount of
+# generator work can reach them, which is exactly why the trap has to name them.
+#
+#   RuntimeError: memory access out of bounds
+#
+# A load or store outside linear memory, which in this port almost always means
+# a raw x86 address was used as a POINTER rather than as a table index -- the
+# same defect one slot over (B9-1/B9-4's `.data` half: coaster10.c's
+# `job.shader = (void*)0x004b5648`).
+TABLE_OOB_RE = re.compile(r'\btable index is out of bounds\b')
+MEMORY_OOB_RE = re.compile(r'\b(?:memory access|out of bounds memory access)\b'
+                           r'|\bmemory access out of bounds\b')
+
+# The image's `.text`, and ONLY .text. The whole image range is useless as a
+# discriminator: emcc lays the rebuilt globals out in linear memory from a low
+# base, so a perfectly ordinary pointer to a rebuilt object is an `i32.const` in
+# 0x004ab000..0x00836000 -- 2,585 of them in this module. Narrowed to .text the
+# same sweep returns FIVE, and the one that matters is the one whose value is
+# EXACTLY a `// FUNCTION:` marker address. Exactness is the real test; the range
+# only keeps the candidate list short.
+TEXT_LO, TEXT_HI = 0x00401000, 0x004ab000
+# `i32.load offset=0x98` / `i32.const 4587488` / `local.get 3`
+OD_I32_CONST_RE = re.compile(r'^i32\.const\s+(?P<v>-?\d+|0x[0-9a-fA-F]+)')
+# Two adjacent 4-byte stores of constants are merged into ONE i64 store, so a
+# pair of recovered addresses arrives as a single 64-bit immediate: sweep3.c's
+# five literals come out as one `i32.const` and two `i64.const`s, and a sweep
+# that reads only i32 finds one of the five. Both halves of an i64 constant are
+# therefore candidates in their own right.
+OD_I64_CONST_RE = re.compile(r'^i64\.const\s+(?P<v>-?\d+|0x[0-9a-fA-F]+)')
+OD_I32_LOAD_RE = re.compile(r'^i32\.load\b.*?(?:offset=(?P<off>\d+|0x[0-9a-fA-F]+))?')
 
 # `     33b: 11 03 00     	call_indirect	 3`  and  `000002d4 <Other>:`
 OD_INSN_RE = re.compile(r'^\s*(?P<off>[0-9a-f]+):\s+(?P<bytes>(?:[0-9a-f]{2} )+)'
@@ -400,6 +470,275 @@ def data_fn_refs(build_dir):
     return {k: sorted(v) for k, v in refs.items()}
 
 
+_MARKERS = None
+
+
+def markers():
+    """address -> (function, file, line) from every `// FUNCTION:` /
+    `// WIP-FUNCTION:` marker, so a raw x86 VA in the wasm can be turned into
+    the recovered body that owns it."""
+    global _MARKERS
+    if _MARKERS is not None:
+        return _MARKERS
+    out = {}
+    mre = re.compile(r'^// (?:WIP-)?FUNCTION: LEGOLAND (0x[0-9a-fA-F]+)')
+    sig = re.compile(r'^[A-Za-z_][\w \t*]*?\**\s*\**([A-Za-z_]\w*)\s*\(')
+    import glob
+    for path in sorted(glob.glob(os.path.join(ROOT, 'LEGOLAND', '*.c'))):
+        base = os.path.basename(path)
+        lines = open(path, encoding='utf-8', errors='replace').read().split('\n')
+        for i, line in enumerate(lines):
+            m = mre.match(line)
+            if not m:
+                continue
+            name = next((s.group(1) for s in
+                         (sig.match(lines[j]) for j in
+                          range(i + 1, min(i + 8, len(lines)))) if s), '?')
+            out[int(m.group(1), 16)] = (name, base, i + 1)
+    _MARKERS = out
+    return out
+
+
+def owning_marker(addr):
+    """(va, name, file, line) of the body that contains `addr`, or None.
+
+    Exact is the interesting case -- a recovered `(void*)0x45efe0` is meant to BE
+    a function -- but an interior address is worth naming too: it says the
+    literal is a jump into the middle of a body, which is a different mistake."""
+    marks = markers()
+    if addr in marks:
+        return (addr,) + marks[addr]
+    below = [a for a in marks if a < addr]
+    if not below:
+        return None
+    a = max(below)
+    # Only claim ownership within a plausible body span; past that the nearest
+    # marker below is just the nearest marker below and says nothing.
+    return (a,) + marks[a] if addr - a < 0x4000 else None
+
+
+def va_constants(insns, owner):
+    """[(module offset, owner function, value, exact_marker)] -- every constant
+    in the module whose value lands in the image's `.text`.
+
+    This is PORT-B9's B9-4 sweep done on the LINKED MODULE instead of the
+    sources: a function address written as an integer literal in the recovered C
+    survives compilation as such a constant, and reading the module rather than
+    the C catches it however it was spelled.
+
+    Two things make it sharp rather than noisy. The range is `.text` only, not
+    the whole image -- linear memory overlaps the image's DATA range, so the
+    wider window returns thousands of perfectly ordinary pointers. And an
+    `i64.const` is split into both halves, because the optimiser merges two
+    adjacent 4-byte stores of constants into one 8-byte store: `sweep3.c`'s five
+    literals reach the module as one `i32.const` and two `i64.const`s.
+
+    `exact_marker` is the verdict. A value that is EXACTLY a `// FUNCTION:`
+    marker address is a recovered function address and nothing else; a value
+    merely inside the range is almost always an ordinary integer (a mask, a
+    buffer size, an `open` flag) and is reported apart from the real hits."""
+    marks = markers()
+    out = []
+    for off in sorted(insns):
+        text = insns[off]
+        vals = []
+        m = OD_I32_CONST_RE.match(text)
+        if m:
+            try:
+                vals = [int(m.group('v'), 0) & 0xffffffff]
+            except ValueError:
+                vals = []
+        else:
+            m = OD_I64_CONST_RE.match(text)
+            if m:
+                try:
+                    q = int(m.group('v'), 0) & 0xffffffffffffffff
+                    vals = [q & 0xffffffff, (q >> 32) & 0xffffffff]
+                except ValueError:
+                    vals = []
+        for v in vals:
+            if TEXT_LO <= v < TEXT_HI:
+                out.append((off, owner.get(off, '?'), v, v in marks))
+    return out
+
+
+def explain_table_index(wasm, frames, offset, build_dir, limit=12):
+    """Name a `table index is out of bounds`: the `call_indirect`, where its
+    index operand came from, and -- when the index is a raw x86 VA -- the
+    `// FUNCTION:` marker that owns that address."""
+    mod = Module(wasm)
+    insns, owner = disassemble(wasm)
+    if insns is None:
+        print('   (llvm-objdump is not available: set $LL_OBJDUMP to the one in'
+              ' the Emscripten install to decode the call site)')
+        return 1
+    site = None
+    if offset is not None:
+        for off in sorted(o for o in insns if o <= offset)[::-1][:4]:
+            m = OD_CALLI_RE.match(insns[off])
+            if m:
+                site = (off, int(m.group('type')))
+                break
+    print('\n== TABLE INDEX OUT OF BOUNDS')
+    if site is None:
+        print('   (no call_indirect at the offset the stack reported; relink at'
+              ' -O0, which legoland_headless_debug already does)')
+    else:
+        off, tidx = site
+        print(f'   caller      {owner.get(off, frames[0] if frames else "?")}'
+              f'   (module offset 0x{off:x})')
+        print(f'   call site   call_indirect type {tidx} = '
+              f'{mod.type_text(tidx) if mod.ok else "?"}')
+        print(f'   table       {len(mod.table)} slots in the element segment')
+        # The index operand is produced by the instruction(s) immediately before
+        # the call. One level is enough to tell a constant from a memory load,
+        # which is the distinction that matters.
+        before = [o for o in sorted(insns) if o < off][-6:]
+        print('   operand source, innermost last:')
+        for o in before:
+            print(f'      0x{o:<8x} {insns[o]}')
+        src = insns[before[-1]] if before else ''
+        mc = OD_I32_CONST_RE.match(src)
+        if mc:
+            v = int(mc.group('v'), 0) & 0xffffffff
+            if TEXT_LO <= v < TEXT_HI:
+                print(f'\n   THE INDEX IS A RAW x86 ADDRESS: {v:#x} ({v}).')
+                _name_va(v)
+                _b9_4_advice()
+                return 1
+            print(f'\n   The index is the constant {v}, and the table has '
+                  f'{len(mod.table)} slots.')
+        elif src.startswith('i32.load'):
+            print('\n   The index was LOADED from memory, so the bad value was'
+                  ' written by some')
+            print('   earlier store and this call site is only where it was'
+                  ' USED. That is the')
+            print('   B9-4 shape: a function address written as an integer'
+                  ' literal in the C')
+            print('   (`p->f3 = (void*)0x45efe0;`) is stored into a callback'
+                  ' slot and reaches')
+            print('   the call as a number that was never a table index.')
+        elif src.startswith('local.get') or src.startswith('global.get'):
+            print(f'\n   The index came from {src.strip()}, not from a constant'
+                  f' or a load here, so')
+            print('   this frame did not choose it -- it was passed in, or'
+                  ' loaded further up.')
+            print('   Read the caller in the named stack above; the sweep below'
+                  ' says what bad')
+            print('   value is available to be passed.')
+        # Either way, list the literals in the module: the write site is what
+        # has to be fixed, and this finds it without a debugger.
+        exact = [r for r in va_constants(insns, owner) if r[3]]
+        if not exact:
+            print('\n   No constant in the module is exactly a `// FUNCTION:`'
+                  ' marker address, so the')
+            print('   index did not come from a recovered address literal.'
+                  ' Look for an index')
+            print('   computed from a count, or an uninitialised slot,'
+                  ' instead.')
+            return 1
+        print(f'\n== {len(exact)} recovered function address(es) spelled as a'
+              f' literal -- B9-4, swept')
+        print('   Each is an integer literal in the recovered C whose value is'
+              ' exactly a marker')
+        print('   address. One of these was stored into the slot this call'
+              ' loaded.')
+        by_owner = {}
+        for _o, own, v, _e in exact:
+            by_owner.setdefault(own, set()).add(v)
+        for own in sorted(by_owner, key=lambda k: -len(by_owner[k]))[:limit]:
+            print(f'   {own}')
+            for v in sorted(by_owner[own])[:8]:
+                _va, nm, base, line = owning_marker(v)
+                print(f'      {v:#010x} -> {nm}  ({base}:{line})')
+        if len(by_owner) > limit:
+            print(f'   ... and {len(by_owner) - limit} more functions')
+        _b9_4_advice()
+    return 1
+
+
+def _name_va(v):
+    mk = owning_marker(v)
+    if not mk:
+        print(f'   Nothing in LEGOLAND/*.c has a `// FUNCTION:` marker at or'
+              f' just below {v:#x};')
+        print(f'   it may be a .data address used as a function (coaster10.c\'s'
+              f' shape) or a gap.')
+        return
+    va, name, base, line = mk
+    if va == v:
+        print(f'   // FUNCTION: LEGOLAND {va:#010x} is {name}  ({base}:{line})')
+        print(f'   So the slot was meant to hold {name} and holds its x86'
+              f' address instead.')
+    else:
+        print(f'   {v:#x} is 0x{v - va:x} INTO {name} ({base}:{line}, marker'
+              f' {va:#010x})')
+        print('   -- an interior address, so the literal is not even a function'
+              ' entry point.')
+
+
+def _b9_4_advice():
+    print('\n   FIX (B9-4, docs/lanes/scope-port-b9.md §4): in the DECLARING'
+          ' file, take the')
+    print('   body\'s address instead of spelling the immediate --'
+          ' `p->f3 = (void*)&AddBasicObject;`')
+    print('   -- under `#ifdef LEGOLAND_PORTABLE`, then re-gate with audit.py'
+          ' and relocs.py.')
+    print('   On x86 taking a function\'s address compiles to exactly that'
+          ' immediate, so it is')
+    print('   worth trying UNGUARDED first and letting the byte gates say'
+          ' whether anything moved.')
+
+
+def explain_memory_oob(wasm, frames, offset, build_dir, limit=12):
+    """Name a `memory access out of bounds`. Same root cause one slot over: a
+    raw x86 address used as a POINTER rather than as a table index."""
+    insns, owner = disassemble(wasm)
+    print('\n== MEMORY ACCESS OUT OF BOUNDS')
+    if insns is None:
+        print('   (llvm-objdump is not available: set $LL_OBJDUMP to decode the'
+              ' faulting access)')
+        return 1
+    if offset is not None:
+        before = [o for o in sorted(insns) if o <= offset][-6:]
+        print(f'   faulting access in {owner.get(before[-1], frames[0] if frames else "?")}'
+              f'   (module offset 0x{offset:x})')
+        for o in before:
+            print(f'      0x{o:<8x} {insns[o]}')
+    exact = [r for r in va_constants(insns, owner) if r[3]]
+    if not exact:
+        print('\n   No recovered function address survives as a literal in this'
+              ' module, so this is')
+        print('   an ordinary out-of-bounds: an index past the end of a rebuilt'
+              ' object, or a')
+        print('   pointer the game never initialised. gen/pointers.md\'s `raw'
+              ' pointer words` gate')
+        print('   covers the .data half of the address-literal class; this'
+              ' sweep only sees .text,')
+        print('   because linear memory overlaps the image\'s DATA range and a'
+              ' wider window')
+        print('   reports thousands of perfectly ordinary pointers.')
+        return 1
+    print(f'\n   {len(exact)} recovered function address(es) are spelled as'
+          f' literals in this module.')
+    print('   A load or store through one is exactly this fault -- the same'
+          ' recovery mistake')
+    print('   as B9-4, one slot over (coaster10.c\'s'
+          ' `job.shader = (void*)0x004b5648` is its')
+    print('   `.data` form, which this .text-only sweep does NOT see):')
+    seen = set()
+    for _o, own, v, _e in exact:
+        if (own, v) in seen:
+            continue
+        seen.add((own, v))
+        _va, nm, base, line = owning_marker(v)
+        print(f'      {v:#010x} in {own}  -> {nm} ({base}:{line})')
+        if len(seen) >= limit:
+            break
+    _b9_4_advice()
+    return 1
+
+
 def type_distance(want, have):
     """How far `have` is from `want`, so the nearest candidate sorts first.
 
@@ -555,6 +894,75 @@ def explain_indirect(wasm, frames, offset, build_dir, limit=12):
     print('   under `#ifdef LEGOLAND_PORTABLE`, re-gated with audit.py and')
     print('   relocs.py. gen/manifest.md\'s "Cast forwarders" table is the same')
     print('   defect class seen statically.')
+
+
+def va_literal_census(wasm):
+    """Every raw x86 address literal in the linked module, by owning function.
+
+    PORT-B9 swept the SOURCES for this class (29 sites in three files). Sweeping
+    the module instead catches it wherever it is written and however it is
+    spelled -- a macro, a cast, a table initialiser in a function body -- and
+    proves the negative when there is nothing left. Exit status is the gate."""
+    if not os.path.exists(wasm):
+        print(f'name_trap: {wasm} does not exist', file=sys.stderr)
+        return 2
+    insns, owner = disassemble(wasm)
+    if insns is None:
+        print('name_trap: llvm-objdump is not available (set $LL_OBJDUMP)',
+              file=sys.stderr)
+        return 2
+    vas = va_constants(insns, owner)
+    exact = [r for r in vas if r[3]]
+    loose = [r for r in vas if not r[3]]
+    print(f'== {os.path.basename(wasm)}: {len(vas)} constant(s) in the image\'s '
+          f'.text ({TEXT_LO:#x}..{TEXT_HI:#x}),')
+    print(f'   of which {len(exact)} are EXACTLY a `// FUNCTION:` marker '
+          f'address.')
+    if not exact:
+        print('\n   No recovered function address survives as an integer '
+              'literal in code.')
+        if loose:
+            print(f'   ({len(loose)} constant(s) fall in the range without '
+                  f'matching a marker; those are')
+            print('    ordinary integers -- a mask, a size, an `open` flag -- '
+                  'and are listed below.)')
+            _print_loose(loose)
+        return 0
+    print('\n== the B9-4 class: a function address spelled as a number')
+    print('   On x86 each of these matched the original immediate exactly. On '
+          'wasm a function')
+    print('   "pointer" is a table index, so the value is not a function at '
+          'all -- it reaches a')
+    print('   `call_indirect` as an index far past the end of the table. The '
+          'generator cannot')
+    print('   help: these are immediates in CODE, not pointer words in .data.')
+    by_owner = {}
+    for _o, own, v, _e in exact:
+        by_owner.setdefault(own, set()).add(v)
+    for own in sorted(by_owner, key=lambda k: (-len(by_owner[k]), k)):
+        print(f'\n   {own}  ({len(by_owner[own])} distinct)')
+        for v in sorted(by_owner[own]):
+            _va, nm, base, line = owning_marker(v)
+            print(f'      {v:#010x}  -> {nm}  ({base}:{line})')
+    _b9_4_advice()
+    if loose:
+        print(f'\n== {len(loose)} other constant(s) in the range, marker-exact: '
+              f'no')
+        print('   Reported apart because they are almost certainly ordinary '
+              'integers that happen')
+        print('   to land in .text. Check one only if its owner has no reason '
+              'to hold a big number.')
+        _print_loose(loose)
+    return 1
+
+
+def _print_loose(loose):
+    seen = set()
+    for _o, own, v, _e in loose:
+        if (own, v) in seen:
+            continue
+        seen.add((own, v))
+        print(f'      {v:#010x}  in {own}')
 
 
 def table_census(wasm, build_dir):
@@ -750,6 +1158,21 @@ def report(stdout, stderr, status, trace_tail, trap_continue=False):
               ' CALL SITE')
         return ('indirect', wasm, off)
 
+    # Two more kinds that are NOT "a real body faulted" (PORT-A8). Both are the
+    # B9-4 class -- a recovered function address spelled as an integer literal --
+    # and both used to fall through to the generic arm below, which said only
+    # that the innermost frame was a real body.
+    if TABLE_OOB_RE.search(err):
+        off = next((o for _i, o in sites if o is not None), None)
+        print('\n== TABLE INDEX, not a type mismatch: the value in the slot is'
+              ' not a table index at all')
+        return ('table', wasm, off)
+    if MEMORY_OOB_RE.search(err):
+        off = next((o for _i, o in sites if o is not None), None)
+        print('\n== MEMORY ACCESS, not a type mismatch: something was'
+              ' dereferenced that is not a pointer here')
+        return ('memory', wasm, off)
+
     print(f'\n== not a prototype conflict: the innermost named frame is '
           f'{wasm[0]}, a real body.')
     print('   A fault inside it (a null vtable slot, an out-of-bounds store, '
@@ -806,6 +1229,16 @@ def main():
                     help='print the indirect table\'s type census and exit: '
                          'every signature a call_indirect can land on, and how '
                          'many slots hold it')
+    ap.add_argument('--kind', choices=('indirect', 'table', 'memory'),
+                    default='indirect',
+                    help='how --at should explain the offset (default '
+                         'indirect); `table` for a table-index-out-of-bounds '
+                         'and `memory` for an out-of-bounds access')
+    ap.add_argument('--va-literals', action='store_true',
+                    help='sweep the module for i32 constants in the image\'s '
+                         'address space and exit: PORT-B9\'s B9-4 class (a '
+                         'function address spelled as an integer literal in the '
+                         'recovered C), read off the linked wasm')
     ap.add_argument('args', nargs=argparse.REMAINDER,
                     help='passed to the harness (a leading -- is stripped)')
     a = ap.parse_args()
@@ -813,13 +1246,17 @@ def main():
     wasm = a.wasm or os.path.join(a.build, a.target + '.wasm')
     if a.table:
         return table_census(wasm, a.build)
+    if a.va_literals:
+        return va_literal_census(wasm)
     if a.at is not None:
         # Explain one call site without running the game: the workflow for a
         # trap someone else reported, or for a page that died in the browser.
         if not os.path.exists(wasm):
             print(f'name_trap: {wasm} does not exist', file=sys.stderr)
             return 2
-        explain_indirect(wasm, [], int(a.at, 0), a.build)
+        {'indirect': explain_indirect,
+         'table': explain_table_index,
+         'memory': explain_memory_oob}[a.kind](wasm, [], int(a.at, 0), a.build)
         return 1
 
     if not a.no_build and not build(a.build, a.target, a.raw):
@@ -873,8 +1310,10 @@ def main():
               'the matcher validated against the original bytes.')
         return 1
     if isinstance(r, tuple):
-        _kind, frames, off = r
-        explain_indirect(wasm, frames, off, a.build)
+        kind, frames, off = r
+        {'indirect': explain_indirect,
+         'table': explain_table_index,
+         'memory': explain_memory_oob}[kind](wasm, frames, off, a.build)
         return 1
     if a.indirect and r == 1:
         # Asked for explicitly: the trap arrived as something other than

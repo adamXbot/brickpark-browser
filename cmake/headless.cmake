@@ -41,6 +41,60 @@ set_tests_properties(cdecl_extents PROPERTIES
   FAIL_REGULAR_EXPRESSION "FAIL"
   TIMEOUT 300)
 
+# ---- the multi-address extern gate (PORT-M6 §1f, promoted by PORT-A8) -------
+# One `extern` statement, several declarators, several addresses in its one
+# trailing comment:
+#
+#     extern void *g_route_open, *g_route_closed;   /* 0x00668fc0, 0x00668fc4 */
+#
+# Every scanner in the tree takes the FIRST address and gives it to every name
+# in the statement, so both objects are emitted at 0x00668fc0 and, in the
+# portable build, `g_route_open` IS `g_route_closed`. PORT-M6 found three and
+# split them.
+#
+# This is a class NO BYTE GATE CAN SEE. The C compiles to identical bytes either
+# way -- on x86 the declaration only has to say "a pointer lives somewhere" and
+# the linker supplies the address -- so audit.py, relocs.py and verify.py are
+# all silent, and two live globals alias each other. PORT-M6 and PORT-M8 each
+# re-ran it from a scratch script; a test holds the line without anyone
+# remembering to look. Exit status is the gate: 0 closed, 1 on any hit.
+#
+# Sources only -- no gamedata/, no image, no build products -- so it runs in CI
+# on both toolchains, like cdecl_extents.
+add_test(NAME extern_sweep
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/extern_sweep.py")
+set_tests_properties(extern_sweep PROPERTIES
+  PASS_REGULAR_EXPRESSION "0 multi-address extern statement"
+  FAIL_REGULAR_EXPRESSION "FIX:"
+  TIMEOUT 300)
+
+# The sweep's own shapes, positive and negative, so a refactor of the statement
+# reader cannot quietly turn the gate above into a test that always passes.
+add_test(NAME extern_sweep_selftest
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/extern_sweep.py" --selftest)
+set_tests_properties(extern_sweep_selftest PROPERTIES
+  PASS_REGULAR_EXPRESSION "extern_sweep selftest: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
+
+# ---- slot_sweep's pattern matcher (PORT-M8's two sweeps, promoted by A8) ----
+# `slot_sweep.py` answers "who CALLS this vtable slot" off the shipped image, in
+# both forms VC6 emits (`call [reg+off]` and `mov reg,[base+off] ... call reg`).
+# The sweep itself needs original/legoland.exe and capstone and so is NOT part
+# of the asset-free set, but its matcher is testable on hand-assembled bytes --
+# including the null-check shape (`test`/`je` between the load and the call)
+# that every load-then-call site in the image uses and whose mishandling makes a
+# called slot look uncalled.
+add_test(NAME slot_sweep_selftest
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/slot_sweep.py" --selftest)
+set_tests_properties(slot_sweep_selftest PROPERTIES
+  PASS_REGULAR_EXPRESSION "slot_sweep selftest: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
+
 if(EMSCRIPTEN)
   # Two harnesses from the same sources: `legoland_headless` is the one to run,
   # and `legoland_headless_debug` is the one that NAMES a trap. See

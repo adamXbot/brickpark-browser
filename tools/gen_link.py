@@ -212,6 +212,24 @@ STRUCT_EXTENTS = {
 # exact-match path with a real function declaration.
 DATA_LO, DATA_HI = 0x4ab000, 0x836000
 
+# Words a lane has already RULED ON. The pointer census can say "this word's
+# value is not an address" mechanically, but it cannot say whether that is a
+# defect; a lane that read the code can, and the verdict belongs next to the row
+# so the next reader does not re-derive it. Empty of defects is the goal: a row
+# here with no verdict is work, a row with one is closed.
+#
+# A word whose declaration is genuinely WRONG does not belong here -- it belongs
+# in the declaring file, fixed. These are the rows where the declaration and the
+# image are both right and the census simply cannot tell.
+PTR_VERDICTS = {
+    0x004b85c4: ('PORT-M8 §4g',
+                 'not a defect: `g_vwin32` is a Win32 HANDLE and `0xffffffff` '
+                 'is `INVALID_HANDLE_VALUE`. unref5.c:572-578 tests it against '
+                 '`(void*)-1` and resets it to `(void*)-1` on close, so the '
+                 'declaration is right, the value is right, and leaving the '
+                 'word exactly as the image has it is the correct outcome'),
+}
+
 # `extern <type> <name><dims>;   /* 0x... */` -- the declaration, not the value,
 # is what says whether a word is a pointer. <type> must end in whitespace or a
 # star, which is what separates it from <name>.
@@ -1418,8 +1436,43 @@ def main():
                             f'declared {declared_extent(addr)}): '
                             + ', '.join(f'`{n}`+0x{o:x}' for n, o in interiors[addr]))
     if sig_conflicts:
-        manifest += ['', '## Conflicting wasm signatures', ''] + \
-                    [f'- `{n}`' for n in sig_conflicts]
+        # A bare list of names says nothing a reader can act on, so attribute
+        # every row (PORT-A8). The symbol is DEFINED by one of the objects in
+        # every case measured so far, which makes the body's signature a fact
+        # and every other spelling a game-side declaration defect: the file
+        # that disagrees is named, with the line.
+        detail = lr.wasm_sig_conflict_detail(all_objs)
+        sites = lr.extern_decl_sites(sig_conflicts)
+        manifest += ['', '## Conflicting wasm signatures', '',
+                     'One symbol imported with two different signatures. wasm calls are',
+                     'type-checked, so the generator has to pick one (the most common',
+                     'wins) and wasm-ld routes any call that disagrees through a stub',
+                     'that traps. Where the symbol is DEFINED in the objects the body',
+                     "settles it: the body's signature is the right one and every file",
+                     'spelling it differently is wrong about the recovered function.',
+                     'Address-taken-only disagreements do not trap today -- nothing',
+                     'calls through them -- but they are the same defect one step from',
+                     'being live, and the fix is one prototype in the DECLARING file',
+                     '(PORT-M1/M2/M7 pattern, under `#ifdef LEGOLAND_PORTABLE`).', '',
+                     '| symbol | the body has | defined in | the disagreeing spelling | declared by | owner |',
+                     '| --- | --- | --- | --- | --- | --- |']
+        for n in sig_conflicts:
+            d = detail.get(n, {'defined': None, 'votes': {}})
+            dsig, dwhere = d['defined'] or (None, None)
+            others = [(s, w) for s, w in d['votes'].items() if s != dsig]
+            where = ', '.join(f'`{f}:{ln}`' for f, ln, _s in sites.get(n, [])
+                              if not others or f in others[0][1]) \
+                or ', '.join(f'`{f}:{ln}`' for f, ln, _s in sites.get(n, []))
+            owner = ('a matching lane (the body is the truth)' if dsig
+                     else 'unresolved name -- nothing defines it, see the census')
+            manifest.append(
+                f'| `{n}` | `{lr.sig_text(dsig) if dsig else "-"}` '
+                f'| {f"`{dwhere}`" if dwhere else "-"} '
+                f'| {", ".join(f"`{lr.sig_text(s)}` ({chr(44).join(w)})" for s, w in others) or "-"} '
+                f'| {where or "-"} | {owner} |')
+        manifest += ['', f'{len(sig_conflicts)} symbols. Every one whose body is '
+                     'named above is a game-side declaration to fix, not a generator '
+                     'defect: nothing here is emitted by `gen_link.py`.', '']
     if cast_fwd:
         # These are the rows `name_trap.py --indirect` explains. A forwarder
         # whose callers' signature disagrees with the body's is emitted as a
@@ -1624,15 +1677,22 @@ def main():
                    'the symbol path above, and an interior one is meaningless. A word',
                    'whose value is not an address is a DECLARATION to check -- some',
                    'file says pointer where the image holds a number.', '',
-                   '| word | value | declared by | field | reason |',
-                   '| --- | --- | --- | --- | --- |']
+                   'The verdict column is a lane that READ the code (`PTR_VERDICTS` at',
+                   'the top of `gen_link.py`). A row with no verdict is open work; a row',
+                   'with one has been ruled on and needs nothing.', '',
+                   '| word | value | declared by | field | reason | verdict |',
+                   '| --- | --- | --- | --- | --- | --- |']
         for va, w, why in sorted(raw_words)[:200]:
             nm, fld, cite = ptr_va.get(
                 va, (ptr_bounds.get(va, '-'), '', 'array bounds'))
+            lane, verdict = PTR_VERDICTS.get(va, (None, None))
             ptr_md.append(f'| `0x{va:08x}` | `0x{w:08x}` | `{nm}` ({cite}) '
-                          f'| {fld or "-"} | {why} |')
+                          f'| {fld or "-"} | {why} '
+                          f'| {f"**{lane}** -- {verdict}" if verdict else "OPEN -- nothing has ruled on this word"} |')
+        n_unruled = sum(1 for va, _w, _y in raw_words if va not in PTR_VERDICTS)
         ptr_md += ['', f'{len(raw_words)} rows'
-                   + (' (first 200 shown)' if len(raw_words) > 200 else '') + '.', '']
+                   + (' (first 200 shown)' if len(raw_words) > 200 else '')
+                   + f', {n_unruled} of them with no verdict yet.', '']
     if bytes_block:
         ptr_md += ['## Pointer words in a block emitted as BYTES', '',
                    'A block is emitted as words only when its address and size are both',
@@ -1649,16 +1709,20 @@ def main():
                    'usually a deliberate framing (`bigscreens.c` declares',
                    '`g_level_markers` eight bytes into the record because it only uses',
                    'the fields past the two names), occasionally a type to fix.', '',
-                   '| address | object | type | declared by | words claimed | rejected | e.g. |',
-                   '| --- | --- | --- | --- | --- | --- | --- |']
+                   '| address | object | type | declared by | words claimed | rejected | e.g. | verdict |',
+                   '| --- | --- | --- | --- | --- | --- | --- | --- |']
         for addr, nm, tn, cite, nbad, nclaim, ex in ptr_reject:
             egs = ', '.join(f'`0x{v:08x}`=' +
                             (f'`0x{w:08x}`' if w is not None else 'unaligned')
                             for v, w in ex)
+            lane, verdict = PTR_VERDICTS.get(addr, (None, None))
             ptr_md.append(f'| `0x{addr:08x}` | `{nm}` | `{tn}` | {cite} | {nclaim} '
-                          f'| {nbad} | {egs} |')
+                          f'| {nbad} | {egs} '
+                          f'| {f"**{lane}** -- {verdict}" if verdict else "OPEN -- a declaration to check"} |')
         ptr_md += ['', f'{len(ptr_reject)} declarations, '
-                   f'{sum(r[4] for r in ptr_reject)} words.', '']
+                   f'{sum(r[4] for r in ptr_reject)} words, '
+                   f'{sum(1 for r in ptr_reject if r[0] not in PTR_VERDICTS)} '
+                   f'with no verdict yet.', '']
     if ptr_amb:
         ptr_md += ['## Words a union makes undecidable', '',
                    'One arm of a union says pointer and another says it is not. Nothing',
@@ -1684,7 +1748,13 @@ def main():
                  f'- pointer claims the image rejects (wrong framing or wrong type): '
                  f'{sum(r[4] for r in ptr_reject)} words in {len(ptr_reject)} '
                  f'declarations',
-                 f'- words a union makes undecidable (left alone): {len(ptr_amb)}']
+                 f'- words a union makes undecidable (left alone): {len(ptr_amb)}',
+                 f'- **rows still waiting for a verdict: '
+                 f'{sum(1 for va, _w, _y in raw_words if va not in PTR_VERDICTS)}'
+                 f' raw + '
+                 f'{sum(1 for r in ptr_reject if r[0] not in PTR_VERDICTS)}'
+                 f' rejected** -- every other row has a lane and a reason in '
+                 f'gen/pointers.md (`PTR_VERDICTS`)']
     if n_unexplained:
         print(f'gen_link: WARNING {n_unexplained} raw pointer word(s) -- '
               f'see gen/pointers.md', file=sys.stderr)

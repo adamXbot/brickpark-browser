@@ -349,6 +349,69 @@ def collect_wasm_sigs(objs):
     return out, defined, undef_data, sorted(conflicts)
 
 
+def wasm_sig_conflict_detail(objs):
+    """Why each conflicting import conflicts: who emitted which signature.
+
+    `collect_wasm_sigs` votes and returns the winner, which is all the
+    generator needs to EMIT; this says what the vote was, so the manifest can
+    attribute the conflict instead of listing a bare name (PORT-A8). A symbol
+    that is DEFINED by one of the objects has a body whose signature is a fact,
+    and then every spelling that disagrees with it is a game-side declaration
+    defect in a named file -- the PORT-M1/M2/M7 class, one `#ifdef
+    LEGOLAND_PORTABLE` prototype each.
+
+    Returns name -> {'defined': (sig, file) or None,
+                     'votes': {sig: [file, ...]}}, conflicts only."""
+    votes = collections.defaultdict(lambda: collections.defaultdict(list))
+    defined = {}
+    for obj in objs:
+        try:
+            imp, dfn, _udata = wasm_object_sigs(obj)
+        except (IndexError, ValueError):
+            continue
+        if imp is None:
+            continue
+        base = os.path.basename(obj).replace('.c.o', '.c').replace('.o', '')
+        for name, sig in imp.items():
+            votes[name][(tuple(sig[0]), tuple(sig[1]))].append(base)
+        for name, sig in dfn.items():
+            defined.setdefault(name, ((tuple(sig[0]), tuple(sig[1])), base))
+    return {n: {'defined': defined.get(n),
+                'votes': {s: sorted(w) for s, w in v.items()}}
+            for n, v in votes.items() if len(v) > 1}
+
+
+def extern_decl_sites(names, src=SRC):
+    """name -> [(file, line, statement)] for every `extern` DECLARATION of one
+    of `names`, anywhere in the sources.
+
+    `scan_sources` keeps one address per name because that is what sizing a
+    global needs; a declaration DEFECT needs the opposite -- every file that
+    spells the name, with a line number a matching lane can open. No address
+    comment is required: a disagreeing prototype often has none."""
+    want = set(names)
+    out = collections.defaultdict(list)
+    if not want:
+        return out
+    for path in sorted(glob.glob(os.path.join(src, '*.c'))) + \
+            sorted(glob.glob(os.path.join(src, '*.h'))):
+        base = os.path.basename(path)
+        text = open(path, encoding='utf-8', errors='replace').read()
+        pos = 0
+        for start in _extern_positions(text):
+            if start < pos:
+                continue
+            stmt, _comments, pos = _statement_at(text, start)
+            hits = [n for n, _k in extern_decl_names(stmt) if n in want]
+            if not hits:
+                continue
+            line = text.count('\n', 0, start) + 1
+            flat = ' '.join(stmt.split())
+            for n in hits:
+                out[n].append((base, line, flat))
+    return out
+
+
 def sig_text(sig):
     """A wasm signature the way wasm-ld prints it: (i32, i32) -> void."""
     names = {0x7f: 'i32', 0x7e: 'i64', 0x7d: 'f32', 0x7c: 'f64'}
