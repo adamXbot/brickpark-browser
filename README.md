@@ -1593,6 +1593,136 @@ Space Tower renders as a squat block rather than a tower. And one opportunity:
 TrueType rasteriser in the shim would give the game its actual metrics and close
 the whole class both defects above belong to.
 
+## The game's own type, and the game's own voice (scope PORT-B11)
+
+**The port reads the game's typeface and the Duty Manager speaks.**
+
+### PARK-4: `gamedata/main/Lego.TTF` is shipped, so read it
+
+PORT-B2 and PORT-B10 drew a 6x7 bitmap face by hand because "Lego" could not be
+rasterised — and both of PORT-B10's text defects (the briefing clipped mid-word
+at 460 px, the money bar's zeroes reading as a capital A) were the same defect
+twice: *our metrics are not the game's metrics*. But the font is right there,
+77,012 bytes of real sfnt, and gpu.c's `InitHostSystemGPU` hands it to
+`AddFontResourceA` before anything draws.
+
+`portable/src/hostwin/ll_ttf.c` reads it — sfnt directory, `head`, `hhea`/`hmtx`,
+`maxp`, `loca`, `glyf` simple and composite, `cmap` formats 4 and 0, `OS/2`
+v0..v5 — flattens the outlines and fills them non-zero-winding at 5 sub-rows per
+pixel with exact horizontal coverage. Written here, not vendored: no
+third-party source and no licence file enters the tree. No hinting (a bytecode
+interpreter is a lane of its own) and no kerning (correctly: GDI does not apply
+a font's kern table unless the application asks, and no call site does).
+
+The height mapping is GDI's, and it is the whole point: `lfHeight` is a CELL
+height, so pixels-per-font-unit is `lfHeight / (usWinAscent + usWinDescent)` —
+2110 + 595 over a 2048 em here, which makes an `lfHeight` of 18 only 13.6 pixels
+per em with a 14-pixel ascent, and puts the baseline at `y + tmAscent`.
+
+**The evidence that the mapping is right** is the shipped data. The tutorial
+letter is pre-wrapped and `PrintReportLine` draws each line DT_SINGLELINE into a
+box exactly 0x1cc = 460 px wide. Through the real face, its longest line (63
+characters) measures **383 px at lfHeight 18**, and 487 / 571 / 597 at the other
+three heights. Exactly one of the four fits, and it is the one text.c's
+addresses say the report screen asks for. A font file we were handed and a set
+of line lengths shipped as data agree — and nothing was tuned to make them.
+
+Synthetic bold falls out of the file too: Lego.TTF is `usWeightClass` 400
+"Regular", GDI emboldens only a request of FW_BOLD or more, so the 700 fonts get
+a pixel of overhang per character and the 600 report body does not — which is
+what PORT-B10 had to arrange by hand to stop the briefing clipping.
+
+The bitmap face stays as the fallback, because `legoland_tests` and
+`legoland_headless` have no mounted gamedata. `llFont()` on the page reports the
+face and every LOGFONT the game asked for with what it got.
+
+### Sound: MS ADPCM, and Web Audio behind PORT-B4's silent device
+
+Two halves, and the samples had to decode first. Every sound the game loads runs
+through `ConvertWAVToPCM` unconditionally and is DROPPED if it fails, so a
+refused codec is not a silent sample — it is a sample that never exists.
+`msacm32.c` now has a real MS ADPCM decoder. The census over the three shipped
+archives: 155 WAVE members, of which **21 are MS ADPCM**, and **all 1,266 files
+in `gamedata/disc/Speech` are**. The shim converted 134 of 155 and no speech at
+all; it now converts **155 of 155 and 1,266 of 1,266**, byte-identical to an
+independent reference on every one of the 1,266.
+
+`portable/src/hostwin/ll_audio.c` is the Web Audio back end. `dsound.c` keeps
+every DirectSound semantic PORT-B4 established — the wall-clock cursor, the
+refcount `Release` returns, the status a finished one-shot reports, the volume
+`GetVolume` round-trips — and gains a voice per buffer. Volume stays in
+hundredths of a dB (`10^(v/2000)`), `SetFrequency` becomes a playbackRate, pan
+becomes a StereoPanner position. EM_JS rather than a `--js-library` entry, so it
+links into the node targets too (where it is a set of counters) without touching
+`node_shim.c` or `tests.cmake`.
+
+**Two playback modes, decided by the game's own call pattern.** A sound effect is
+written once in full before it is played (one `DSBLOCK_ENTIREBUFFER` Lock at load
+time), so it becomes one AudioBuffer and one source node. The narration buffer is
+40 KB of ten blocks played LOOPING for ever while `PumpNarration` rewrites the
+block ahead of the cursor — a snapshot would loop the first 1.9 seconds of every
+line — so a buffer that is ever Locked WITHOUT `DSBLOCK_ENTIREBUFFER` is marked
+streamed and fed as small AudioBuffers scheduled back to back, **each copied out
+only after the cursor `dsound.c` reports has passed over it**. The cursor is what
+the game fills against, so "behind the cursor" is exactly "already written".
+
+**Measured**, on a build with `-DLL_PRELOAD_SPEECH=ON`, walking to the tutorial
+briefing with the AudioContext's `createBuffer` wrapped:
+
+```
+llAudio() -> { state: "running", voices_created: 4,
+               stream_chunks: 510, stream_bytes: 1305600, underruns: 2 }
+440 AudioBuffers, 1280 frames each @ 22050 Hz;  426 carry real waveform,
+peaks to 0.986;  gain 0.3162 == -1000 cB, the game's speech slider
+= 29.6 seconds of speech, at 33.9 fps with traps [] and dead null
+```
+
+That is MS ADPCM off the disk, through the ACM, through the game's ring, through
+`PumpNarration`, through the shim's cursor, to the speaker. **The narration
+speaks.**
+
+The browser's autoplay policy is handled: the AudioContext is made eagerly at
+`DirectSoundCreate` (so its one-shot gesture listeners are installed before the
+front end is drawn), blocked Plays are counted rather than dropped, and the
+page's **sound** cell turns amber and is click-to-enable. `?sound=test` runs one
+generated tone through the game's own load-and-play sequence, for when the
+question is "is the audio path wired up" rather than "did the game get there".
+
+### Two open items, both named, neither this lane's
+
+**Sound EFFECTS do not play, and it is the raw-pointer class again.** Over a
+whole walk to the park, `CreateSoundBuffer` is called **once**. `Load_FXList`
+builds `".\sfx\<name>"` and the RES layer resolves it correctly — but
+`extern FXEntry g_game_fx[];` (mapinit.c:18) has **no bound**, so `cdecl.py`
+cannot compute an extent, `gen_link.py`'s pointer scan skips the object, and
+`gen-browser/globals.c` emits `g_game_fx[0].name` as the bare literal
+`0x004b9b94` — the original image's address of `"Flowers.wav"`. All 23 names are
+raw. (`Space Tower01.wav` is the one that works, because mechrides.c:673 happens
+to declare `extern void* g_spacetower_fx;` — bounded — so its word 0 is
+re-pointed. One declaration is the whole explanation for "exactly one buffer".)
+
+`pointers.md`'s **"raw pointer words: 0"** is blind to this, because it counts
+only words the pointer scan visited. A scan that does not depend on the
+declaration — any word in an emitted `.data` block whose value lands in the
+original image's data range and points at a printable string — finds **122 raw
+words in 18 objects**, including 63 in `g_power_table` ("Small Power Station",
+"Dino Big", "T-Rex"), which is very likely a second live defect nobody has
+looked for. The fix is a bound on each `extern`, in files this lane does not own;
+the recipe and the full list are in `docs/lanes/scope-port-b11.md` §3.
+
+**PARK-2 is settled, and it is not the surface model.** The original never
+creates a flip chain: `screen.c:1988-2004` makes one DDSCAPS_OFFSCREENPLAIN
+surface and `FlipPrimary` **Blts** it to the primary, and `ddraw.c` models
+exactly that. There is also no erase path to run — the bubble drawers are
+stateless and the HUD is repainted before them every frame. The residue is a
+10-pixel bubble tail left in the **112x96 advisor window** at (522, 378), which
+`InterfaceBG.lls` leaves transparent on purpose and which the original fills
+every frame from `RenderAdvisorIcon` — inside `if (g_vidanim)`, which is dead in
+this port because `avifil32.c` refuses the advisor AVI. The same stub is why the
+bubble was raised from a panel pixel at all (icon ownership is established by the
+blit, and `BltAdvisor` never runs). So PARK-2 re-files as a PORT-B item, a
+sibling of PARK-4, with the cost written up in `docs/lanes/scope-port-b11.md` §4.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
