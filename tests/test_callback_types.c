@@ -1160,3 +1160,426 @@ int ll_callback_type_pairs(void)
     n += (int)(sizeof ll_tab_g_car_class_vt / sizeof ll_tab_g_car_class_vt[0]);
     return n;
 }
+
+/* ======================================================================
+ * PORT-M7 -- the 72 cast forwarders: a stale registration name typed
+ * unlike the body that address really holds.
+ *
+ * Each alias below is a name no game TU defines: the registering file
+ * declared it with an EMPTY parameter list while the body at that address
+ * takes arguments, so gen_link.py had to bridge the two with a cast and the
+ * call became a call_indirect whose type is not the target's (PORT-M2
+ * section 4: binaryen's directize then rewrites it into an invalid DIRECT
+ * call).  The registering file now declares each alias with the body's real
+ * signature, so the generated forwarder is plain.
+ *
+ * A table holds the ALIAS and the BODY together in the slot's own call-site
+ * type: the initialiser compiles only when all three agree.
+ * ====================================================================== */
+
+/* ---- m7_cb_add
+ * call site: ObjDef +0x98  NO call site in the recovered tree (PORT-M3 section 2); the
+ *          type below is the one the alias and the body now share
+ * type:      (i32, i32) -> void  */
+extern void CastleLevel1_Add(void*, void*);   /* the stale registration name; body CastleLevel1_Place */
+extern void CastleLevel1_Place(void*, void*);
+extern void Catapult_Add(void*, void*);   /* the stale registration name; body Catapult_Place */
+extern void Catapult_Place(void*, void*);
+extern void Copters_Add(void*, void*);   /* the stale registration name; body Copters_Place */
+extern void Copters_Place(void*, void*);
+extern void Fort_Add(void*, void*);   /* the stale registration name; body Fort_Place */
+extern void Fort_Place(void*, void*);
+extern void GoldRush_Add(void*, void*);   /* the stale registration name; body GoldRush_Place */
+extern void GoldRush_Place(void*, void*);
+extern void Joust_Add(void*, void*);   /* the stale registration name; body Joust_Place */
+extern void Joust_Place(void*, void*);
+extern void MediaShop_Add(void*, void*);   /* the stale registration name; body LegoMedia_Add */
+extern void LegoMedia_Add(void*, void*);
+extern void PlaneRide_Add(void*, void*);   /* the stale registration name; body PlaneRide_Place */
+extern void PlaneRide_Place(void*, void*);
+extern void SafariRide_Add(void*, void*);   /* the stale registration name; body SafariRide_Place */
+extern void SafariRide_Place(void*, void*);
+extern void SpaceTower_Add(void*, void*);   /* the stale registration name; body SpaceTower_Place */
+extern void SpaceTower_Place(void*, void*);
+extern void SpiderRide_Add(void*, void*);   /* the stale registration name; body SpiderRide_Place */
+extern void SpiderRide_Place(void*, void*);
+extern void SpinningBarrels_Add(void*, void*);   /* the stale registration name; body SpinningBarrels_Place */
+extern void SpinningBarrels_Place(void*, void*);
+extern void TempleSlide_Add(void*, void*);   /* the stale registration name; body TempleSlide_Place */
+extern void TempleSlide_Place(void*, void*);
+extern void Temple_Add(void*, void*);   /* the stale registration name; body Temple_Place */
+extern void Temple_Place(void*, void*);
+
+typedef void (*ll_fn_m7_cb_add)(void*, void*);
+ll_fn_m7_cb_add const ll_tab_m7_cb_add[] = {
+    CastleLevel1_Add,
+    CastleLevel1_Place,
+    Catapult_Add,
+    Catapult_Place,
+    Copters_Add,
+    Copters_Place,
+    Fort_Add,
+    Fort_Place,
+    GoldRush_Add,
+    GoldRush_Place,
+    Joust_Add,
+    Joust_Place,
+    MediaShop_Add,
+    LegoMedia_Add,
+    PlaneRide_Add,
+    PlaneRide_Place,
+    SafariRide_Add,
+    SafariRide_Place,
+    SpaceTower_Add,
+    SpaceTower_Place,
+    SpiderRide_Add,
+    SpiderRide_Place,
+    SpinningBarrels_Add,
+    SpinningBarrels_Place,
+    TempleSlide_Add,
+    TempleSlide_Place,
+    Temple_Add,
+    Temple_Place,
+};
+
+/* ---- m7_cb_remove
+ * call site: ObjDef +0x9c  objmap2.c:1895
+ * type:      (i32, i32, i32) -> void  */
+extern void MediaShop_Remove(void*, void*, void*);   /* the stale registration name; body LegoMedia_Remove */
+extern void LegoMedia_Remove(void*, void*, void*);
+
+typedef void (*ll_fn_m7_cb_remove)(void*, void*, void*);
+ll_fn_m7_cb_remove const ll_tab_m7_cb_remove[] = {
+    MediaShop_Remove,
+    LegoMedia_Remove,
+};
+
+/* ---- m7_cb_a0
+ * call site: ObjDef +0xa0  renderview.c:1221
+ * type:      (i32, i32) -> i32  */
+extern int Catapult_Draw(void*, void*);   /* the stale registration name; body Catapult_GetDrawDesc */
+extern int Catapult_GetDrawDesc(void*, void*);
+extern int Copters_Draw(void*, void*);   /* the stale registration name; body Copters_GetDrawDesc */
+extern int Copters_GetDrawDesc(void*, void*);
+extern int Joust_A0(void*, void*);   /* the stale registration name; body Joust_GetDrawDesc */
+extern int Joust_GetDrawDesc(void*, void*);
+extern int PlaneRide_Draw(void*, void*);   /* the stale registration name; body PlaneRide_GetDrawDesc */
+extern int PlaneRide_GetDrawDesc(void*, void*);
+extern int SafariRide_Draw(void*, void*);   /* the stale registration name; body SafariRide_GetDrawDesc */
+extern int SafariRide_GetDrawDesc(void*, void*);
+extern int Shop_Draw(void*, void*);   /* the stale registration name; body Shop_GetDrawDesc */
+extern int Shop_GetDrawDesc(void*, void*);
+extern int SpaceTower_Draw(void*, void*);   /* the stale registration name; body SpaceTower_GetDrawDesc */
+extern int SpaceTower_GetDrawDesc(void*, void*);
+extern int SpiderRide_Draw(void*, void*);   /* the stale registration name; body SpiderRide_GetDrawDesc */
+extern int SpiderRide_GetDrawDesc(void*, void*);
+extern int SpinningBarrels_Draw(void*, void*);   /* the stale registration name; body SpinningBarrels_GetDrawDesc */
+extern int SpinningBarrels_GetDrawDesc(void*, void*);
+extern int TempleSlide_A0(void*, void*);   /* the stale registration name; body TempleSlide_GetDrawDesc */
+extern int TempleSlide_GetDrawDesc(void*, void*);
+
+typedef int (*ll_fn_m7_cb_a0)(void*, void*);
+ll_fn_m7_cb_a0 const ll_tab_m7_cb_a0[] = {
+    Catapult_Draw,
+    Catapult_GetDrawDesc,
+    Copters_Draw,
+    Copters_GetDrawDesc,
+    Joust_A0,
+    Joust_GetDrawDesc,
+    PlaneRide_Draw,
+    PlaneRide_GetDrawDesc,
+    SafariRide_Draw,
+    SafariRide_GetDrawDesc,
+    Shop_Draw,   /* shared by all nine western-town classes */
+    Shop_GetDrawDesc,
+    SpaceTower_Draw,
+    SpaceTower_GetDrawDesc,
+    SpiderRide_Draw,
+    SpiderRide_GetDrawDesc,
+    SpinningBarrels_Draw,
+    SpinningBarrels_GetDrawDesc,
+    TempleSlide_A0,
+    TempleSlide_GetDrawDesc,
+};
+
+/* ---- m7_cb_a4
+ * call site: ObjDef +0xa4  llidb_odf.c:281
+ * type:      (i32) -> void  */
+extern void Bank_Create(void*);   /* the stale registration name; body Bank_LoadResources */
+extern void Bank_LoadResources(void*);
+extern void GeneralStore_Create(void*);   /* the stale registration name; body GeneralStore_LoadResources */
+extern void GeneralStore_LoadResources(void*);
+extern void Institute_Create(void*);   /* the stale registration name; body Explorers_LoadResources */
+extern void Explorers_LoadResources(void*);
+extern void JailCell_Create(void*);   /* the stale registration name; body JailCell_LoadResources */
+extern void JailCell_LoadResources(void*);
+extern void Joust_A4(void*);   /* the stale registration name; body Joust_LoadResources */
+extern void Joust_LoadResources(void*);
+extern void LegoShop1_Create(void*);   /* the stale registration name; body LegoShop1_LoadResources */
+extern void LegoShop1_LoadResources(void*);
+extern void LegoShop2_Create(void*);   /* the stale registration name; body LegoShop2_LoadResources */
+extern void LegoShop2_LoadResources(void*);
+extern void MediaShop_Create(void*);   /* the stale registration name; body LegoMedia_LoadResources */
+extern void LegoMedia_LoadResources(void*);
+extern void Saloon_Create(void*);   /* the stale registration name; body Saloon_LoadResources */
+extern void Saloon_LoadResources(void*);
+extern void Sheriff_Create(void*);   /* the stale registration name; body Sheriff_LoadResources */
+extern void Sheriff_LoadResources(void*);
+extern void TempleSlide_A4(void*);   /* the stale registration name; body TempleSlide_LoadResources */
+extern void TempleSlide_LoadResources(void*);
+
+typedef void (*ll_fn_m7_cb_a4)(void*);
+ll_fn_m7_cb_a4 const ll_tab_m7_cb_a4[] = {
+    Bank_Create,
+    Bank_LoadResources,
+    GeneralStore_Create,
+    GeneralStore_LoadResources,
+    Institute_Create,
+    Explorers_LoadResources,
+    JailCell_Create,
+    JailCell_LoadResources,
+    Joust_A4,
+    Joust_LoadResources,
+    LegoShop1_Create,
+    LegoShop1_LoadResources,
+    LegoShop2_Create,
+    LegoShop2_LoadResources,
+    MediaShop_Create,
+    LegoMedia_LoadResources,
+    Saloon_Create,
+    Saloon_LoadResources,
+    Sheriff_Create,
+    Sheriff_LoadResources,
+    TempleSlide_A4,
+    TempleSlide_LoadResources,
+};
+
+/* ---- m7_cb_a8
+ * call site: ObjDef +0xa8  renderview.c:1130
+ * type:      (i32) -> void  */
+extern void Bank_Activate(void*);   /* the stale registration name; body Bank_TickCustomers */
+extern void Bank_TickCustomers(void*);
+extern void CastleLevel1_Activate(void*);   /* the stale registration name; body CastleLevel1_TickRiders */
+extern void CastleLevel1_TickRiders(void*);
+extern void Fort_Activate(void*);   /* the stale registration name; body Fort_TickRiders */
+extern void Fort_TickRiders(void*);
+extern void GeneralStore_Activate(void*);   /* the stale registration name; body GeneralStore_TickCustomers */
+extern void GeneralStore_TickCustomers(void*);
+extern void GoldRush_Activate(void*);   /* the stale registration name; body GoldRush_TickRiders */
+extern void GoldRush_TickRiders(void*);
+extern void Institute_Activate(void*);   /* the stale registration name; body Explorers_TickCustomers */
+extern void Explorers_TickCustomers(void*);
+extern void JailCell_Activate(void*);   /* the stale registration name; body JailCell_TickCustomers */
+extern void JailCell_TickCustomers(void*);
+extern void LegoShop1_Activate(void*);   /* the stale registration name; body LegoShop1_TickCustomers */
+extern void LegoShop1_TickCustomers(void*);
+extern void LegoShop2_Activate(void*);   /* the stale registration name; body LegoShop2_TickCustomers */
+extern void LegoShop2_TickCustomers(void*);
+extern void MediaShop_Activate(void*);   /* the stale registration name; body LegoMedia_TickCustomers */
+extern void LegoMedia_TickCustomers(void*);
+extern void Saloon_Activate(void*);   /* the stale registration name; body Saloon_TickCustomers */
+extern void Saloon_TickCustomers(void*);
+extern void Sheriff_Activate(void*);   /* the stale registration name; body Sheriff_TickCustomers */
+extern void Sheriff_TickCustomers(void*);
+extern void TempleSlide_A8(void*);   /* the stale registration name; body TempleSlide_Update */
+extern void TempleSlide_Update(void*);
+extern void Temple_Activate(void*);   /* the stale registration name; body Temple_TickRiders */
+extern void Temple_TickRiders(void*);
+
+typedef void (*ll_fn_m7_cb_a8)(void*);
+ll_fn_m7_cb_a8 const ll_tab_m7_cb_a8[] = {
+    Bank_Activate,
+    Bank_TickCustomers,
+    CastleLevel1_Activate,
+    CastleLevel1_TickRiders,
+    Fort_Activate,
+    Fort_TickRiders,
+    GeneralStore_Activate,
+    GeneralStore_TickCustomers,
+    GoldRush_Activate,
+    GoldRush_TickRiders,
+    Institute_Activate,
+    Explorers_TickCustomers,
+    JailCell_Activate,
+    JailCell_TickCustomers,
+    LegoShop1_Activate,
+    LegoShop1_TickCustomers,
+    LegoShop2_Activate,
+    LegoShop2_TickCustomers,
+    MediaShop_Activate,
+    LegoMedia_TickCustomers,
+    Saloon_Activate,
+    Saloon_TickCustomers,
+    Sheriff_Activate,
+    Sheriff_TickCustomers,
+    TempleSlide_A8,
+    TempleSlide_Update,
+    Temple_Activate,
+    Temple_TickRiders,
+};
+
+/* ---- m7_cb_ac
+ * call site: ObjDef +0xac  sysmisc.c:664
+ * type:      (i32) -> void  */
+extern void TempleSlide_AC(void*);   /* the stale registration name; body TempleSlide_FreeResources */
+extern void TempleSlide_FreeResources(void*);
+
+typedef void (*ll_fn_m7_cb_ac)(void*);
+ll_fn_m7_cb_ac const ll_tab_m7_cb_ac[] = {
+    TempleSlide_AC,
+    TempleSlide_FreeResources,
+};
+
+/* ---- m7_cb_b0
+ * call site: ObjDef +0xb0  NO call site in the recovered tree (PORT-M3 section 2); the
+ *          type below is the one the alias and the body now share
+ * type:      (i32, i32, i32, i32, i32, i32) -> void  */
+extern void Bank_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body Bank_DrawOverlay */
+extern void Bank_DrawOverlay(void*, void*, void*, void*, void*, void*);
+extern void CastleLevel1_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body CastleLevel1_Draw */
+extern void CastleLevel1_Draw(void*, void*, void*, void*, void*, void*);
+extern void Fort_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body Fort_Draw */
+extern void Fort_Draw(void*, void*, void*, void*, void*, void*);
+extern void GeneralStore_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body GeneralStore_DrawOverlay */
+extern void GeneralStore_DrawOverlay(void*, void*, void*, void*, void*, void*);
+extern void GoldRush_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body GoldRush_Draw */
+extern void GoldRush_Draw(void*, void*, void*, void*, void*, void*);
+extern void Institute_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body Explorers_DrawOverlay */
+extern void Explorers_DrawOverlay(void*, void*, void*, void*, void*, void*);
+extern void JailCell_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body JailCell_DrawOverlay */
+extern void JailCell_DrawOverlay(void*, void*, void*, void*, void*, void*);
+extern void Joust_B0(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body Joust_Draw */
+extern void Joust_Draw(void*, void*, void*, void*, void*, void*);
+extern void LegoShop1_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body LegoShop1_DrawOverlay */
+extern void LegoShop1_DrawOverlay(void*, void*, void*, void*, void*, void*);
+extern void LegoShop2_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body LegoShop2_DrawOverlay */
+extern void LegoShop2_DrawOverlay(void*, void*, void*, void*, void*, void*);
+extern void MediaShop_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body LegoMedia_DrawOverlay */
+extern void LegoMedia_DrawOverlay(void*, void*, void*, void*, void*, void*);
+extern void Saloon_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body Saloon_DrawOverlay */
+extern void Saloon_DrawOverlay(void*, void*, void*, void*, void*, void*);
+extern void Sheriff_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body Sheriff_DrawOverlay */
+extern void Sheriff_DrawOverlay(void*, void*, void*, void*, void*, void*);
+extern void TempleSlide_B0(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body TempleSlide_Draw */
+extern void TempleSlide_Draw(void*, void*, void*, void*, void*, void*);
+extern void Temple_Interact(void*, void*, void*, void*, void*, void*);   /* the stale registration name; body Temple_Draw */
+extern void Temple_Draw(void*, void*, void*, void*, void*, void*);
+
+typedef void (*ll_fn_m7_cb_b0)(void*, void*, void*, void*, void*, void*);
+ll_fn_m7_cb_b0 const ll_tab_m7_cb_b0[] = {
+    Bank_Interact,
+    Bank_DrawOverlay,
+    CastleLevel1_Interact,
+    CastleLevel1_Draw,
+    Fort_Interact,
+    Fort_Draw,
+    GeneralStore_Interact,
+    GeneralStore_DrawOverlay,
+    GoldRush_Interact,
+    GoldRush_Draw,
+    Institute_Interact,
+    Explorers_DrawOverlay,
+    JailCell_Interact,
+    JailCell_DrawOverlay,
+    Joust_B0,
+    Joust_Draw,
+    LegoShop1_Interact,
+    LegoShop1_DrawOverlay,
+    LegoShop2_Interact,
+    LegoShop2_DrawOverlay,
+    MediaShop_Interact,
+    LegoMedia_DrawOverlay,
+    Saloon_Interact,
+    Saloon_DrawOverlay,
+    Sheriff_Interact,
+    Sheriff_DrawOverlay,
+    TempleSlide_B0,
+    TempleSlide_Draw,
+    Temple_Interact,
+    Temple_Draw,
+};
+
+/* ---- m7_cb_90
+ * call site: ObjDef +0x90  eventtick.c:400, gameframe.c:991, mappath.c:585, objmap2.c:556
+ * type:      (i32, i32, i32) -> void  */
+extern void Track_Update90(void*, void*, void*);   /* the stale registration name; body Track_Update */
+extern void Track_Update(void*, void*, void*);
+
+typedef void (*ll_fn_m7_cb_90)(void*, void*, void*);
+ll_fn_m7_cb_90 const ll_tab_m7_cb_90[] = {
+    Track_Update90,   /* coaster.c's 0x004275d0, NOT castleobj.c's 0x00427b20 */
+    Track_Update,
+};
+
+/* ---- m7_cb_load
+ * call site: ObjDef +0xb8  savegame.c:1365
+ * type:      (i32) -> i32  */
+extern int LoadPlaneRide(void*);   /* the stale registration name; body LoadZoomer */
+extern int LoadZoomer(void*);
+extern int LoadSpiderRide(void*);   /* the stale registration name; body LoadSpider */
+extern int LoadSpider(void*);
+extern int LoadSpinningBarrels(void*);   /* the stale registration name; body LoadSBarrel */
+extern int LoadSBarrel(void*);
+
+typedef int (*ll_fn_m7_cb_load)(void*);
+ll_fn_m7_cb_load const ll_tab_m7_cb_load[] = {
+    LoadPlaneRide,
+    LoadZoomer,
+    LoadSpiderRide,
+    LoadSpider,
+    LoadSpinningBarrels,
+    LoadSBarrel,
+};
+
+/* ---- m7_input
+ * call site: g_icon_handler1 0x006687bc / g_icon_handler2 0x006687c0  fpui.c:768/787
+ * type:      (i32, i32, i32, i32) -> i32  */
+extern int MapScreenIconHandler(void*, void*, void*, void*);   /* the stale registration name; body MapIconInput */
+extern int MapIconInput(void*, void*, void*, void*);
+
+typedef int (*ll_fn_m7_input)(void*, void*, void*, void*);
+ll_fn_m7_input const ll_tab_m7_input[] = {
+    MapScreenIconHandler,
+    MapIconInput,
+};
+
+/* The PORT-M7 pairs, counted separately from PORT-M3's. */
+int ll_m7_callback_type_pairs(void)
+{
+    int n = 0;
+    n += (int)(sizeof ll_tab_m7_cb_add / sizeof ll_tab_m7_cb_add[0]);
+    n += (int)(sizeof ll_tab_m7_cb_remove / sizeof ll_tab_m7_cb_remove[0]);
+    n += (int)(sizeof ll_tab_m7_cb_a0 / sizeof ll_tab_m7_cb_a0[0]);
+    n += (int)(sizeof ll_tab_m7_cb_a4 / sizeof ll_tab_m7_cb_a4[0]);
+    n += (int)(sizeof ll_tab_m7_cb_a8 / sizeof ll_tab_m7_cb_a8[0]);
+    n += (int)(sizeof ll_tab_m7_cb_ac / sizeof ll_tab_m7_cb_ac[0]);
+    n += (int)(sizeof ll_tab_m7_cb_b0 / sizeof ll_tab_m7_cb_b0[0]);
+    n += (int)(sizeof ll_tab_m7_cb_90 / sizeof ll_tab_m7_cb_90[0]);
+    n += (int)(sizeof ll_tab_m7_cb_load / sizeof ll_tab_m7_cb_load[0]);
+    n += (int)(sizeof ll_tab_m7_input / sizeof ll_tab_m7_input[0]);
+    return n;
+}
+
+/* ---- PORT-M7 (adjacent): the +0xac teardown slot in interfaces.c
+ * Found by the same method while retiring the 72: 33 `def->cb_destroy = X;`
+ * and 2 `def->cb_activate = X;` stores in interfaces.c named a body that
+ * genuinely takes NO argument, while sysmisc.c:664 calls +0xac as
+ * `d->dtor(d->dtor_arg)` and renderview.c:1130 calls +0xa8 as
+ * `cls->prerender(cls->ctx)`.  PORT-M3 gave screen.c and castleobj.c this
+ * treatment and missed interfaces.c.  All 35 now reach their slot through a
+ * registration-site adapter of the slot's own type, so -- being file-local
+ * statics -- they cannot be named in a table here:
+ *   cb_destroy  Bank_Destroy CastleLevel1_Destroy Catapult_Destroy
+ *               Copters_Destroy ElephantFountain_Destroy Flowers_Destroy
+ *               Fort_Destroy GeneralStore_Destroy GoldRush_Destroy
+ *               Hedge_Destroy Institute_Destroy JailCell_Destroy
+ *               LFCorner1_Destroy LFCorner2_Destroy LFCorner3_Destroy
+ *               LFCorner4_Destroy LFCsaw_Destroy LFDrop_Destroy
+ *               LFEntrance_Destroy LFHoldUp_Destroy LFTrack_Destroy
+ *               LFTunnel_Destroy LegoShop1_Destroy LegoShop2_Destroy
+ *               MediaShop_Destroy Saloon_Destroy Sheriff_Destroy
+ *               Shower_Destroy SpaceTower_Destroy SpinningBarrels_Destroy
+ *               Temple_Destroy WWEntrance_Destroy WaterBlock_Destroy
+ *   cb_activate ElephantFountain_Activate Shower_Activate
+ * After this lane NO `def->cb_* = ...` store anywhere in the 258 sources
+ * disagrees with its slot's call-site wasm type (scope PORT-M7 section 5). */
