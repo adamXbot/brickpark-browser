@@ -1,0 +1,47 @@
+# The by-value-struct sites a lane has RULED ON -- the baseline for the
+# `bvstruct_sweep` ctest. One address per line; anything else the sweep reports
+# as SILENT fails the test.
+#
+# The class (docs/lanes/scope-port-m10.md §1): a parameter spelled as a by-value
+# aggregate of 4 bytes or fewer in one TU and as a scalar in another is the same
+# dword on x86 cdecl and NOT the same on wasm32 -- the aggregate goes indirect,
+# so the callee reads a shadow-stack POINTER. Both lower to one i32, so wasm-ld,
+# linkreport.py and test_callback_types.c all see nothing and nothing traps.
+# Measured by the sweep's own --selftest against emcc and clang:
+#
+#   struct {u8 x,y}  native slot=0x233f   wasm32 slot=0x0aec
+#   union  {u16; BPos}  native slot=0x233f   wasm32 slot=0x0aec
+#   one-member struct   identical on both (passed direct -- safe)
+#
+# NOTHING HERE IS FIXED. Every row is a live defect or a row needing a reader;
+# LEGOLAND/*.c is not PORT-A9's to edit, so the lane measured them and filed
+# them. The fix is always one point: give the DEFINITION's spelling to the
+# declaration in a `#ifdef LEGOLAND_PORTABLE` arm and pack at the call site
+# (§1d), or M3's rename trick when the definition is the odd one out (§1f).
+#
+# Measured 2026-09-12 by PORT-A9 on 68fab1d3: 20 silent sites over these 15
+# addresses, 5 noisy. PORT-M10 found 3 (fixed) and filed 2; the other THIRTEEN
+# were hidden by its sweep sizing a typedef only in the file that mentioned it,
+# so every `union BPosW { unsigned short w; BPos b; }` came out "size unknown"
+# and was filed under "wasm-ld already warns". It does not.
+
+# ---- PORT-M10 §1f: known open, the dangerous direction ----------------------
+0x45f220   # StandardRemoveObject: objmap2.c:983 DEFINES (MapObj*, BPos, Cursor*); ten files declare the tile as an int and eight more as BPosW, and the +0x9c slot type moves with them. Every object removal in the game reads a square from a tiny address. M10 recommends M3's rename trick on the definition
+0x48a2e0   # RemoveAllBlokesFromRide: rides.c:400 DEFINES (RideObject*, RideTile) -- RideTile is the 2-byte union; six files declare an int. Same shape, same fix
+
+# ---- NEW, found by PORT-A9 -- 2-byte unions M10's sweep could not size ------
+# The direction matters: "def AGG" means the BODY dereferences whatever arrives,
+# and the callers hand it an integer, which is the crashing direction.
+0x401f30   # SchoolCarNextManoeuvreHorn: def schoolcar2.c:547 (BPosW school) vs decl goldrush.c:1641 (unsigned short). The driving school's horn manoeuvre reads the school record from a stack address
+0x402150   # SchoolCarNextManoeuvre: def schoolcar2.c:469 (BPosW) vs decl goldrush.c:1642 (unsigned short) -- the same routine without the horn, so the school cars' whole manoeuvre chain
+0x412650   # Road_FindStartPiece: def ridecb6.c:966 (BPosW) and decl schoolcar2.c:403 agree; coaster.c:1515 declares the SAME ADDRESS as `GetSchoolRecord(int school)` -- a name disagreement as well as an ABI one, worth a reader before a fix
+0x41a530   # BoatingSchool_Remove: def ridecb8.c:381 (MapObj*, BPosW, Cursor*) vs loaders.c:183 (void*, unsigned int, void*) -- and loaders.c is the +0x9c SLOT registration, so the removal handler is called through the integer spelling
+0x41b0d0   # BoatingSchool_AddTake: def ridecb6.c:935 (BPosW key, int) vs ridecb6.c:440's own `BoatingSchool_AddTake_I(int key, int)` -- the same file declares both spellings of one address
+0x41b6f0   # BsMermaid_Remove: def screencb.c:1424 (void*, BPosW, EditCursorRec*) vs loaders.c:196 (unsigned int), again the +0x9c slot
+0x41c130   # BoatingSchoolWater_Remove: def ridecb5.c:504 (MapObj*, BPosW, Cursor*) vs loaders.c:175 (unsigned int), the +0x9c slot
+0x41caa0   # BoatingSchool_RebuildRoute: def ridecb6.c:1116 (BPosW key) vs ridecb6.c:450's `BoatingSchool_RebuildRouteI(int key)`
+0x42fb00   # Restaurant2_StartSound: def audio5.c:120 (BPosW square) vs decl ridecb3.c:1165 (unsigned short). A sound that starts on the wrong square -- and PORT-B11 has just made sound audible, so this one is now observable
+0x42fb60   # Restaurant2_StopSound: def ridemisc4.c:583 (RideTile tile) vs decl ridecb3.c:1166 (unsigned short) -- the matching stop, so a restaurant loop that never stops
+0x4373c0   # JungleCruise_RebuildRoute: decl ridecb2.c:247 (BPosW id) vs def junglecruise.c:340 (int id) and decl ridecb7.c:264 (int) -- the other direction: ridecb2.c's CALL passes a pointer to a temp where the body reads an id, so the jungle cruise's route is rebuilt for a nonsense ride
+0x439c90   # LegoMedia_Remove / MediaShop_Remove: def westtown.c:725 (void*, ShopTile, void*) vs interfaces.c:1339 (unsigned short). ShopTile is another 2-byte union; the removal handler is registered through the scalar name
+0x43d7c0   # MechanicsHut_EvictRiders: def ridemisc.c:93 (RideObject*, BPosW key, int) vs decl ridecb9.c:891 (unsigned int bp)
