@@ -1207,6 +1207,92 @@ the map area keeps the previous screen's backdrop and the frame makes two blits
 where the front end made twenty-five. That is the next blocker and it is not in
 the closure.
 
+## The park was never loaded: a 93-pair table declared as one pointer (scope PORT-B9)
+
+A7 left the in-game screen drawing its HUD and not its map, and called it a
+rendering blocker for a PORT-B lane. **It is not a rendering defect.** The
+DirectDraw shim, `RenderView`, `RenderGroundLayer` and `PaintTileLayer` all run
+correctly, on every frame, over a map whose **36,864 cells are entirely zero** —
+and `render4.c:430` paints nothing for a cell whose tile is 0, so the terrain
+pass writes no pixel and the map area keeps the previous screen's backdrop.
+
+**Why `?beat=` could not see it.** The map renderer draws in SOFTWARE between
+one `Lock` and one `Unlock`. A frame that paints ten thousand tiles and a frame
+that paints none make *exactly the same host calls*. A7's "the host ring goes
+byte-identical-quiet after the level loads" was true and was never evidence
+about drawing. The witness has to be the game's own memory, so this lane grew
+`main.c`'s `ll_dbg_addr` table from 7 globals to 60 — everything
+`renderview.c:150`'s "HOST / BROWSER-RENDERER CONTRACT" block lists as
+`RenderView`'s input, the globals that say whether its ground pass RAN, and the
+level loader's state — behind `window.llRender()`.
+
+**The root cause is one declaration.**
+
+```c
+/* movie.c:239 */
+extern const void* g_level_db_sections;   /* 0x004bb6f8 93 {keyword, handler} pairs */
+```
+
+A 744-byte table of 93 pairs, declared as a single `const void*`. PORT-A7's rule
+— a word is a pointer slot when some declaration's type puts a pointer FIELD at
+that address — is therefore never asked about words 1..188 of that object. The
+handler halves survive (an exact function address goes through the symbol path);
+**all 92 keyword-string halves keep their raw x86 VAs**. `ParseKeywordSections`
+then does `strcmp(words[0], table[i].keyword)` against a wild address, never
+matches, and every level script parses to nothing: `MAP "one"` never fires,
+`LoadBaseMap` never runs, the map is never filled.
+
+This is the class A7 closed, in the shape its census could not see. A7 §5's
+residue test asked "is this word past the DECLARED EXTENT of its object" and
+answered yes for all 188 — correctly, the declaration is four bytes long — and
+concluded "so nothing describes that storage, so it is not a pointer". Right
+premise, wrong conclusion for a pointer table. A7's own residue list names it:
+`g_level_db_sections 91`.
+
+**Proved twice, live in a tab.** `window.llFixKeywordTable()` translates the 91
+raw VAs through the object containing each and writes the linear address back —
+the arithmetic `gen_link.py`'s interior-of-block rule would have done at build
+time. All 91 then read as real keywords, and the very next park load runs
+`LevelKw_MAP` → `LLIDB_FindElement("one")` → `LoadBaseMap`, which reads
+`ONE.MAP`'s header (**the map header changes from the `.data` default 192×192 to
+84×84**), the tile-set mapping (`g_default_tile` 1 → 32) and the terrain
+element. And from the other side, writing `g_default_tile` into every cell's
+tile field makes the **2:1 isometric terrain grid fill the whole 640×340 map
+area on the next frame**, with no shim change at all — the software renderer,
+the locked surface, the `Blt` and the canvas all work.
+
+**What is still between here and a rendered park** is the typed-callback class,
+twice. `llidb_odf.c:294`'s `obj->fa4(obj->elem)` is reached for *every*
+OC_USEDLL class, because no `.dll` ships anywhere in `gamedata` and
+`LoadLibraryExA` is refused — and the slot holds `gen-browser/aliases.c:277`'s
+`void LegoShop1_Create(void) { ((void(*)(void))&LegoShop1_LoadResources)(); }`,
+a `() -> void` cast forwarder in a `(i32) -> void` call. 26 of the 72 rows in
+`manifest.md`'s "Cast forwarders" table are this exact shape. **A7-2 is also
+localised**: it is the **MAP** button specifically (the other five toolbar
+buttons all work), and it is `RenderFullMap` declared `(void)`
+(`mapscreen.c:103`/`:105`, `renderview.c:2935`) stored in `sprite2.c:199`'s
+`void (*)(SpriteRec*)` slot and called at `sprite2.c:253`.
+
+**A7-3, measured and dismissed.** The one-byte reads are the game's own
+`ReadLine` (`levelkw.c:865`) through the completely unbuffered `RES_ReadFile`
+(`res.c:39`) — not msvcrt, not ddraw. One park load: 1194 host `ReadFile` calls,
+**1153 of them one byte** (96.6% of the calls, 0.55% of the bytes). Priced
+against MEMFS at **0.07 µs per read**, that is **0.08 ms of an 822 ms load**.
+Recommendation: do nothing.
+
+**B5 is closed.** PORT-A7 §8's IDBFS patch applied (`-lidbfs.js` on both browser
+targets, the mount-and-`syncfs` block replacing `main()`'s bare `mkdir`, a 5 s
+flush timer, plus the `<emscripten/eventloop.h>` include A7's patch did not
+mention). `Profile1.txt`, 272 bytes, and **`adam` in slot 1 after a page
+reload**.
+
+**In the park**: 33.4 fps over 77 s, 0 traps, `g_sim_frame` advancing exactly
+one tick per presented frame, arrow-key scrolling working in all four directions
+(and `g_ground_last_x/y` following it, so the terrain pass really does re-run for
+each new scroll position), a map-area click answering. Nothing animates, because
+there is nothing in the park. Full notes and the blocker table with owners:
+`docs/lanes/scope-port-b9.md`.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
