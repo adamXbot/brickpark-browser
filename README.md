@@ -1313,6 +1313,77 @@ each new scroll position), a map-area click answering. Nothing animates, because
 there is nothing in the park. Full notes and the blocker table with owners:
 `docs/lanes/scope-port-b9.md`.
 
+## The tutorial is playable: a ride bought, paths dragged, the park saved and loaded (scope PORT-B10)
+
+**The game plays.** From a cold page load: the Duty Manager's briefing read and
+both pages turned, the LEGOLAND menu opened, a **Space Tower Ride bought for 40
+bricks**, paths laid, the park **saved through the game's own Save Game screen**,
+the page **reloaded**, and the saved park **loaded back** with the ride and the
+hand-laid paths where they were. **34.7 fps, `llStats().dead` null, `traps: []`
+for roughly 25 000 presented frames — no trap of any kind appeared all session,
+so `name_trap.py` had nothing to name.** A7-2 (the MAP button) is gone.
+
+```js
+// the whole walk, in GAME pixels, on ?args=-nointro+WINDEBUG&beat=1000
+await llMove(320,240); await llClick(260,188); await llClick(505,345);
+await llClick(252,362); await llClick(577,419);   // -> the briefing
+await llClick(455,445); await llClick(577,419);   // -> THE PARK
+await llClick(558,243); await llClick( 53,394);   // -> the LEGOLAND menu
+await llClick(558,243); await llClick( 27,156);
+await llClick(330,200);                           // -> "Your First Ride!"
+await llClick(577,419); await llClick( 40,443);   // -> the park, PATH armed
+await llDrag(292,296, 266,232, 10);               // a RUN of path
+```
+
+Per-screen hashes are in `docs/lanes/scope-port-b10.md` §1.
+
+**The money is the proof it is playing and not just drawing**: `llPark().money`
+reads `g_bricks`, the same value `RenderMoneyBar` prints — 1000 on arrival, 1030
+as the level accrues, **990 the instant the ride is placed**, and the side panel
+says the Space Tower costs 40. The visitor cap moves with the park too, 3 -> 4
+once the ride is standing.
+
+**Two shim defects, one root cause: our metrics were not the game's.**
+
+* **The briefing was clipped mid-word** — *"Sorry your firs"*. movie.c's
+  `LoadHelpTextFor` reads `Intervals\<key>` as LINES and uimisc2.c's
+  `PrintReportLine` prints each DT_SINGLELINE into a box that is always
+  0x1cc = 460 pixels wide. The text is **pre-wrapped in the shipped data** and
+  its longest line is 63 characters; PORT-B2's monospaced 9-pixel advance made
+  that 567. The face is now proportional — each glyph advances by its own ink
+  extent, drawn AT the pen — and the same line measures 433.
+* **The money bar printed `1A3A` for 1030.** money.c hands the count to the
+  cached-text blitter in a box exactly the coin sprite's height (~20 px) while
+  asking for the lfHeight 24 font, so a 5/6-of-the-cell ink box lost the curve
+  that closes every '0'; with the slashed zero art what was left read as an A.
+  The ink box is now 2/3 of the cell with the leading biased above it, and the
+  zero is a plain oval. The park reads 1000.
+
+**Performance: the port is not the limit.** 28.85 ms per frame against the
+game's own 28 ms floor (`FlipPrimary`'s `while (timeGetTime() - g_flip_time <
+0x1c)`), i.e. **97.1% of the game's own 35.71 fps ceiling**. The software
+terrain pass, every sprite, the GDI text, the present blit and the entire host
+shim all fit inside the time the game spends waiting. There is nothing a
+profile would find worth moving.
+
+**The page grew one verb it could not do without**: `llDrag(x0,y0,x1,y1)`.
+A click places one path square; a run of path is a drag, and the tutorial's
+second objective is a run of eight or ten — so `llClick` alone cannot exercise
+the path tool at all. Also `llPark()` (money, people, visitors, sim frame, out
+of the game's globals) and `llAscii(x,y,w,h,thr,light)`, which reads a
+rectangle of the canvas back as text: the game draws all of its own numbers, and
+twenty rows of llAscii is how `1A3A` was caught.
+
+**Open, game-side** (full table with evidence and owners in
+`docs/lanes/scope-port-b10.md` §5): the tutorial's `LINK "SPACE TOWER RIDE"`
+objective never satisfies however much path is laid, so `g_num_visitors` stays
+0 and **no visitors ever arrive** — the quiet-failure shape, no trap, owner
+PORT-M/game-side; a bubble drawn over the bottom panel is never erased; the
+Space Tower renders as a squat block rather than a tower. And one opportunity:
+**`gamedata/Lego.TTF` ships with the game and is already mounted** — a
+TrueType rasteriser in the shim would give the game its actual metrics and close
+the whole class both defects above belong to.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
