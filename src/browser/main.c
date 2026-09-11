@@ -173,13 +173,22 @@ extern unsigned char g_str_none[];          /* 0x004bbdcc, 696 bytes */
  *   g_bricks         sweep1.c:51            the money -- what RenderMoneyBar
  *                                           (money.c:154) sprintf("%5d")s
  *   g_bricks_full    money.c:67             the bar's denominator, set at load
- *   g_num_visitors   appraisalscreen.c:149  the appraisal's visitor count
+ *   g_visitor_count  goalstate.c:178        how many visitors are inside.
+ *                                           PORT-M11: this slot used to read
+ *                                           g_num_visitors 0x00832bd0, which is
+ *                                           really g_power_supply -- power.c:170
+ *                                           is its only writer -- so it was 0
+ *                                           through the whole tutorial whatever
+ *                                           the park did.  0x006661bc is the
+ *                                           count: pathobj2.c:458 zeroes it on
+ *                                           load, rides.c and goalstate.c move
+ *                                           it as blokes arrive and leave.
  *   g_people_head    blokeai.c:164          the live Bloke chain: visitors,
  *                                           workers, gardeners, mechanics
  *   g_visitor_limit  blitmisc.c:127         how many the park is allowed */
 extern unsigned char g_bricks[];            /* 0x004b90f8  int */
 extern unsigned char g_bricks_full[];       /* 0x00832974  int */
-extern unsigned char g_num_visitors[];      /* 0x00832bd0  int */
+extern unsigned char g_visitor_count[];     /* 0x006661bc  int */
 extern unsigned char g_people_head[];       /* 0x0066b574  Bloke* */
 extern unsigned char g_visitor_limit[];     /* 0x0083291c  int */
 
@@ -248,7 +257,7 @@ extern unsigned char g_visitor_limit[];     /* 0x0083291c  int */
     X(59, g_str_none)                   \
     X(60, g_bricks)                     \
     X(61, g_bricks_full)                \
-    X(62, g_num_visitors)               \
+    X(62, g_visitor_count)              \
     X(63, g_people_head)                \
     X(64, g_visitor_limit)
 

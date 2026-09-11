@@ -675,7 +675,9 @@
       moneyFull:    i32(a.g_bricks_full),
       people:       n,
       peopleTruncated: truncated,
-      numVisitors:  i32(a.g_num_visitors),
+      numVisitors:  i32(a.g_visitor_count),   /* PORT-M11: 0x006661bc. It used to
+                                                read g_num_visitors 0x00832bd0,
+                                                which is really g_power_supply. */
       visitorLimit: i32(a.g_visitor_limit),
       simFrame:     i32(a.g_sim_frame),
       gameMode:     i32(a.g_game_mode),
