@@ -148,6 +148,11 @@ def prim(name):
 
 PTR = Type('ptr', 'void*', 4, 4)
 UNKNOWN = Type('unknown', '?', None, None)
+# A function TYPE, not a pointer to one. It exists only so the declarator
+# evaluator can tell `int f(void)` (not an object) from `int (*f)(void)` (four
+# bytes): `int (*f)(void)` is a pointer whose target is this. Unsized on
+# purpose -- `sizeof` of a function is not a thing.
+FUNC = Type('func', 'function', None, None)
 
 
 def array_of(elem, count):
@@ -375,29 +380,25 @@ class TU:
             return None
         return v if isinstance(v, int) and v >= 0 else None
 
-    def _dims(self):
-        """Consumes `[a][b]...`, returns the product or None."""
-        count = 1
-        while self.txt() == '[':
+    def _dim(self):
+        """Consumes ONE `[a]`, returns its bound or None. One at a time, not
+        the product: in `T (*p)[2]` the `[2]` belongs to the pointer's target,
+        and only a per-dimension parse can see that."""
+        assert self.txt() == '['
+        self.i += 1
+        inner = []
+        depth = 1
+        while not self.at_end():
+            if self.txt() == '[':
+                depth += 1
+            elif self.txt() == ']':
+                depth -= 1
+                if depth == 0:
+                    self.i += 1
+                    break
+            inner.append(self.tok())
             self.i += 1
-            inner = []
-            depth = 1
-            while not self.at_end():
-                if self.txt() == '[':
-                    depth += 1
-                elif self.txt() == ']':
-                    depth -= 1
-                    if depth == 0:
-                        self.i += 1
-                        break
-                inner.append(self.tok())
-                self.i += 1
-            v = self._eval_dim(inner)
-            if v is None or count is None:
-                count = None
-            else:
-                count *= v
-        return count
+        return self._eval_dim(inner)
 
     def _specifier(self):
         """The type specifier of a declaration. Returns (Type, typename,
@@ -550,42 +551,93 @@ class TU:
                     f'{kw} {tag or "<anon>"}', size, maxalign, fields,
                     f'{self.file}:{line}')
 
-    def _declarator(self):
-        """Returns (pointer depth, name, array count, is_function)."""
-        nptr = 0
-        while self.txt() == '*' or self.txt() in QUALIFIERS:
-            if self.txt() == '*':
-                nptr += 1
+    # -- declarators
+    #
+    # A C declarator is recursive and the old flat `(nptr, name, count)` model
+    # could not express it: `int (*p)[2]` is a POINTER TO an array of two ints
+    # (4 bytes) and came out as `int *p[2]`, an ARRAY OF two pointers (8), which
+    # moved every field after it and invented two pointer words
+    # (docs/lanes/scope-port-m8.md M8-3, `MeshDesc` 0x28 instead of 0x1c).
+    #
+    # So parse the declarator into a tree and evaluate it by the language's own
+    # rule, which is outside-in: a declarator D over a base type T has
+    #
+    #   D = * D1          -> type(D1, pointer to T)
+    #   D = D1 [N]        -> type(D1, array N of T)
+    #   D = D1 (params)   -> type(D1, function returning T)
+    #   D = ( D1 )        -> type(D1, T)
+    #   D = identifier    -> the name, with type T
+    #
+    # On ILP32 every pointer is four bytes, so "pointer to T" collapses to PTR
+    # and the target type is never needed -- which is why the tree only has to
+    # be deep enough to get the ORDER of the derivations right.
+
+    def _decl_tree(self):
+        """The declarator as a tree: ('name', str|None) | ('ptr', sub) |
+        ('arr', count|None, sub) | ('fn', sub). Consumes the declarator."""
+        while self.txt() in QUALIFIERS:
             self.i += 1
-        name = None
-        count = 1
-        is_func = False
+        if self.txt() == '*':
+            self.i += 1
+            return ('ptr', self._decl_tree())
+        return self._direct_decl_tree()
+
+    def _direct_decl_tree(self):
+        node = ('name', None)
         if self.txt() == '(':
-            # (*name)(params) -- a function pointer -- or a parenthesised
-            # declarator. Either way one pointer's worth, and the params are
-            # not ours.
+            # A parenthesised declarator. Before any identifier has been seen a
+            # `(` cannot be a parameter list -- that suffix is handled below,
+            # after the direct declarator -- so this is always a grouping.
             self.i += 1
-            inner_ptr, name, count, _f = self._declarator()
+            node = self._decl_tree()
             if self.txt() == ')':
                 self.i += 1
-            if self.txt() == '(':
-                self.skip_balanced('(', ')')
-                if inner_ptr:
-                    nptr = max(nptr, inner_ptr)
-                    is_func = False
-                else:
-                    is_func = True
-            else:
-                nptr = max(nptr, inner_ptr)
         elif self.tok()[0] == 'id':
-            name = self.txt()
+            node = ('name', self.txt())
             self.i += 1
-        if self.txt() == '[':
-            count = self._dims()
-        elif self.txt() == '(':
-            self.skip_balanced('(', ')')
-            is_func = True
-        return nptr, name, count, is_func
+        while True:
+            if self.txt() == '[':
+                node = ('arr', self._dim(), node)
+            elif self.txt() == '(':
+                self.skip_balanced('(', ')')
+                node = ('fn', node)
+            else:
+                return node
+
+    @staticmethod
+    def _eval_decl_tree(node):
+        """`(nptr, name, count, is_func)` -- the declared object's own shape.
+
+        The derivations are applied outside-in, so the type under construction
+        is "array of `dims` of `core`" and each derivation rewrites it:
+        `* D` makes the core a pointer and THROWS AWAY the dimensions it had
+        (they belonged to the pointer's target), `D[N]` adds a dimension, and
+        `D(...)` makes it a function. The type the identifier ends up with is
+        whatever is left when the walk reaches it, which is why `int (*p)[2]`
+        is one pointer (`ptr` is the last derivation applied) and `int *p[2]`
+        is two (`arr` is)."""
+        core = None                  # None = the specifier's type, or PTR/FUNC
+        dims = []
+        while node[0] != 'name':
+            kind = node[0]
+            if kind == 'ptr':
+                core, dims, node = PTR, [], node[1]
+            elif kind == 'fn':
+                core, dims, node = FUNC, [], node[1]
+            else:                                    # ('arr', count, sub)
+                dims.append(node[1])
+                node = node[2]
+        count = 1
+        for n in dims:
+            count = None if (n is None or count is None) else count * n
+        return 1 if core is PTR else 0, node[1], count, core is FUNC
+
+    def _declarator(self):
+        """Returns (pointer-ness, name, element count, is_function). The two
+        callers turn that back into a type: `PTR` when pointer-ness is set,
+        otherwise the specifier's type, `count` of them. `is_function` means a
+        function DECLARATOR (`int f(void)`), never a pointer to one."""
+        return self._eval_decl_tree(self._decl_tree())
 
     def _declaration(self):
         """One file-scope declaration. True when it consumed a statement."""
@@ -1026,6 +1078,40 @@ extern Marker  g_markers[5];     /* 0x00402000 */
 extern HasAmb  g_hasamb;         /* 0x00402100 */
 extern char*   g_ptrs[3];        /* 0x00402200 */
 extern Nat     g_noptrs[4];      /* 0x00402300 */
+/* Declarator shapes. A C declarator is recursive and the suffix binds to the
+ * INNER declarator, so `T (*p)[N]` and `T *p[N]` are different types with
+ * different sizes. Getting that wrong cost MeshDesc 12 bytes and invented
+ * three pointer words out of nothing (docs/lanes/scope-port-m8.md M8-3). */
+typedef struct PtrToArr {        /* 12: three pointers, NOT 3 + 2 + 3 words */
+    int   (*pairs)[2];           /* +0x00  pointer to an array of two ints */
+    int   (*tris)[3];            /* +0x04  pointer to an array of three */
+    char* (*strs)[8];            /* +0x08  pointer to an array of eight char* */
+} PtrToArr;
+typedef struct ArrOfPtr {        /* 36 */
+    int*  p[4];                  /* +0x00  FOUR pointers */
+    int   (*cb[5])(int);         /* +0x10  FIVE function pointers */
+} ArrOfPtr;
+typedef struct Mixed {           /* 20 */
+    int   (*p2)[2][3];           /* +0x00  one pointer, to a 2-D array */
+    int   (*q[2])[3];            /* +0x04  TWO pointers, each to int[3] */
+    int   (**r)[2];              /* +0x0c  pointer to pointer to array */
+    int   (*fp)(int, char*);     /* +0x10  a plain function pointer */
+} Mixed;
+typedef struct Nested {          /* 16 */
+    Pos   (*grid)[4];            /* +0x00  pointer to an array of four Pos */
+    Pos*  list[3];               /* +0x04  three pointers to Pos */
+} Nested;
+extern PtrToArr g_ptrtoarr;      /* 0x00403000 */
+extern ArrOfPtr g_arrofptr;      /* 0x00403100 */
+extern Mixed    g_mixed;         /* 0x00403200 */
+extern Nested   g_nested;        /* 0x00403300 */
+extern int   (*g_obj_pairs)[2];  /* 0x00403400  one pointer */
+extern int   *g_obj_parr[2];     /* 0x00403500  two pointers */
+extern int   (*g_obj_cb[3])(int);/* 0x00403600  three function pointers */
+extern Pos   (*g_obj_grid)[4];   /* 0x00403700  one pointer */
+extern Nat   g_obj_2d[2][3];     /* 0x00403800  six records */
+extern int   *g_fn_ret_ptr(void);/* 0x00403900  a FUNCTION, not an object */
+extern int   (*g_fn_ret_fp(int))(void); /* 0x00403a00  also a function */
 """
 
 
@@ -1093,6 +1179,47 @@ def selftest():
     chk('has_pointer(Nat)', has_pointer(tu.typedefs['Nat']), False)
     chk('a function pointer is a pointer field',
         pointer_offsets(tu.typedefs['WithCb']), ([0], []))
+
+    # Declarator shapes (M8-3). `T (*p)[N]` is ONE pointer; the suffix binds to
+    # the parenthesised declarator, not to the outer type. Sizes first, then
+    # the pointer offsets, because the bug invented pointer words as well as
+    # bytes -- and an invented pointer word is the worse half: gen_link would
+    # re-point a word the image holds a float in.
+    chk('sizeof PtrToArr (T (*p)[N] is one pointer)', sizes['PtrToArr'],
+        (12, 4))
+    chk('sizeof ArrOfPtr (T *p[N] and T (*p[N])(args))', sizes['ArrOfPtr'],
+        (36, 4))
+    chk('sizeof Mixed', sizes['Mixed'], (20, 4))
+    chk('sizeof Nested', sizes['Nested'], (16, 4))
+    chk('PtrToArr pointer offsets', pointer_offsets(tu.typedefs['PtrToArr']),
+        ([0, 4, 8], []))
+    chk('ArrOfPtr pointer offsets', pointer_offsets(tu.typedefs['ArrOfPtr']),
+        ([0, 4, 8, 0xc, 0x10, 0x14, 0x18, 0x1c, 0x20], []))
+    chk('Mixed pointer offsets', pointer_offsets(tu.typedefs['Mixed']),
+        ([0, 4, 8, 0xc, 0x10], []))
+    chk('Nested pointer offsets', pointer_offsets(tu.typedefs['Nested']),
+        ([0, 4, 8, 0xc], []))
+    chk('extent g_ptrtoarr', objs['g_ptrtoarr'].extent, 12)
+    chk('extent g_arrofptr', objs['g_arrofptr'].extent, 36)
+    chk('extent g_mixed', objs['g_mixed'].extent, 20)
+    chk('extent g_nested', objs['g_nested'].extent, 16)
+    # ... and the same shapes as the OBJECT's own declarator, where the extent
+    # is what gen_link.py sizes the rebuilt block with.
+    chk('extent g_obj_pairs (int (*p)[2])', objs['g_obj_pairs'].extent, 4)
+    chk('extent g_obj_parr (int *p[2])', objs['g_obj_parr'].extent, 8)
+    chk('extent g_obj_cb (int (*p[3])(int))', objs['g_obj_cb'].extent, 12)
+    chk('extent g_obj_grid (Pos (*p)[4])', objs['g_obj_grid'].extent, 4)
+    chk('extent g_obj_2d (Nat[2][3])', objs['g_obj_2d'].extent, 72)
+    chk('g_obj_pairs is one pointer word',
+        pointer_offsets(objs['g_obj_pairs'].full_type), ([0], []))
+    chk('g_obj_parr is two pointer words',
+        pointer_offsets(objs['g_obj_parr'].full_type), ([0, 4], []))
+    chk('g_obj_grid points at Pos[4], so it is one word and NOT eight',
+        pointer_offsets(objs['g_obj_grid'].full_type), ([0], []))
+    chk('a function returning a pointer is not an object',
+        'g_fn_ret_ptr' in objs, False)
+    chk('a function returning a function pointer is not an object',
+        'g_fn_ret_fp' in objs, False)
 
     # The park's record, from the real sources: LevelMarker must yield two name
     # pointers per 0x1c-byte element for all five tutorial markers.
