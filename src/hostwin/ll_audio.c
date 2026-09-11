@@ -178,6 +178,15 @@ EM_JS(int, ll_audio_js_init, (void), {
     return 1;
 });
 
+/* `?sound=test` on the page. Read here rather than passed in from main.c
+ * because main.c is not this lane's file and because the question -- "does the
+ * audio path work?" -- belongs to the audio path. */
+EM_JS(int, ll_audio_js_selftest, (void), {
+    var g = globalThis;
+    var l = g['location'];
+    return (l && /[?&]sound=test/.test(l.search)) ? 1 : 0;
+});
+
 EM_JS(int, ll_audio_js_state, (void), {
     var a = globalThis.__llAudio;
     if (!a || !a.ctx) return 0;
@@ -383,6 +392,7 @@ EM_JS(void, ll_audio_js_rate, (int v, double rate_mul), {
 static int g_na_voices, g_na_plays, g_na_feeds;
 
 static int  ll_audio_js_init(void)   { return 0; }
+static int  ll_audio_js_selftest(void) { return 0; }
 static int  ll_audio_js_state(void)  { return 0; }
 static int  ll_audio_js_decode(int v, int ptr, int bytes, int rate, int ch, int bits)
 { (void)v; (void)ptr; (void)bytes; (void)rate; (void)ch; (void)bits; return 0; }
@@ -420,6 +430,14 @@ int ll_audio_enabled(void)
                       g_audio_live ? "available" : "unavailable (silent)");
     }
     return g_audio_live;
+}
+
+/* Whether the page asked for the self-test (`?sound=test`). dsound.c runs it,
+ * because the sequence it has to run is the GAME's sequence and dsound.c is
+ * where that sequence is implemented. */
+int ll_audio_selftest_requested(void)
+{
+    return ll_audio_js_selftest();
 }
 
 /* 0 none, 1 suspended (the autoplay gate), 2 running. */

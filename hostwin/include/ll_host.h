@@ -409,6 +409,11 @@ int   DrawTextA(void* hdc, const char* text, int len, LLRect* rc,
 int  ll_audio_enabled(void);
 /* 0 none, 1 suspended (waiting for a user gesture), 2 running. */
 int  ll_audio_state(void);
+/* 1 when the page was opened with `?sound=test`. dsound.c then runs one sample
+ * through the game's own load-and-play sequence at DirectSoundCreate time, so
+ * the whole path can be proved without depending on the game reaching a
+ * PlayInstanceOfSample. */
+int  ll_audio_selftest_requested(void);
 
 /* One voice per IDirectSoundBuffer: a gain and a panner that outlive the source
  * nodes started on them. 0 means "no audio", and every call below tolerates it. */
@@ -477,6 +482,9 @@ int  ll_ttf_antialias(void);
  * Returns 0 when no face is loaded. */
 int  ll_ttf_face_info(int* upem, int* glyphs, int* win_asc, int* win_desc,
                       int* weight);
+/* Publish one LOGFONT's answer to the page's `llFont()` hook. Called from
+ * CreateFontIndirectA; a no-op off Emscripten. */
+void ll_ttf_report_font(int lf_height, int lf_weight, const LLTtfMetrics* m);
 
 /* ---- the bitmap font (portable/src/hostwin/ll_font.c, PORT-B2) ---------- */
 /* GDI text is the game's only text: text.c's Print* routines borrow a DC from

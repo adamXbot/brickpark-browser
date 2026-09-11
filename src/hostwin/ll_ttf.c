@@ -935,6 +935,71 @@ const unsigned char* ll_ttf_glyph(const LLTtfMetrics* m, unsigned char ch,
 }
 
 /* ---- what the page reports --------------------------------------------- */
+/* `llFont()` on the running page. The game draws ALL of its own text, so a
+ * driver that can only diff frame hashes can prove a frame changed but never
+ * that the type is right -- the same reason PORT-B10 had to add llPark() and
+ * llAscii(). This reports the face, and every font the game asked for with what
+ * it got, including the one number that matters most: how wide the tutorial
+ * letter's longest line measures against the 460 pixels the report box allows.
+ *
+ * A plain EM_JS rather than an export, so it needs nothing from the link line
+ * and nothing from ll_canvas.js. Under node (legoland_tests, legoland_headless)
+ * the globals are set on the node global object and harmlessly ignored. */
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+EM_JS(void, ll_ttf_js_face, (int ready, int upem, int glyphs, int wa, int wd,
+                             int weight), {
+    var g = globalThis;
+    var f = g.__llFont || (g.__llFont = { face: null, fonts: [] });
+    f.face = ready ? {
+        file: 'Lego.TTF', upem: upem, glyphs: glyphs,
+        winAscent: wa, winDescent: wd, cell_units: wa + wd, weightClass: weight
+    } : null;
+    g.llFont = function () { return g.__llFont; };
+});
+
+EM_JS(void, ll_ttf_js_font, (int lfh, int lfw, int ttf, int cell, int asc,
+                             int desc, int ppem, int emb, int w63), {
+    var g = globalThis;
+    var f = g.__llFont || (g.__llFont = { face: null, fonts: [] });
+    g.llFont = function () { return g.__llFont; };
+    for (var i = 0; i < f.fonts.length; i++)
+        if (f.fonts[i].lfHeight === lfh && f.fonts[i].lfWeight === lfw) return;
+    f.fonts.push({
+        lfHeight: lfh, lfWeight: lfw, face: ttf ? 'TrueType' : 'bitmap',
+        cell: cell, ascent: asc, descent: desc, ppem: ppem,
+        syntheticBold: !!emb, reportLine63: w63, reportBox: 460
+    });
+});
+#else
+static void ll_ttf_js_face(int ready, int upem, int glyphs, int wa, int wd, int weight)
+{ (void)ready; (void)upem; (void)glyphs; (void)wa; (void)wd; (void)weight; }
+static void ll_ttf_js_font(int lfh, int lfw, int ttf, int cell, int asc,
+                           int desc, int ppem, int emb, int w63)
+{ (void)lfh; (void)lfw; (void)ttf; (void)cell; (void)asc; (void)desc;
+  (void)ppem; (void)emb; (void)w63; }
+#endif
+
+/* The tightest constraint the shipped data places on the face: uimisc2.c's
+ * PrintReportLine draws this line DT_SINGLELINE into a box 460 pixels wide, and
+ * movie.c's LoadHelpTextFor reads it as a LINE, already wrapped, so it cannot
+ * reflow. 63 characters. */
+static const char kReportLine[] =
+    "forgot, we'll practice building paths, too. There's no point in";
+
+void ll_ttf_report_font(int lf_height, int lf_weight, const LLTtfMetrics* m)
+{
+    int w = 0, i;
+    ll_ttf_js_face(g_ttf.ready, g_ttf.upem, g_ttf.num_glyphs,
+                   g_ttf.win_ascent, g_ttf.win_descent, g_ttf.weight_class);
+    if (m && m->ready)
+        for (i = 0; kReportLine[i]; i++)
+            w += ll_ttf_char_advance(m, (unsigned char)kReportLine[i]);
+    ll_ttf_js_font(lf_height, lf_weight, m && m->ready,
+                   m ? m->cell_h : 0, m ? m->ascent : 0, m ? m->descent : 0,
+                   m ? m->ppem : 0, m ? m->embolden : 0, w);
+}
 
 int ll_ttf_face_info(int* upem, int* glyphs, int* win_asc, int* win_desc,
                      int* weight)

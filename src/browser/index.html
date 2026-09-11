@@ -62,6 +62,22 @@
                  ink. The game draws all of its own text; this is how you read
                  it back and catch a glyph that renders wrong.
        window.llCrop(x,y,w,h,scale)  one rectangle, magnified, as a data URL.
+
+       window.llAudio()      (PORT-B11) the sound: the AudioContext's state and
+                             rate, voices created, Play calls made and Play
+                             calls BLOCKED by the autoplay policy, streamed
+                             chunks and bytes, underruns, and a histogram of the
+                             formats actually played. Audio cannot be verified by
+                             ear from a driver, so it is verified by counting.
+       window.llAudioResume()  resume the context by hand. The "sound" cell in
+                             the panel does the same thing on click.
+       window.llFont()       (PORT-B11) the typeface: the face read out of
+                             gamedata/Lego.TTF (upem, glyph count, the
+                             usWinAscent/Descent that make the cell, the weight
+                             class), and every LOGFONT the game asked for with
+                             the cell, ascent, ppem and synthetic-bold it got --
+                             plus reportLine63, how wide the tutorial letter's
+                             longest line measures against its 460-pixel box.
 -->
 
 <html lang="en">
@@ -117,6 +133,15 @@
     <span class="cell"><span class="k">modal</span> <span id="modal" class="v">&mdash;</span></span>
     <span class="cell"><span class="k">args</span> <span id="args" class="v">&mdash;</span></span>
     <span class="cell"><span class="k">hash</span> <span id="hash" class="v">&mdash;</span></span>
+    <!-- PORT-B11: the sound, and the autoplay gate. A browser will not let a
+         page make a noise until the user has interacted with it, and the game's
+         own first click is normally that interaction -- but on a screen the
+         driver reaches without clicking, or with a keyboard-only walk, the
+         context can still be suspended while samples are being "played". This
+         cell says which, and is clickable, so there is one affordance instead of
+         a silence nobody can explain. -->
+    <span class="cell" id="audiocell" title="click to enable sound"><span class="k">sound</span> <span id="audio" class="v">&mdash;</span></span>
+    <span class="cell"><span class="k">font</span> <span id="font" class="v">&mdash;</span></span>
     <span class="cell"><label><input type="checkbox" id="trace"> host call trace (<code>?trace=1</code>)</label></span>
   </div>
   <div id="trap"></div>
@@ -141,6 +166,9 @@
   var hashEl = document.getElementById('hash');
   var traceLinesEl = document.getElementById('tracelines');
   var traceCountEl = document.getElementById('tracecount');
+  var audioEl = document.getElementById('audio');
+  var audioCellEl = document.getElementById('audiocell');
+  var fontEl = document.getElementById('font');
 
   var tracing = /[?&]trace=1/.test(location.search);
   var trapcont = /[?&]trapcontinue=1/.test(location.search);   /* PORT-A5: LL_TRAP_CONTINUE */
@@ -806,7 +834,44 @@
   setInterval(function () {
     var h = window.llFrameHash();
     if (h) hashEl.textContent = h;
+
+    // PORT-B11. The sound cell is a reading, not a decoration: "running, 14
+    // plays" and "suspended, 14 BLOCKED" look the same on screen otherwise, and
+    // the second one is the browser's autoplay policy rather than a bug in the
+    // port. Colour-coded, because a suspended context is the one state a tester
+    // has to act on.
+    if (window.llAudio) {
+      var a = window.llAudio();
+      var txt = a.state;
+      if (a.state === 'none') txt = 'none';
+      else txt = a.state + ', ' + a.plays + ' played' +
+                 (a.plays_blocked ? ', ' + a.plays_blocked + ' BLOCKED' : '') +
+                 (a.stream_chunks ? ', ' + a.stream_chunks + ' stream chunks' : '');
+      audioEl.textContent = txt;
+      audioEl.style.color = a.state === 'running' ? '#9cffb0'
+                          : a.state === 'suspended' ? '#ffd479' : '#6d7685';
+      audioCellEl.style.cursor = a.state === 'running' ? 'default' : 'pointer';
+      audioCellEl.title = a.state === 'running'
+        ? 'Web Audio running at ' + a.rate + ' Hz'
+        : 'click to enable sound (the browser blocks audio until you interact)';
+    }
+    if (window.llFont) {
+      var f = window.llFont();
+      if (f && f.face)
+        fontEl.textContent = 'Lego.TTF, ' + f.fonts.length + ' sizes' +
+          (f.fonts.length ? ' (' + f.fonts.map(function (x) { return x.cell; }).join('/') + ')' : '');
+      else if (f)
+        fontEl.textContent = 'bitmap fallback';
+    }
   }, 2000);
+
+  // One click anywhere on the cell, and a capture-phase one on the canvas, both
+  // resume the context. ll_audio.c installs its own document-level listeners as
+  // well; this is the visible one.
+  if (audioCellEl)
+    audioCellEl.addEventListener('click', function () {
+      if (window.llAudioResume) window.llAudioResume();
+    });
 </script>
 {{{ SCRIPT }}}
 </body>

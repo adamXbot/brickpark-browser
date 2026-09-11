@@ -325,6 +325,11 @@ void* CreateFontIndirectA(const void* logfont)
                       o->font.ttf.ready ? "TrueType" : "bitmap",
                       o->font.line_h, o->font.ascent, o->font.ttf.ppem,
                       o->font.ttf.embolden ? " (synthetic bold)" : "");
+        /* The page's llFont() hook: what the game asked for and what it got.
+         * Here rather than in ll_ttf.c's loader because a face is only half the
+         * answer -- the four LOGFONTs are the other half. */
+        ll_ttf_report_font((int)(lf ? lf->lfHeight : 0),
+                           (int)(lf ? lf->lfWeight : 0), &o->font.ttf);
     }
     return h;
 }

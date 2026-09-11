@@ -119,7 +119,9 @@
  *
  * Ownership: PORT-B (docs/SCOPE_PORT_WAVE.md). Declarations: ll_host.h.
  */
+#include <math.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 #include "ll_host.h"
@@ -1039,6 +1041,94 @@ static const LLDSoundVtbl ll_dsound_vtbl = {
 
 /* ---- the entry point --------------------------------------------------- */
 
+/* ---- the self-test (PORT-B11, `?sound=test`) ---------------------------- */
+/* Audio is the one part of this port that cannot be verified by a driver:
+ * llAudio() can count Play calls and stream chunks, and a frame hash can prove
+ * the picture, but nothing available here can hear. So there is a way to make
+ * the port emit ONE known sound through the game's own call sequence, which a
+ * person can then listen to:
+ *
+ *     legoland.html?sound=test&args=-nointro+WINDEBUG
+ *
+ * The sequence is CreateSampleFromWAV's, step for step (data2.c:664-680) --
+ * CreateSoundBuffer with the flags data2.c asks for, one
+ * Lock(0, 0, .., DSBLOCK_ENTIREBUFFER), a memcpy into ptr1, Unlock,
+ * SetCurrentPosition(0), Play -- so what it proves is the path the game uses,
+ * not a shortcut around it. The PCM is generated rather than read from an
+ * archive: an A above middle C, 400 ms, 22050 Hz 16-bit mono with a raised
+ * cosine envelope so it does not click, at the volume SetSampleVolume would
+ * give a slider of 100 (0 dB). Nothing in the game is touched and the buffer is
+ * released immediately afterwards; if the browser is still waiting for a user
+ * gesture the Play is counted as blocked and can be heard by clicking the
+ * "sound" cell, which is what that cell is for.
+ *
+ * This is a diagnostic, not a feature: it runs only when the URL asks. */
+#define LL_SELFTEST_RATE  22050u
+#define LL_SELFTEST_MS      400u
+
+static void ds_selftest(LLDSound* ds)
+{
+    unsigned int frames = LL_SELFTEST_RATE * LL_SELFTEST_MS / 1000u;
+    unsigned int bytes  = frames * 2u;
+    LLWaveFormat fmt;
+    LLDSBufferDesc desc;
+    LLDSBuffer* buf = 0;
+    void* ptr1 = 0;
+    unsigned long len1 = 0;
+    short* tone;
+    unsigned int i;
+
+    tone = (short*)malloc(bytes);
+    if (!tone)
+        return;
+    for (i = 0; i < frames; i++) {
+        /* 440 Hz, with a 20 ms raised-cosine attack and release. */
+        double t = (double)i / (double)LL_SELFTEST_RATE;
+        double env = 1.0;
+        unsigned int edge = LL_SELFTEST_RATE / 50u;      /* 20 ms */
+        if (i < edge)
+            env = 0.5 - 0.5 * cos(3.14159265358979 * (double)i / (double)edge);
+        else if (i + edge > frames)
+            env = 0.5 - 0.5 * cos(3.14159265358979 * (double)(frames - i) / (double)edge);
+        tone[i] = (short)(11000.0 * env * sin(2.0 * 3.14159265358979 * 440.0 * t));
+    }
+
+    memset(&fmt, 0, sizeof fmt);
+    fmt.wFormatTag      = 1;
+    fmt.nChannels       = 1;
+    fmt.nSamplesPerSec  = LL_SELFTEST_RATE;
+    fmt.nBlockAlign     = 2;
+    fmt.nAvgBytesPerSec = LL_SELFTEST_RATE * 2u;
+    fmt.wBitsPerSample  = 16;
+
+    memset(&desc, 0, sizeof desc);
+    desc.dwSize        = sizeof desc;
+    desc.dwFlags       = 0xe0;          /* CTRLVOLUME|CTRLPAN|CTRLFREQUENCY */
+    desc.dwBufferBytes = bytes;
+    desc.lpwfxFormat   = &fmt;
+
+    if (ds->lpVtbl->CreateSoundBuffer(ds, &desc, &buf, 0) != DS_OK || !buf) {
+        free(tone);
+        return;
+    }
+    if (buf->lpVtbl->Lock(buf, 0, 0, &ptr1, &len1, 0, 0, DSBLOCK_ENTIREBUFFER) == DS_OK) {
+        memcpy(ptr1, tone, len1 < bytes ? len1 : bytes);
+        buf->lpVtbl->Unlock(buf, ptr1, len1, 0, 0);
+    }
+    free(tone);
+    buf->lpVtbl->SetVolume(buf, 0);
+    buf->lpVtbl->SetCurrentPosition(buf, 0);
+    buf->lpVtbl->Play(buf, 0, 0, 0);
+    ll_host_trace("DSOUND SELF-TEST: %u bytes, 440 Hz for %u ms, voice %d,"
+                  " context %s",
+                  bytes, LL_SELFTEST_MS, buf->voice,
+                  ll_audio_state() == 2 ? "running"
+                                        : "suspended (click the sound cell)");
+    /* Released, not leaked: the source node already has the samples, and the
+     * game must not find a stray buffer in the device. */
+    buf->lpVtbl->Release(buf);
+}
+
 long DirectSoundCreate(void* guid, void** out, void* outer)
 {
     LLDSound* ds;
@@ -1053,8 +1143,21 @@ long DirectSoundCreate(void* guid, void** out, void* outer)
         return DSERR_OUTOFMEMORY;
     ds->lpVtbl = &ll_dsound_vtbl;
     ds->refs = 1;
-    ll_host_trace("DirectSoundCreate -> %p (silent device, simulated cursor)",
-                  (void*)ds);
+    /* PORT-B11: make the AudioContext HERE, not at the first Play. Two reasons.
+     * The context has to exist before the autoplay listeners it installs can
+     * catch the user's first gesture, and InitSoundSampleSystem runs inside
+     * InitSession -- long before the front end is even drawn, let alone clicked.
+     * And the page needs `llAudio()` to exist from the start so it can put up a
+     * "click to enable sound" affordance while the context is still suspended. */
+    ll_audio_enabled();
+    ll_host_trace("DirectSoundCreate -> %p (cursor simulated; output %s)",
+                  (void*)ds,
+                  ll_audio_enabled()
+                      ? (ll_audio_state() == 2 ? "Web Audio, running"
+                                               : "Web Audio, suspended until a gesture")
+                      : "none (silent)");
+    if (ll_audio_selftest_requested())
+        ds_selftest(ds);
     *out = ds;
     return DS_OK;
 }
