@@ -1583,3 +1583,137 @@ int ll_m7_callback_type_pairs(void)
  *   cb_activate ElephantFountain_Activate Shower_Activate
  * After this lane NO `def->cb_* = ...` store anywhere in the 258 sources
  * disagrees with its slot's call-site wasm type (scope PORT-M7 section 5). */
+
+/* ==========================================================================
+ * PORT-M8 -- appended, as PORT-M3 and PORT-M7 were
+ *
+ * Two slots this lane pinned down from the disassembly, and the pairs that
+ * have to keep the slot's ONE wasm type.
+ * ========================================================================== */
+
+/* ---- m8_sprite_draw  (the function-based sprite's painter)
+ * call site: sprite2.c:253 `((SpriteDrawFn)s->image)(s)` in MakeSprite,
+ *            0x00497b70: `push esi; call dword ptr [esi+8]; add esp, 8`
+ * type:      (i32) -> void
+ *
+ * mapscreen.c:115 declared CreateFunctionBasedSprite's parameter
+ * `void (*)(void)` where bubblecache.c:150 declares `void (*)(SpriteRec*)`;
+ * clicking the park's MAP toolbar icon therefore reached this slot with a
+ * `() -> void` body and killed the module (PORT-A7 section 7, A7-2).  The body
+ * RenderFullMap (0x004567a0) really is parameterless -- it never reads the
+ * incoming dword -- so mapscreen.c registers a PORT-M3 section 5 adapter,
+ * which is a file-local static and so cannot be named here.  What the table
+ * can check is the other registration, which must keep the slot's type. */
+extern void DrawCachedTextSprite(void*);
+
+typedef void (*ll_fn_m8_sprite_draw)(void*);
+ll_fn_m8_sprite_draw const ll_tab_m8_sprite_draw[] = {
+    DrawCachedTextSprite,
+};
+
+/* ---- m8_cb_b0  (ObjDef +0xb0, the "draw over" hook)
+ * call site: printlist.c:641/660 in DrawAndClearPrintList (0x004859d0),
+ *            `owner->vtbl->DrawOver(owner, x, y, &ctx.n, clip, mode)` --
+ *            0x00485ac3 `call dword ptr [edx + 0xb0]` and 0x00485b70
+ *            `call dword ptr [ecx + 0xb0]`, six pushes each
+ * type:      (i32, i32, i32, i32, i32, i32) -> void
+ *
+ * PORT-M3 section 5 and PORT-M7 section 2 both recorded "no call site anywhere
+ * in the recovered tree" for +0xb0 and left its mixed body set open; there is
+ * one, and it settles the canonical type as the six-argument shape.  52 of the
+ * 59 `+0xb0` stores tree-wide already have it -- the fifteen
+ * `*_Interact` stale names PORT-M7 retyped are in ll_tab_m7_cb_b0 above -- and
+ * the four that do not (CastleDummy_Interact, Track_Interact in castleobj.c,
+ * PottingShed_Draw, MechanicsHut_Draw via screen.c) now reach the slot through
+ * registration-site adapters, which are file-local statics.  These are the
+ * six-argument bodies that are registered under their OWN names and must stay
+ * that shape. */
+extern void Castle_Interact(void*, void*, void*, void*, void*, void*);
+extern void DrivingSchool_Draw(void*, void*, void*, void*, void*, void*);
+extern void Entrance1_Draw(void*, void*, void*, void*, void*, void*);
+extern void Carousel_Draw(void*, void*, void*, void*, void*, void*);
+extern void Balloonz_Draw(void*, void*, void*, void*, void*, void*);
+extern void EarthSlide_Draw(void*, void*, void*, void*, void*, void*);
+extern void CastleBbq_Draw(void*, void*, void*, void*, void*, void*);
+extern void Foodcart_DrawOverlay(void*, void*, void*, void*, void*, void*);
+extern void OctopusCafe_Draw(void*, void*, void*, void*, void*, void*);
+extern void Restaurant1_Draw(void*, void*, void*, void*, void*, void*);
+extern void Restaurant2_Draw(void*, void*, void*, void*, void*, void*);
+extern void ChuckWagon_DrawOverlay(void*, void*, void*, void*, void*, void*);
+extern void BoatingSchool_Draw(void*, void*, void*, void*, void*, void*);
+extern void JungleCruise_Draw(void*, void*, void*, void*, void*, void*);
+extern void LFEntrance_Interact(void*, void*, void*, void*, void*, void*);
+extern void LFTrack_Interact(void*, void*, void*, void*, void*, void*);
+extern void LFCorner1_Interact(void*, void*, void*, void*, void*, void*);
+extern void LFCorner2_Interact(void*, void*, void*, void*, void*, void*);
+extern void LFCorner3_Interact(void*, void*, void*, void*, void*, void*);
+extern void LFCorner4_Interact(void*, void*, void*, void*, void*, void*);
+extern void LFCsaw_Interact(void*, void*, void*, void*, void*, void*);
+extern void LFTunnel_Interact(void*, void*, void*, void*, void*, void*);
+extern void LFDrop_Interact(void*, void*, void*, void*, void*, void*);
+extern void LFHoldUp_Interact(void*, void*, void*, void*, void*, void*);
+extern void Catapult_Interact(void*, void*, void*, void*, void*, void*);
+extern void Copters_Interact(void*, void*, void*, void*, void*, void*);
+extern void SafariRide_Interact(void*, void*, void*, void*, void*, void*);
+extern void SpiderRide_Interact(void*, void*, void*, void*, void*, void*);
+extern void SpaceTower_Interact(void*, void*, void*, void*, void*, void*);
+extern void SpinningBarrels_Interact(void*, void*, void*, void*, void*, void*);
+extern void PlaneRide_Interact(void*, void*, void*, void*, void*, void*);
+extern void WaterBlock_Interact(void*, void*, void*, void*, void*, void*);
+extern void Shower_Interact(void*, void*, void*, void*, void*, void*);
+extern void ElephantFountain_Interact(void*, void*, void*, void*, void*, void*);
+
+typedef void (*ll_fn_m8_cb_b0)(void*, void*, void*, void*, void*, void*);
+ll_fn_m8_cb_b0 const ll_tab_m8_cb_b0[] = {
+    Castle_Interact,
+    DrivingSchool_Draw,
+    Entrance1_Draw,
+    Carousel_Draw,
+    Balloonz_Draw,
+    EarthSlide_Draw,
+    CastleBbq_Draw,
+    Foodcart_DrawOverlay,
+    OctopusCafe_Draw,
+    Restaurant1_Draw,
+    Restaurant2_Draw,
+    ChuckWagon_DrawOverlay,
+    BoatingSchool_Draw,
+    JungleCruise_Draw,
+    LFEntrance_Interact,
+    LFTrack_Interact,
+    LFCorner1_Interact,
+    LFCorner2_Interact,
+    LFCorner3_Interact,
+    LFCorner4_Interact,
+    LFCsaw_Interact,
+    LFTunnel_Interact,
+    LFDrop_Interact,
+    LFHoldUp_Interact,
+    Catapult_Interact,
+    Copters_Interact,
+    SafariRide_Interact,
+    SpiderRide_Interact,
+    SpaceTower_Interact,
+    SpinningBarrels_Interact,
+    PlaneRide_Interact,
+    WaterBlock_Interact,
+    Shower_Interact,
+    ElephantFountain_Interact,
+};
+
+/* The PORT-M8 pairs, counted separately from PORT-M3's and PORT-M7's. */
+int ll_m8_callback_type_pairs(void)
+{
+    int n = 0;
+    n += (int)(sizeof ll_tab_m8_sprite_draw / sizeof ll_tab_m8_sprite_draw[0]);
+    n += (int)(sizeof ll_tab_m8_cb_b0 / sizeof ll_tab_m8_cb_b0[0]);
+    return n;
+}
+
+/* PORT-M8's registration-site adapters, listed here because they are
+ * file-local statics (PORT-M3's convention):
+ *   sprite2.c +0x08 draw   mapscreen.c   ll_m8_render_full_map   (RenderFullMap)
+ *   ObjDef +0xb0           castleobj.c   ll_cb_b0_CastleDummy_Interact
+ *                          castleobj.c   ll_cb_b0_Track_Interact
+ *                          screen.c      ll_cb_b0_PottingShed_Draw
+ *                          screen.c      ll_cb_b0_MechanicsHut_Draw */
