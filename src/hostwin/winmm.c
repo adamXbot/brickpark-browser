@@ -74,6 +74,7 @@ static unsigned int clock_ticks(void)
 /* THE yield point for the game's spin loops -- see the header comment. */
 unsigned int timeGetTime(void)
 {
+    if (ll_host_beating()) ll_host_beat("winmm.timeGetTime");
     ll_host_yield_throttled(4);
     return clock_ticks();
 }

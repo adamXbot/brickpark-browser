@@ -1100,6 +1100,53 @@ further: the front-end **main menu** (the LEGOLAND gates, seven bubbles), the
 exactly as designed). Every one of them runs at the 33 fps flip floor. The park
 itself was not reached.
 
+## The wedge named: 1211 raw pointers in the closure (scope PORT-B8)
+
+PORT-B7 left one blocker it could not open: two clicks past the main menu the
+page's main thread stops responding, and every tool the port has for asking it a
+question -- `llFrameHash`, `llStats`, `llPeek`, `javascript_tool` -- runs on
+that thread and times out with it.
+
+**The heartbeat** (`?beat=<ms>`, `ll_host_beat` in user32.c) is the channel that
+survives: `stderr` reaches the devtools console over CDP without the page's main
+thread doing anything, so one line written from C inside the loop still arrives.
+It beats every host entry point a spin loop could sit on, prints a timed line
+with the call counts, and -- the part that matters -- dumps a **32-entry ring of
+the DISTINCT entry points on every wrap**, not on a timer, so the last line a
+wedged tab prints always ends within 32 host calls of the loop. The front end
+makes ~360,000 host calls a second; a timed line could never do this.
+
+The answer: **the loop makes no host call at all.** It is
+
+```c
+/* screens3.c:1320  KillLowMarkerSprites */
+while (KillSprite(g_low_markers[i].lit) == 0)
+    ;
+```
+
+with `.lit` NULL, because the sprite's NAME pointer was never re-pointed --
+`gen-browser/globals.c` emits `g_low_markers` with the raw x86 address
+`0x004bed40` where `"Appraisal_Yes.lls"` should be, and that string is *inside
+the same 600-byte object*, at `+0xa0`, with no symbol of its own for the
+re-pointing pass to aim at (PORT-A6's extent widening swallowed it). So
+`LoadSprite` fails, the marker is null, `UnreferenceSprite` answers 0 for ever,
+and the page dies. `g_level_markers` has the same 18 words wrong. Those two
+tables are **both doors into the park**.
+
+A census of the whole closure (`docs/lanes/scope-port-b8.md` §9, the script) says
+the class is **1211 words in 177 objects** -- `g_fp_table` (135), `kThemeSame`
+(102), `g_level_db_sections` (91), `g_power_table` (63), `g_lowlevel_ai` (59)
+among them, all tables the park needs. **Owner: PORT-A, `gen_link.py`**; the
+rule is that a pointer word whose target has no symbol but lies inside an
+emitted object's extent becomes `(unsigned)((char*)<obj> + <offset>)`.
+
+Also settled: the profile really is written (`/gamedata/profiles/Profile1.txt`,
+272 bytes, `adam` at offset 0) and read back within the session, so the
+`"cannot open output file"` lines are just `ScanForProfiles` probing the seven
+absent slots in READ mode; and PORT-B7's second wedge (the advert screen's Go
+Back) does not reproduce on an honest build. MEMFS still loses the profile on a
+reload -- IDBFS is the next PORT-B job.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and

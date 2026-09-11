@@ -423,6 +423,7 @@ static long LL_DSB_GetCaps(LLDSBuffer* b, void* caps)
 static long LL_DSB_GetCurrentPosition(LLDSBuffer* b, unsigned long* play,
                                       unsigned long* write)
 {
+    if (ll_host_beating()) ll_host_beat("dsound.GetCurrentPosition");
     ds_tick(b);
     if (play)
         *play = b->cursor;
@@ -478,6 +479,7 @@ static long LL_DSB_GetFrequency(LLDSBuffer* b, unsigned long* freq)
 
 static long LL_DSB_GetStatus(LLDSBuffer* b, unsigned long* status)
 {
+    if (ll_host_beating()) ll_host_beat("dsound.GetStatus");
     if (!status)
         return DSERR_INVALIDPARAM;
     ds_tick(b);
@@ -497,6 +499,7 @@ static long LL_DSB_Lock(LLDSBuffer* b, unsigned long offset, unsigned long bytes
                         void** ptr1, unsigned long* len1,
                         void** ptr2, unsigned long* len2, unsigned long flags)
 {
+    if (ll_host_beating()) ll_host_beat("dsound.Lock");
     unsigned int total = b->data->bytes;
     unsigned int first;
 
@@ -544,6 +547,7 @@ static long LL_DSB_Lock(LLDSBuffer* b, unsigned long offset, unsigned long bytes
 static long LL_DSB_Play(LLDSBuffer* b, unsigned long reserved1,
                         unsigned long reserved2, unsigned long flags)
 {
+    if (ll_host_beating()) ll_host_beat("dsound.Play");
     (void)reserved1; (void)reserved2;
 
     /* A Play on an already-playing buffer only updates the looping flag on

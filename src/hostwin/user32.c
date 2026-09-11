@@ -178,6 +178,101 @@ void ll_host_trace(const char* fmt, ...)
     fflush(stderr);
 }
 
+/* ---- PORT-B8: the heartbeat --------------------------------------------- */
+/* See ll_host.h. One line every LL_BEAT_MS naming the most recent host entry
+ * point and how many host calls have happened since the previous line, printed
+ * to stderr so it survives a main thread that has stopped running JS. */
+/* $LL_HOST_BEAT is the period in ms; "1" means the 500 ms default. */
+#define LL_BEAT_DEFAULT_MS 500.0
+
+/* The ring. A beat line every LL_BEAT_MS is at best 500 ms stale, and at
+ * 360,000 host calls a second that is 180,000 calls of slack -- useless for
+ * "what was the last thing the game asked for". What IS precise is the
+ * sequence of DISTINCT entry points: the front end cycles through a few dozen
+ * per frame, so 32 of them with their repeat counts is several frames of exact
+ * history, and the last line printed before a wedge carries it. */
+#define LL_BEAT_RING 32
+
+static int         g_beat = -1;
+static double      g_beat_ms = LL_BEAT_DEFAULT_MS;
+static const char* g_beat_who = "(none)";
+static unsigned    g_beat_calls;
+static unsigned    g_beat_total;
+static double      g_beat_last_ms;
+static double      g_beat_last_yield_ms;   /* copy, so the line can report the gap */
+
+static const char* g_beat_ring[LL_BEAT_RING];
+static unsigned    g_beat_ring_n[LL_BEAT_RING];
+static int         g_beat_ring_head = -1;  /* index of the newest entry */
+
+int ll_host_beating(void)
+{
+    if (g_beat < 0) {
+        const char* e = getenv("LL_HOST_BEAT");
+        g_beat = e && *e && *e != '0';
+        if (g_beat) {
+            double ms = atof(e);
+            if (ms > 1.0)
+                g_beat_ms = ms;
+        }
+    }
+    return g_beat;
+}
+
+/* Newest last, "name*count", so one line reads left to right as history.
+ * Called on every wrap of the ring and from the timed line. */
+static void ll_beat_dump_ring(void)
+{
+    int i;
+    fputs("BEAT   ring:", stderr);
+    for (i = 0; i < LL_BEAT_RING; i++) {
+        int k = (g_beat_ring_head + 1 + i) % LL_BEAT_RING;
+        if (!g_beat_ring[k])
+            continue;
+        fprintf(stderr, " %s*%u", g_beat_ring[k], g_beat_ring_n[k]);
+    }
+    fputc('\n', stderr);
+}
+
+void ll_host_beat(const char* who)
+{
+    double now;
+    if (!ll_host_beating())
+        return;
+    /* Compared by POINTER: every caller passes a string literal, so this is
+     * one compare and it never allocates. */
+    if (g_beat_ring_head < 0 || g_beat_ring[g_beat_ring_head] != who) {
+        g_beat_ring_head = (g_beat_ring_head + 1) % LL_BEAT_RING;
+        /* Dumped on every WRAP, not only on the timed line. The timed line is
+         * up to LL_BEAT_MS stale, which at 33 fps is a dozen frames of
+         * transitions -- so it can never carry the last calls before a wedge.
+         * Wrapping is counted in transitions, not in time, so the last line a
+         * wedged tab prints always ends within 32 distinct host calls of the
+         * loop it never left. */
+        if (g_beat_ring_head == 0)
+            ll_beat_dump_ring();
+        g_beat_ring[g_beat_ring_head] = who;
+        g_beat_ring_n[g_beat_ring_head] = 0;
+    }
+    g_beat_ring_n[g_beat_ring_head]++;
+    g_beat_who = who;
+    g_beat_calls++;
+    g_beat_total++;
+#ifdef __EMSCRIPTEN__
+    now = emscripten_get_now();
+#else
+    now = 0.0;
+#endif
+    if (now - g_beat_last_ms < g_beat_ms)
+        return;
+    fprintf(stderr, "BEAT t=%.0f last=%s calls=%u total=%u since_yield=%.0fms\n",
+            now, who, g_beat_calls, g_beat_total, now - g_beat_last_yield_ms);
+    ll_beat_dump_ring();
+    fflush(stderr);
+    g_beat_last_ms = now;
+    g_beat_calls = 0;
+}
+
 /* ---- the yield ---------------------------------------------------------- */
 static double g_last_yield_ms;
 
@@ -187,6 +282,7 @@ void ll_host_yield(unsigned int ms)
     g_last_yield_ms = emscripten_get_now();
     emscripten_sleep(ms);
     g_last_yield_ms = emscripten_get_now();
+    g_beat_last_yield_ms = g_last_yield_ms;
 #else
     (void)ms;
 #endif
@@ -469,6 +565,7 @@ BOOL PeekMessageA(MSG* msgp, HWND hwnd, UINT lo, UINT hi,
     (void)hwnd; (void)lo; (void)hi;
 
     ll_host_drain_events();
+    if (ll_host_beating()) ll_host_beat("user32.PeekMessageA");
     ll_host_pump_timers();
 
     /* Belt and braces: a flood of messages must not starve the browser. */
@@ -508,6 +605,7 @@ BOOL TranslateMessage(const MSG* msg) { (void)msg; return 0; }
 
 long DispatchMessageA(const MSG* msgp)
 {
+    if (ll_host_beating()) ll_host_beat("user32.DispatchMessageA");
     const LLMsg* msg = (const LLMsg*)msgp;
     if (!msg)
         return 0;
@@ -518,6 +616,7 @@ long DispatchMessageA(const MSG* msgp)
 
 int WaitMessage(void)
 {
+    if (ll_host_beating()) ll_host_beat("user32.WaitMessage");
     ll_host_drain_events();
     ll_host_pump_timers();
     ll_host_yield(16);            /* one animation frame, then look again */
@@ -760,6 +859,7 @@ int DrawTextA(void* hdc, const char* text, int len, LLRect* rc,
     LLFontMetrics m;
     int have_target;
 
+    if (ll_host_beating()) ll_host_beat("user32.DrawTextA");
     if (!rc || !text)
         return 0;
     ll_host_dc_font(hdc, &m);

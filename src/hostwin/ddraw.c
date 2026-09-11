@@ -284,6 +284,7 @@ static void present_primary(void)
 static long ll_surf_Blt(LLSurface* dst, LLRect* dstrect, LLSurface* src,
                         LLRect* srcrect, unsigned long flags, LLBltFx* fx)
 {
+    if (ll_host_beating()) ll_host_beat("ddraw.Blt");
     LLRect d, s;
     int x, y, dw, dh, sw, sh;
 
@@ -357,6 +358,7 @@ static long ll_surf_Blt(LLSurface* dst, LLRect* dstrect, LLSurface* src,
 static long ll_surf_BltFast(LLSurface* dst, unsigned long x, unsigned long y,
                             LLSurface* src, LLRect* srcrect, unsigned long trans)
 {
+    if (ll_host_beating()) ll_host_beat("ddraw.BltFast");
     LLRect d;
     LLRect s = srcrect ? *srcrect : (LLRect){ 0, 0, src ? src->w : 0, src ? src->h : 0 };
     d.left = (long)x;
@@ -371,6 +373,7 @@ static long ll_surf_BltFast(LLSurface* dst, unsigned long x, unsigned long y,
  * g_present is left at blitmisc.c's PresentFlip. */
 static long ll_surf_Flip(LLSurface* s, LLSurface* target, unsigned long flags)
 {
+    if (ll_host_beating()) ll_host_beat("ddraw.Flip");
     LLSurface* from = target ? target : s->flip_target;
     (void)flags;
     if (from && from->bits && s->bits && from->w == s->w && from->h == s->h) {
@@ -389,6 +392,7 @@ static long ll_surf_Flip(LLSurface* s, LLSurface* target, unsigned long flags)
  * the spin is one browser turn, then say DD_OK == done. */
 static long ll_surf_GetFlipStatus(LLSurface* s, unsigned long flags)
 {
+    if (ll_host_beating()) ll_host_beat("ddraw.GetFlipStatus");
     (void)s; (void)flags;
     ll_host_yield(0);
     return DD_OK;
@@ -442,6 +446,7 @@ static long ll_surf_Restore(LLSurface* s) { (void)s; return DD_OK; }
 static long ll_surf_Lock(LLSurface* s, LLRect* rect, LLSurfaceDesc* desc,
                          unsigned long flags, void* event)
 {
+    if (ll_host_beating()) ll_host_beat("ddraw.Lock");
     (void)flags; (void)event;
     if (!s || !s->bits || !desc)
         return DDERR_INVALIDPARAMS;
@@ -471,6 +476,7 @@ static long ll_surf_Lock(LLSurface* s, LLRect* rect, LLSurfaceDesc* desc,
 
 static long ll_surf_Unlock(LLSurface* s, void* bits)
 {
+    if (ll_host_beating()) ll_host_beat("ddraw.Unlock");
     (void)bits;
     if (!s) return DDERR_INVALIDPARAMS;
     s->locked = 0;

@@ -15,6 +15,10 @@
                    pulled out of the log and shown in red at the top
        trace     -- ?trace=1, the host call trace (LL_HOST_TRACE, kernel32.c)
        trapcontinue -- ?trapcontinue=1, generated traps print and return (LL_TRAP_CONTINUE)
+       beat      -- ?beat=<ms>, the PORT-B8 heartbeat: one stderr line every <ms>
+                   (?beat=1 means the 500 ms default), with a 32-entry ring of
+                   the last DISTINCT host entry points. The only signal that
+                   survives a wedged main thread (LL_HOST_BEAT, user32.c)
 
      PORT-B4 added the two things a run needs to be steerable and comparable:
        args      ?args=-nointro+-nomusic+WINDEBUG -- the game's command line,
@@ -126,6 +130,15 @@
 
   var tracing = /[?&]trace=1/.test(location.search);
   var trapcont = /[?&]trapcontinue=1/.test(location.search);   /* PORT-A5: LL_TRAP_CONTINUE */
+  // PORT-B8: ?beat=1 -- the heartbeat (user32.c's ll_host_beat). One stderr
+  // line every 500 ms naming the last host entry point. It exists for the case
+  // this page cannot otherwise report: the game stops reaching a yield, the
+  // main thread stops running JS, and llStats/llFrameHash/javascript_tool all
+  // time out. stderr still reaches the devtools console (the browser, not the
+  // page, delivers it), so the tail of a wedged tab says whether the loop is
+  // still calling the host -- see docs/lanes/scope-port-b8.md §2.
+  var beatParam = /[?&]beat=([0-9]+)/.exec(location.search);
+  var beating = beatParam ? beatParam[1] : null;   // the period in ms; "1" = 500 ms
   traceEl.checked = tracing;
 
   // ?args=... -- the game's command line (PORT-B4). main() in main.c joins argv
@@ -426,7 +439,8 @@
     // argv[1..] for main(). Absent (null) means main.c's own default switches.
     arguments: gameArgs || undefined,
     preRun: [function () { if (tracing) ENV.LL_HOST_TRACE = '1';
-                           if (trapcont) ENV.LL_TRAP_CONTINUE = '1'; }],
+                           if (trapcont) ENV.LL_TRAP_CONTINUE = '1';
+                           if (beating) ENV.LL_HOST_BEAT = beating; }],
     print: function (t) {
       logLine(t); console.log(t);
       if (/^TRAP\b/.test(t)) noteTrap(t);
