@@ -686,6 +686,207 @@
     };
   };
 
+  // PORT-M13: the LINK goal, measured instead of guessed.
+  //
+  // A player reporting "the game keeps telling me to link the ride and I HAVE
+  // linked it" is describing EventTick_Link's (eventtick.c:939) return value,
+  // and that value depends on four things no screenshot shows: which square the
+  // ride's class calls its entrance, whether a PathSquare covers that square,
+  // whether that square carries flag 2 ("reachable from the park entrance",
+  // re-flooded by ResolveEntrancePathSquare, pathmask.c:128), and where the
+  // flood fill's root -- the park entrance's own walk-to tile -- actually is.
+  //
+  // llLink(name) reproduces the handler EXACTLY, per instance, and reports
+  // every intermediate. llLink() defaults to "SPACE TOWER RIDE".
+  //
+  //   class      the ObjDef: entrance offset (+0x0c/+0x10), type (+0x20),
+  //              footprint rect (+0x3c..+0x48)
+  //   insts[]    one row per placed instance: its base square (Inst +0x0e/+0x0f),
+  //              the link square base+entrance, the Cell there, the PathSquare
+  //              covering it (or null) and that square's flags
+  //   verdict    what EventTick_Link would return, and why
+  //   squares[]  the whole PathSquare list with its reachable bit
+  //   goal       the pending LINK ScriptEvent for this class, with its flags
+  window.llLink = function (name) {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32, U = HEAPU8;
+    function i32(p) { return I[p >> 2]; }
+    function u16(p) { return U[p] | (U[p + 1] << 8); }
+    function i16(p) { var v = u16(p); return v & 0x8000 ? v - 0x10000 : v; }
+    function str(p) { var s = '', c; if (!p) return null;
+                      while ((c = U[p++]) && s.length < 128)
+                        s += String.fromCharCode(c); return s; }
+    name = name || 'SPACE TOWER RIDE';
+
+    var map = i32(a.g_map), rows = i32(a.g_map_rows);
+    var mw = map ? u16(map + 0x14) : 0, mh = map ? u16(map + 0x16) : 0;
+    // CellAt's bounds test, then g_map_rows[y][x] with the 0x14 stride.
+    function cell(x, y) {
+      if (!rows || x < 0 || x >= mw || y < 0 || y >= mh) return null;
+      var p = i32(rows + y * 4) + x * 0x14;
+      return { addr: p, obj: i32(p), bx: U[p + 4], by: U[p + 5],
+               tile: u16(p + 8), base: u16(p + 0x0a), flags: u16(p + 0x0c),
+               uflags: u16(p + 0x0e), door: u16(p + 0x12) };
+    }
+    // pathsq.c's FindPathSquare: the first square whose INCLUSIVE rect holds
+    // the cell. Walked here so a miss can be told from a flag-2 failure.
+    var squares = [], sq = i32(a.g_path_squares), guard = 0;
+    while (sq && guard++ < 4096) {
+      squares.push({ addr: sq, left: i32(sq + 0x08), top: i32(sq + 0x0c),
+                     right: i32(sq + 0x10), bottom: i32(sq + 0x14),
+                     distance2: i32(sq + 0x1c), flags: i32(sq + 0x20),
+                     reachable: !!(i32(sq + 0x20) & 2) });
+      sq = i32(sq);
+    }
+    function findSquare(x, y) {
+      for (var i = 0; i < squares.length; i++) {
+        var s = squares[i];
+        if (x >= s.left && x <= s.right && y >= s.top && y <= s.bottom) return s;
+      }
+      return null;
+    }
+
+    // The class, found by its LLIDB element's name (ObjDef +0xc4 -> LLElem +0x00).
+    var cls = null, d = i32(a.g_odf_head), all = [];
+    guard = 0;
+    while (d && guard++ < 4096) {
+      var el = i32(d + 0xc4), nm = el ? str(i32(el)) : null;
+      all.push(nm);
+      if (nm === name) { cls = d; break; }
+      d = i32(d);
+    }
+    if (!cls) return { name: name, found: false, classNames: all,
+                       squares: squares };
+
+    var ent = { x: i32(cls + 0x0c), y: i32(cls + 0x10) };
+    var fp = { left: i32(cls + 0x3c), top: i32(cls + 0x40),
+               right: i32(cls + 0x44), bottom: i32(cls + 0x48) };
+    // ObjHasEntrance (objdoor.c): type not 0/2/3 AND the offset outside the rect.
+    var type = i16(cls + 0x20);
+    var hasEntrance = (type !== 0 && type !== 2 && type !== 3) &&
+                      (fp.left > ent.x || ent.x > fp.right ||
+                       fp.top > ent.y || ent.y > fp.bottom);
+
+    var insts = [], missing = 0, outside = 0;
+    var o = i32(cls + 0x04);
+    guard = 0;
+    while (o && guard++ < 1024) {
+      var bx = U[o + 0x0e], by = U[o + 0x0f];
+      var lx = bx + ent.x, ly = by + ent.y;
+      var c = cell(lx, ly);
+      var s = c ? findSquare(lx, ly) : null;
+      // EventTick_Link's own arithmetic and its own two counters.
+      var joins = false;
+      if (c) { if (!(s && (s.flags & 2))) missing++; else joins = true; }
+      else { missing++; outside++; }
+      insts.push({ addr: o, base: [bx, by], linkSquare: [lx, ly],
+                   onMap: !!c, cell: c, pathSquare: s, joins: joins });
+      o = i32(o);
+    }
+
+    // The pending ScriptEvent list: kind 37 is LINK, and its elem is the class
+    // element. flags bit 0x80 is what PORT-M10 watched turn on when it passed.
+    function evlist(head) {
+      var out = [], e = i32(head), n = 0;
+      while (e && n++ < 1024) {
+        var ge = i32(e + 0x04);
+        out.push({ addr: e, kind: i32(e + 0x0c), flags: U[e + 0x10],
+                   mode: i32(e + 0x38), strid: i32(e + 0x40),
+                   elem: ge, elemName: ge ? str(i32(ge)) : null,
+                   text: str(i32(e + 0x08)) });
+        e = i32(e);
+      }
+      return out;
+    }
+    // fpui3.c:646 walks g_script_event -- the LIVE events, where the LINK goal
+    // (kind 37) itself sits while it is unmet. g_goal_list is the NOTEPAD's
+    // list of unmet objectives the GoalCheck_* primitives feed.
+    var events = evlist(a.g_script_event);
+    var goals = evlist(a.g_goal_list);
+
+    var entTile = { x: i32(a.g_entrance_tile), y: i32(a.g_entrance_tile + 4) };
+    return {
+      name: name, found: true, classAddr: cls,
+      type: type, entranceOffset: [ent.x, ent.y], footprint: fp,
+      hasEntrance: hasEntrance,
+      insts: insts,
+      missing: missing, outside: outside,
+      // EventTick_Link: outside -> hint "connect", missing -> hint "link",
+      // neither -> the goal is satisfied and the handler returns 1.
+      verdict: insts.length === 0 ? 'no instance (returns 1, vacuous)'
+             : outside ? 'OUTSIDE: link square off the map -> hint, never passes'
+             : missing ? 'MISSING: no reachable path square on the link square'
+             : 'SATISFIED',
+      entranceTile: entTile,
+      entranceTileCell: cell(entTile.x, entTile.y),
+      entranceTileSquare: findSquare(entTile.x, entTile.y),
+      entranceElem: i32(a.g_entrance_elem),
+      pathGfxBatch: i32(a.g_path_gfx_batch),
+      entranceTileTime: i32(a.g_entrance_tile_time),
+      squares: squares,
+      reachableSquares: squares.filter(function (s) { return s.reachable; }).length,
+      goals: goals,
+      events: events,
+      linkGoals: events.filter(function (g) { return g.kind === 37; }),
+      mapDirty: i32(a.g_map_dirty),
+      visitors: i32(a.g_visitor_count),
+      cursorMapRef: [i32(a.g_cursor_mapref), i32(a.g_cursor_mapref + 4)],
+      editObject: (function () { var p = i32(a.g_edit_object);
+                                 if (!p) return null;
+                                 var el = i32(p + 0xc4);
+                                 return el ? str(i32(el)) : p; })(),
+      mapSize: [mw, mh],
+      // The cursor as the GAME sees it: the pixel the shim delivered and the
+      // cell ScreenToMapRef (objmap2.c:650) made of it.
+      input: { flags: i32(a.g_input), point: [i32(a.g_input + 4), i32(a.g_input + 8)],
+               mapRef: [i32(a.g_input + 0x24), i32(a.g_input + 0x28)],
+               click: [i32(a.g_input + 0x3c), i32(a.g_input + 0x40)],
+               anchor: [i32(a.g_input + 0x34), i32(a.g_input + 0x38)] }
+    };
+  };
+
+  // PORT-M13: the path cells themselves, as a small ASCII map around a square.
+  // "Is there a gap" is a question about CELLS (flag 0x10 is the path bit
+  // AddPathTileGFX sets), and a gap of one cell is invisible on an isometric
+  // 640x480 canvas at this zoom.
+  //   .  plain          #  object (flag 0x80)      =  path (flag 0x10)
+  //   E  the link square of `name`'s first instance
+  //   P  the park entrance's walk-to tile
+  window.llPathMap = function (cx, cy, r, name) {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32, U = HEAPU8;
+    function i32(p) { return I[p >> 2]; }
+    function u16(p) { return U[p] | (U[p + 1] << 8); }
+    var map = i32(a.g_map), rows = i32(a.g_map_rows);
+    var mw = u16(map + 0x14), mh = u16(map + 0x16);
+    var L = window.llLink(name);
+    var ex = -1, ey = -1;
+    if (L && L.insts && L.insts.length) {
+      ex = L.insts[0].linkSquare[0]; ey = L.insts[0].linkSquare[1];
+    }
+    if (cx === undefined || cx === null) { cx = ex; cy = ey; }
+    r = r || 10;
+    var px = L ? L.entranceTile.x : -1, py = L ? L.entranceTile.y : -1;
+    var out = ['      ' + (function () { var s = '';
+        for (var x = cx - r; x <= cx + r; x++) s += (Math.abs(x) % 10);
+        return s; })()];
+    for (var y = cy - r; y <= cy + r; y++) {
+      var line = ('    ' + y).slice(-4) + '  ';
+      for (var x = cx - r; x <= cx + r; x++) {
+        if (x < 0 || x >= mw || y < 0 || y >= mh) { line += ' '; continue; }
+        var p = i32(rows + y * 4) + x * 0x14, f = u16(p + 0x0c);
+        var ch = (f & 0x10) ? '=' : (f & 0x80) ? '#' : '.';
+        if (x === ex && y === ey) ch = (f & 0x10) ? 'E' : 'e';
+        if (x === px && y === py) ch = (f & 0x10) ? 'P' : 'p';
+        line += ch;
+      }
+      out.push(line);
+    }
+    return out.join('\n');
+  };
+
   // PORT-B9: the RES master directory, walked. `llRes()` lists every bucket
   // with its member count; `llRes("Scripts\\")` lists that bucket's members.
   // res.c's RES_OpenFile splits the path at the last backslash, looks the
