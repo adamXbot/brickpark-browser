@@ -209,3 +209,36 @@ target_link_options(legoland_browser PRIVATE
 set_target_properties(legoland_browser PROPERTIES
   SUFFIX ".html" OUTPUT_NAME "legoland"
   LINK_DEPENDS "${LL_WASM_LINK_DEPENDS}")
+
+# ---- legoland_browser_named: the same page, with a name section -------------
+#
+# PORT-B7. A `call_indirect` whose target's type is not the call site's reaches
+# the page as `RuntimeError: function signature mismatch` and nothing else, and
+# `name_trap.py` turns the innermost `wasm-function[N]:0xOFF` into a call site
+# and a candidate list -- but the CALLERS stay numbers unless the module carries
+# a name section, and the first front-end click produces a five-frame stack of
+# them. `legoland_headless_debug` cannot help: the mismatch is reached by a
+# CLICK, so it only happens in a tab.
+#
+# -O0 is not available here (headless.cmake:97 -- unoptimised ASYNCIFY of
+# RunAppraisalScreen exceeds wasm's per-function local limit), so this is the
+# ordinary optimised link plus `-g2`, which keeps the name section through
+# wasm-opt. Same code, same behaviour, ~4 MB larger; served as legoland_dbg.html
+# beside the real page, and only when someone asks for it (EXCLUDE_FROM_ALL).
+#
+#   ninja -C portable/build-wasm legoland_browser_named
+#   # drive legoland_dbg.html, then:
+#   python3 portable/tools/name_trap.py --wasm portable/build-wasm/legoland_dbg.wasm \
+#           --at 0x<offset from the innermost frame>
+add_executable(legoland_browser_named EXCLUDE_FROM_ALL
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/main.c")
+target_link_libraries(legoland_browser_named PRIVATE
+  legoland_hostwin
+  "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_core>"
+  "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_gen_browser>")
+target_compile_options(legoland_browser_named PRIVATE -w)
+target_link_options(legoland_browser_named PRIVATE
+  ${LL_WASM_COMMON_LINK} ${LL_PRELOAD} -g2 -sERROR_ON_UNDEFINED_SYMBOLS=1)
+set_target_properties(legoland_browser_named PROPERTIES
+  SUFFIX ".html" OUTPUT_NAME "legoland_dbg"
+  LINK_DEPENDS "${LL_WASM_LINK_DEPENDS}")

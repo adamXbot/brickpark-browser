@@ -29,7 +29,48 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <emscripten.h>
+
 #include "ll_host.h"
+
+/* ---- PORT-B7: the page's window into the game's live globals --------------
+ *
+ * `window.llFrameHash()` answers "did the screen change"; it cannot answer
+ * "did the game receive the character". This lane needed the second question
+ * five times in a row (the name editor, the map cursor, the panel), and the
+ * only honest answer comes from the game's own memory rather than from a
+ * screenshot. `Module._ll_dbg_addr(n)` hands the page the linear address of one
+ * recovered global; the page then reads it out of HEAPU8/HEAP32 -- one export,
+ * no per-global plumbing, and nothing in the game or the closure changes.
+ *
+ * The names are the closure's own (gen-browser/globals.c), which is why some
+ * of them are the record's FIRST recovered name rather than the record's name:
+ * `g_temp_name` is `g_temp_profile` and `g_cert_message` is `g_cur_profile`
+ * (both 288-byte records PORT-A5/B6 merged). Declared `unsigned char[]` here
+ * on purpose: globals.c declares each object with whatever element type its
+ * re-pointed words need, and only the ADDRESS is wanted.
+ */
+extern unsigned char g_key_state[];         /* 0x007fdda0  256 DIK bytes */
+extern unsigned char g_key_prev[];          /* 0x00668da8  59, GetInputChar */
+extern unsigned char g_key_map[];           /* 0x004bad58  59 {dik, ch} */
+extern unsigned char g_temp_name[];         /* 0x007cad60  g_temp_profile */
+extern unsigned char g_cert_message[];      /* 0x0080ffa0  g_cur_profile */
+extern unsigned char g_profile_name_len[];  /* 0x00798894 */
+extern unsigned char g_newprof_popup_up[];  /* 0x007986e8 */
+
+EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
+{
+    switch (which) {
+    case 0: return (unsigned int)(size_t)g_key_state;
+    case 1: return (unsigned int)(size_t)g_key_prev;
+    case 2: return (unsigned int)(size_t)g_key_map;
+    case 3: return (unsigned int)(size_t)g_temp_name;
+    case 4: return (unsigned int)(size_t)g_cert_message;
+    case 5: return (unsigned int)(size_t)g_profile_name_len;
+    case 6: return (unsigned int)(size_t)g_newprof_popup_up;
+    default: return 0;
+    }
+}
 
 /* winmain.c 0x00453d10. __stdcall is ignored off x86. */
 extern int WinMain(void* hinst, void* hprev, char* cmdline, int ncmdshow);

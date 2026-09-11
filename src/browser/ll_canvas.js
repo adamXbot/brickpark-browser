@@ -316,6 +316,12 @@ var LibraryLLCanvas = {
     var d = LL.image.data;
     for (var i = 3; i < d.length; i += 4) d[i] = 255;
     LL.bind();
+    // PORT-B7: hand the page the shim's own state. `LL` is a closure variable
+    // inside the linked JS library, so a tool driving this page could see that
+    // a keystroke reached the DOM and that the game never received it, and had
+    // nothing in between to look at. One assignment makes the queue, the DIK
+    // tables and the pointer origin readable from the console.
+    try { globalThis.LL_DEBUG = LL; } catch (e) { /* nothing to expose to */ }
     LL.tell('llStatus', 'display ' + w + 'x' + h);
   },
 
