@@ -273,6 +273,13 @@ struct LLDSBuffer {
     unsigned int  play_base;           /* cursor byte offset at that moment */
     unsigned int  cursor;              /* the cursor when stopped */
     int           primary;
+    /* PORT-B11. `voice` is this buffer's Web Audio gain/panner pair, made on
+     * the first Play; `streamed` says the game rewrites the buffer WHILE it
+     * plays, which changes how the PCM reaches the output (ll_audio.c's header
+     * explains both modes and why a partial Lock is the test). */
+    int           voice;
+    int           streamed;
+    unsigned int  fed_to;              /* for the trace only */
 };
 
 typedef struct LLDSoundVtbl {
@@ -340,6 +347,121 @@ static unsigned int ds_byte_rate(const LLDSBuffer* b)
     return rate * align;
 }
 
+/* ---- the Web Audio bridge (PORT-B11) ------------------------------------ */
+/* Everything browser-specific is in ll_audio.c; these four helpers are the only
+ * places this file touches it, so the DirectSound semantics above and below stay
+ * exactly what PORT-B4 established. A buffer with no PCM, or on a build with no
+ * Web Audio, takes the same path it always did and is silent.
+ *
+ * The format handed over is the PCM format the game uploaded. It is always
+ * 16-bit after ConvertWAVToPCM (resaudio2.c:176 sets wBitsPerSample to 16
+ * unconditionally, which is why msacm32.c had to grow a real MS ADPCM decoder
+ * this lane -- a fifth of the archived samples and every speech file are ADPCM
+ * on disk, and without the decoder they never became a sound buffer at all). */
+
+static unsigned int ds_fmt_rate(const LLDSBuffer* b)
+{
+    const LLWaveFormat* f = &b->data->fmt;
+    if (!b->data->have_fmt || !f->nSamplesPerSec)
+        return 22050u;
+    return f->nSamplesPerSec;
+}
+
+static int ds_fmt_channels(const LLDSBuffer* b)
+{
+    const LLWaveFormat* f = &b->data->fmt;
+    if (!b->data->have_fmt || f->nChannels < 1 || f->nChannels > 2)
+        return 1;
+    return (int)f->nChannels;
+}
+
+static int ds_fmt_bits(const LLDSBuffer* b)
+{
+    const LLWaveFormat* f = &b->data->fmt;
+    if (!b->data->have_fmt || (f->wBitsPerSample != 8 && f->wBitsPerSample != 16))
+        return 16;
+    return (int)f->wBitsPerSample;
+}
+
+/* SetFrequency's rate as a ratio of the format's own, which is what a
+ * playbackRate is. AdjustPSampleFreq (audio3.c:220) reads the frequency back
+ * and scales it by a percentage, so this is a live value, not a one-off. */
+static double ds_rate_mul(const LLDSBuffer* b)
+{
+    unsigned int base = ds_fmt_rate(b);
+    if (!b->frequency || !base)
+        return 1.0;
+    return (double)b->frequency / (double)base;
+}
+
+/* The streaming chunk: a sixteenth of the buffer, capped at 4096 bytes and
+ * rounded down to a whole frame. For the narration ring (0xa000 bytes) that is
+ * 2560 -> 2560, a little over half of the 0x1000 block PumpNarration fills, so
+ * the output lags the game's write by well under one block. */
+static unsigned int ds_stream_chunk(const LLDSBuffer* b)
+{
+    unsigned int frame = (unsigned int)(ds_fmt_bits(b) / 8) *
+                         (unsigned int)ds_fmt_channels(b);
+    unsigned int c = b->data->bytes / 16u;
+    if (frame == 0)
+        frame = 2;
+    if (c > 4096u)
+        c = 4096u;
+    c -= c % frame;
+    if (c < frame)
+        c = frame;
+    return c;
+}
+
+static void ds_audio_levels(LLDSBuffer* b)
+{
+    if (b->voice)
+        ll_audio_set_levels(b->voice, b->volume, b->pan);
+}
+
+/* Called from Play. A static buffer starts a source node here and then needs
+ * nothing more; a streamed one is driven from ds_tick instead. */
+static void ds_audio_start(LLDSBuffer* b)
+{
+    if (b->primary || !b->data->bytes)
+        return;
+    if (!ll_audio_enabled())
+        return;
+    if (!b->voice)
+        b->voice = ll_audio_voice_new();
+    if (!b->voice)
+        return;
+    if (b->streamed) {
+        /* Nothing to start: the feed in ds_tick begins as soon as the cursor has
+         * moved past a chunk the game has written. Reset the read position so a
+         * restart does not replay stale audio. */
+        ll_audio_stop(b->voice);
+        ds_audio_levels(b);
+        b->fed_to = 0;
+        return;
+    }
+    ds_audio_levels(b);
+    ll_audio_play_static(b->voice, b->data->pcm, b->data->bytes,
+                         ds_fmt_rate(b), ds_fmt_channels(b), ds_fmt_bits(b),
+                         b->cursor, b->looping, b->volume, b->pan,
+                         ds_rate_mul(b));
+}
+
+/* Called from ds_tick for a streamed buffer that is playing: hand the JS side
+ * the cursor the game is filling against. */
+static void ds_audio_feed(LLDSBuffer* b)
+{
+    int n;
+    if (!b->voice || !b->streamed || !b->playing)
+        return;
+    n = ll_audio_feed_stream(b->voice, b->data->pcm, b->data->bytes,
+                             b->cursor, ds_stream_chunk(b),
+                             ds_fmt_rate(b), ds_fmt_channels(b),
+                             ds_fmt_bits(b), ds_rate_mul(b));
+    if (n > 0)
+        b->fed_to += (unsigned int)n * ds_stream_chunk(b);
+}
+
 /* Advance `cursor` to where wall clock says it is, and clear `playing` when a
  * one-shot has run off the end. Every slot that reports a position or a status
  * calls this first; nothing else moves the cursor. */
@@ -361,6 +483,7 @@ static void ds_tick(LLDSBuffer* b)
     if (b->looping) {
         pos = (unsigned int)((b->play_base + played % total) % total);
         b->cursor = pos;
+        ds_audio_feed(b);
         return;
     }
     if (played + b->play_base >= (unsigned long long)total) {
@@ -369,9 +492,14 @@ static void ds_tick(LLDSBuffer* b)
          * the instance on the next frame because GetStatus now reports 0. */
         b->playing = 0;
         b->cursor = 0;
+        /* The source node has already finished on its own -- it was given the
+         * whole buffer -- so nothing is stopped here; a streamed voice is. */
+        if (b->streamed && b->voice)
+            ll_audio_stop(b->voice);
         return;
     }
     b->cursor = (unsigned int)(b->play_base + played);
+    ds_audio_feed(b);
 }
 
 /* ---- IDirectSoundBuffer ------------------------------------------------- */
@@ -395,6 +523,13 @@ static unsigned long LL_DSB_Release(LLDSBuffer* b)
 
     if (refs > 0)
         return (unsigned long)refs;
+
+    /* The voice goes with the buffer -- and it has to go BEFORE the PCM is
+     * freed, because a streamed voice reads that block from JS. */
+    if (b->voice) {
+        ll_audio_voice_free(b->voice);
+        b->voice = 0;
+    }
 
     /* The sample memory outlives the buffer when a duplicate still holds it. */
     if (--b->data->refs <= 0) {
@@ -513,9 +648,23 @@ static long LL_DSB_Lock(LLDSBuffer* b, unsigned long offset, unsigned long bytes
     if (flags & DSBLOCK_ENTIREBUFFER) {
         offset = 0;
         bytes = total;
-    } else if (flags & DSBLOCK_FROMWRITECURSOR) {
-        ds_tick(b);
-        offset = b->cursor;
+    } else {
+        /* PORT-B11: a Lock that is NOT the whole buffer is a PARTIAL write, and
+         * only the streaming writers do that -- narration2.c:646 (the speech
+         * ring), movie.c:599 (RewindNarrationBuffer's ten-block prime) and
+         * input2.c:478 (the AVI audio track) all pass flags 0, while every
+         * sample loader passes DSBLOCK_ENTIREBUFFER. So this is where a buffer
+         * is classified, before its first Play, and it is the game's own call
+         * pattern doing the classifying rather than a guess about its size. */
+        if (!b->streamed) {
+            b->streamed = 1;
+            ll_host_trace("DSOUND buffer %p is STREAMED (%u bytes, chunk %u)",
+                          (void*)b, b->data->bytes, ds_stream_chunk(b));
+        }
+        if (flags & DSBLOCK_FROMWRITECURSOR) {
+            ds_tick(b);
+            offset = b->cursor;
+        }
     }
     if (bytes == 0)
         bytes = total;
@@ -559,8 +708,13 @@ static long LL_DSB_Play(LLDSBuffer* b, unsigned long reserved1,
         b->play_t0 = ds_now_ms();
     }
     b->looping = (flags & DSBPLAY_LOOPING) ? 1 : 0;
-    ll_host_trace("DSOUND Play %p %u bytes%s (silent)", (void*)b,
-                  b->data->bytes, b->looping ? " looping" : "");
+    ds_audio_start(b);
+    ll_host_trace("DSOUND Play %p %u bytes %u Hz %u ch %u bit%s%s -> %s",
+                  (void*)b, b->data->bytes, ds_fmt_rate(b),
+                  (unsigned)ds_fmt_channels(b), (unsigned)ds_fmt_bits(b),
+                  b->looping ? " looping" : "", b->streamed ? " streamed" : "",
+                  b->voice ? (ll_audio_state() == 2 ? "AUDIBLE" : "waiting for a gesture")
+                           : "silent");
     return DS_OK;
 }
 
@@ -573,6 +727,12 @@ static long LL_DSB_SetCurrentPosition(LLDSBuffer* b, unsigned long pos)
     b->cursor = (unsigned int)pos;
     b->play_base = (unsigned int)pos;
     b->play_t0 = ds_now_ms();
+    /* A seek on a PLAYING buffer has to move the sound too. On a stopped one it
+     * does not: the Play that follows starts the source node at the new cursor,
+     * and every caller in the game (input2.c:350, audio2.c:216, movie.c:597)
+     * seeks before it plays. */
+    if (b->playing)
+        ds_audio_start(b);
     return DS_OK;
 }
 
@@ -595,6 +755,7 @@ static long LL_DSB_SetVolume(LLDSBuffer* b, long vol)
     /* FadeSamples (narration2.c 0x004967f0) reads this back every frame and
      * steps it, so it has to be stored, clamped the way DirectSound clamps. */
     b->volume = vol;
+    ds_audio_levels(b);
     return DS_OK;
 }
 
@@ -605,6 +766,7 @@ static long LL_DSB_SetPan(LLDSBuffer* b, long pan)
     if (pan < -10000L)
         pan = -10000L;
     b->pan = pan;
+    ds_audio_levels(b);
     return DS_OK;
 }
 
@@ -617,6 +779,8 @@ static long LL_DSB_SetFrequency(LLDSBuffer* b, unsigned long freq)
     b->frequency = (unsigned int)freq;
     b->play_base = b->cursor;
     b->play_t0 = ds_now_ms();
+    if (b->voice)
+        ll_audio_set_rate(b->voice, ds_rate_mul(b));
     return DS_OK;
 }
 
@@ -626,6 +790,8 @@ static long LL_DSB_Stop(LLDSBuffer* b)
     ds_tick(b);
     b->playing = 0;
     b->looping = 0;
+    if (b->voice)
+        ll_audio_stop(b->voice);
     return DS_OK;
 }
 

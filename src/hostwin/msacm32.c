@@ -20,21 +20,27 @@
  *   movie2.c 0x004... StartMovieAudio -- the FMV audio track, unreachable while
  *     avifil32.c reports AVIERR_FILEOPEN (that file's header explains).
  *
- * WHAT IT DOES.  The real ACM's job in this game is two conversions:
- * IMA/MS ADPCM (tag 0x11 / 0x02) to 16-bit PCM, and PCM to PCM. The second one
- * is a genuine, complete conversion and it is implemented here -- including the
- * 8-bit-unsigned to 16-bit-signed widening a real PCM converter does, which is
- * the one case where the bytes actually change. The first needs an ADPCM
- * decoder; it is refused with ACMERR_NOTPOSSIBLE (512), which is what a real
- * ACM returns when no driver can do the conversion, and which every caller
- * handles (ConvertWAVToPCM returns 0 with `data` intact; CreateSampleFromWAV
- * frees and returns 0; the shipped game behaves the same way on a machine
- * whose ADPCM codec is missing).
+ * WHAT IT DOES.  The real ACM's job in this game is two conversions: PCM to
+ * 16-bit PCM, and MS ADPCM to 16-bit PCM. Both are implemented -- the first
+ * including the 8-bit-unsigned to 16-bit-signed widening a real PCM converter
+ * does, the second (PORT-B11) as a complete MS ADPCM decoder. IMA ADPCM
+ * (tag 0x11) and anything else compressed is still refused with
+ * ACMERR_NOTPOSSIBLE (512), which is what a real ACM returns when no driver can
+ * do the conversion and which every caller handles (ConvertWAVToPCM returns 0
+ * with `data` intact; CreateSampleFromWAV frees and returns 0; the shipped game
+ * behaves the same way on a machine whose codec is missing).
  *
- * So: PCM samples load and play (silently -- dsound.c is a silent device with a
- * wall-clock cursor), ADPCM samples do not load. Which of the archives' samples
- * are which is a question for a lane with an asset census; the honest statement
- * is that the shim converts what it can convert and says so when it cannot.
+ * THE CENSUS, because "what it can convert" deserves numbers. Over the RIFF/WAVE
+ * members of all three shipped archives there are 155 samples:
+ *
+ *     tag 1  mono 22050  16-bit   122      tag 2 (MS ADPCM) mono 22050  4-bit  21
+ *     tag 1  mono 22050   8-bit    11      tag 1 mono 44100 16-bit              1
+ *
+ * and every file in gamedata/disc/Speech -- all 1,266 of them, 86 minutes of
+ * narration -- is MS ADPCM mono 22050. Before PORT-B11 this file converted 134
+ * of the 155 and not one line of speech; it now converts all 155 and all 1,266.
+ * The decoder was checked against an independent reference over every one of
+ * those speech files and is byte-identical.
  *
  * FORMAT STRUCT.  WAVEFORMATEX, as resaudio2.c:128 (packed, 0x12) and audio4.c:42
  * (natural alignment, 0x14) both spell it -- the field OFFSETS are identical and
@@ -65,6 +71,7 @@
 #define ACMERR_UNPREPARED       514
 
 #define WAVE_FORMAT_PCM         1
+#define WAVE_FORMAT_ADPCM       2    /* MS ADPCM (PORT-B11) */
 
 /* ACM_STREAMOPENF_*: the game passes 4 (NONREALTIME) at all three call sites. */
 #define ACM_STREAMOPENF_QUERY   1
@@ -80,7 +87,121 @@ struct ll_wfx {
     unsigned int   nAvgBytesPerSec;
     unsigned short nBlockAlign;
     unsigned short wBitsPerSample;
+    unsigned short cbSize;
 };
+
+/* The MS ADPCM decode parameters, all of them out of the format block itself.
+ * PORT-B11. `ncoef` is 0 for a format that is not MS ADPCM. */
+#define LL_ADPCM_MAX_COEF 16
+struct ll_acm_fmt {
+    int            channels;
+    unsigned int   samples_per_block;
+    unsigned int   block_align;
+    unsigned int   ncoef;
+    int            coef1[LL_ADPCM_MAX_COEF];
+    int            coef2[LL_ADPCM_MAX_COEF];
+};
+
+/* ---- MS ADPCM (WAVE_FORMAT_ADPCM, tag 2) -------------------------------
+ * PORT-B11. This is the format a fifth of the sound effects and ALL of the
+ * speech are stored in, so without it the game loads 134 of its 155 archived
+ * samples and not one line of narration: `CreateSampleFromWAV` (data2.c:591)
+ * calls ConvertWAVToPCM unconditionally and drops the sample when it fails,
+ * and PlayNarrationFile (audio4.c:185) opens an ACM stream per speech file.
+ * Measured over gamedata/disc/Legoland.res: 122 samples PCM16 mono 22050,
+ * 21 MS ADPCM mono 22050, 11 PCM8, 1 PCM16 44100; every file in
+ * gamedata/disc/Speech is MS ADPCM mono 22050, 4-bit, blockAlign 512.
+ *
+ * The format: per block, one byte of predictor INDEX per channel, then an
+ * int16 delta, then the two most recent samples (sample1 then sample2) per
+ * channel; the block then emits sample2 and sample1 before decoding nibbles,
+ * high nibble first, channels interleaved. The predictor is a two-tap
+ * recurrence whose coefficient pairs come from the format's own extension
+ * block -- wSamplesPerBlock at +0x12, wNumCoef at +0x14, then wNumCoef pairs
+ * of int16 -- which is why `struct ll_wfx` had to grow to carry them: the
+ * standard seven pairs are merely the usual contents of that table, not part
+ * of the codec.
+ *
+ * Cross-checked against web/adpcm.js, the JS decoder already in this tree
+ * (ADAPT table, the >> 8 predictor scaling, the 16-floor on delta, the
+ * sample2-then-sample1 preamble). The arithmetic here is the same, in C. */
+
+static const int kAdpcmAdapt[16] = {
+    230, 230, 230, 230, 307, 409, 512, 614,
+    768, 614, 512, 409, 307, 230, 230, 230
+};
+
+static int adpcm_clamp16(int v)
+{
+    if (v >  32767) return  32767;
+    if (v < -32768) return -32768;
+    return v;
+}
+
+/* Decode ONE block. Returns the number of 16-bit samples written (per all
+ * channels together), 0 if the block is malformed or there is no room. */
+static unsigned int adpcm_block(const struct ll_acm_fmt* f,
+                                const unsigned char* src, unsigned int srclen,
+                                short* dst, unsigned int dstcap)
+{
+    int ch = f->channels, c;
+    int coef1[2], coef2[2], delta[2], s1[2], s2[2];
+    unsigned int off = 0, want, n, out = 0;
+    unsigned int nibbles;
+
+    if (ch < 1 || ch > 2)
+        return 0;
+    if (srclen < (unsigned int)(7 * ch))
+        return 0;
+    for (c = 0; c < ch; c++) {
+        unsigned int bp = src[off++];
+        if (bp >= f->ncoef)
+            bp = 0;                  /* a corrupt index picks the identity-ish pair */
+        coef1[c] = f->coef1[bp];
+        coef2[c] = f->coef2[bp];
+    }
+    for (c = 0; c < ch; c++) { delta[c] = (short)(src[off] | (src[off+1] << 8)); off += 2; }
+    for (c = 0; c < ch; c++) { s1[c]    = (short)(src[off] | (src[off+1] << 8)); off += 2; }
+    for (c = 0; c < ch; c++) { s2[c]    = (short)(src[off] | (src[off+1] << 8)); off += 2; }
+
+    /* The preamble, oldest first. */
+    for (c = 0; c < ch; c++) {
+        if (out + 1 >= dstcap) return out;
+        dst[out++] = (short)s2[c];
+    }
+    for (c = 0; c < ch; c++) {
+        if (out >= dstcap) return out;
+        dst[out++] = (short)s1[c];
+    }
+
+    /* How many nibbles this block actually carries: what the format says, or
+     * what the bytes allow, whichever is smaller. A short final block (the
+     * data chunk need not be a whole number of blocks) decodes as far as it
+     * goes rather than reading past its end. */
+    want = (f->samples_per_block > 2 ? f->samples_per_block - 2u : 0u) * (unsigned int)ch;
+    nibbles = (srclen - off) * 2u;
+    if (want > nibbles)
+        want = nibbles;
+
+    c = 0;
+    for (n = 0; n < want; n++) {
+        int nib = (n & 1) ? (src[off + (n >> 1)] & 0x0f)
+                          : ((src[off + (n >> 1)] >> 4) & 0x0f);
+        int err = nib >= 8 ? nib - 16 : nib;
+        int pred = (s1[c] * coef1[c] + s2[c] * coef2[c]) >> 8;
+        int val = adpcm_clamp16(pred + delta[c] * err);
+        int nd;
+        if (out >= dstcap)
+            break;
+        dst[out++] = (short)val;
+        nd = (kAdpcmAdapt[nib] * delta[c]) >> 8;
+        delta[c] = nd < 16 ? 16 : nd;
+        s2[c] = s1[c];
+        s1[c] = val;
+        c = ch == 1 ? 0 : (c + 1) % ch;
+    }
+    return out;
+}
 
 static void wfx_read(const void* p, struct ll_wfx* out)
 {
@@ -91,6 +212,47 @@ static void wfx_read(const void* p, struct ll_wfx* out)
     memcpy(&out->nAvgBytesPerSec, b + 0x08, 4);
     memcpy(&out->nBlockAlign,     b + 0x0c, 2);
     memcpy(&out->wBitsPerSample,  b + 0x0e, 2);
+    memcpy(&out->cbSize,          b + 0x10, 2);
+}
+
+/* The MS ADPCM extension that follows the 18-byte WAVEFORMATEX: wSamplesPerBlock
+ * +0x12, wNumCoef +0x14, then wNumCoef pairs of int16. The game hands this file
+ * the WHOLE `fmt ` chunk it read off disk (data2.c:627 allocates the chunk's own
+ * size and audio5.c:219 keeps the pointer), so the extension is there to read --
+ * but `cbSize` is FORCED TO 0 for a chunk of 0x12 bytes or less (data2.c:632),
+ * so a tag-2 format with no extension is a malformed file and is refused rather
+ * than decoded against a guessed coefficient table. */
+static int adpcm_fmt_read(const void* p, const struct ll_wfx* w,
+                          struct ll_acm_fmt* f)
+{
+    const unsigned char* b = (const unsigned char*)p;
+    unsigned int i;
+
+    memset(f, 0, sizeof(*f));
+    f->channels    = w->nChannels;
+    f->block_align = w->nBlockAlign;
+    if (w->cbSize < 4)
+        return 0;
+    f->samples_per_block = (unsigned int)(b[0x12] | (b[0x13] << 8));
+    f->ncoef             = (unsigned int)(b[0x14] | (b[0x15] << 8));
+    if (f->ncoef == 0 || f->ncoef > LL_ADPCM_MAX_COEF)
+        return 0;
+    if (w->cbSize < 4u + 4u * f->ncoef)
+        return 0;
+    for (i = 0; i < f->ncoef; i++) {
+        int a = b[0x16 + 4 * i]     | (b[0x17 + 4 * i] << 8);
+        int c = b[0x18 + 4 * i]     | (b[0x19 + 4 * i] << 8);
+        f->coef1[i] = (short)a;
+        f->coef2[i] = (short)c;
+    }
+    /* A block has to hold its own header, and the sample count has to be
+     * consistent with the block size: 4 bits per sample after the 7-byte
+     * per-channel preamble. */
+    if (f->block_align < (unsigned int)(7 * f->channels))
+        return 0;
+    if (f->samples_per_block < 2)
+        return 0;
+    return 1;
 }
 
 /* ACMSTREAMHEADER, by offset, for the same reason. */
@@ -124,9 +286,11 @@ static void* h_ptr(const void* h, int off)
  * the source width and the channel count. */
 struct ll_acm {
     unsigned int   magic;
-    unsigned short src_bits;     /* 8 or 16 */
+    unsigned short src_tag;      /* 1 PCM, 2 MS ADPCM */
+    unsigned short src_bits;     /* 8 or 16 for PCM, 4 for ADPCM */
     unsigned short channels;
     unsigned int   rate;
+    struct ll_acm_fmt adpcm;     /* valid when src_tag == 2 */
 };
 
 static struct ll_acm* acm_of(void* has)
@@ -144,9 +308,20 @@ static struct ll_acm* acm_of(void* has)
     return s;
 }
 
-/* How many destination bytes `srclen` source bytes become. */
+/* How many destination bytes `srclen` source bytes become.
+ *
+ * For MS ADPCM this is deliberately a CEILING: the game mallocs exactly what
+ * this returns (audio4.c:213, resaudio2.c:201) and then reads the real figure
+ * out of cbDstLengthUsed, so an over-estimate wastes a few hundred bytes while
+ * an under-estimate overruns the heap. A partial final block still decodes, so
+ * the block count is rounded up. */
 static unsigned int acm_dst_bytes(const struct ll_acm* s, unsigned int srclen)
 {
+    if (s->src_tag == WAVE_FORMAT_ADPCM) {
+        unsigned int ba     = s->adpcm.block_align;
+        unsigned int blocks = ba ? (srclen + ba - 1u) / ba : 0u;
+        return blocks * s->adpcm.samples_per_block * 2u * (unsigned int)s->channels;
+    }
     return s->src_bits == 8 ? srclen * 2u : srclen;
 }
 
@@ -167,12 +342,15 @@ int acmStreamOpen(void** phas, void* hdrv, void* srcfmt, void* dstfmt,
     wfx_read(srcfmt, &src);
     wfx_read(dstfmt, &dst);
 
-    /* The conversion this shim does not have. Both ADPCM tags the game could
-     * carry (0x02 MS ADPCM, 0x11 IMA ADPCM) land here, and so would anything
-     * else compressed. */
-    if (src.wFormatTag != WAVE_FORMAT_PCM || dst.wFormatTag != WAVE_FORMAT_PCM) {
+    /* The destination is always PCM -- every caller builds it that way -- and
+     * the source is PCM or MS ADPCM. IMA ADPCM (0x11) and everything else
+     * compressed still lands in the refusal below, which is what a real ACM
+     * with a missing codec answers and what the game is written to survive
+     * (data2.c drops the sample; movie2.c drops the movie's audio). */
+    if (dst.wFormatTag != WAVE_FORMAT_PCM ||
+        (src.wFormatTag != WAVE_FORMAT_PCM && src.wFormatTag != WAVE_FORMAT_ADPCM)) {
         ll_host_trace("acmStreamOpen: no driver for format 0x%04x -> 0x%04x"
-                      " (ACMERR_NOTPOSSIBLE; no ADPCM decoder in this port)",
+                      " (ACMERR_NOTPOSSIBLE)",
                       (unsigned)src.wFormatTag, (unsigned)dst.wFormatTag);
         return ACMERR_NOTPOSSIBLE;
     }
@@ -183,8 +361,19 @@ int acmStreamOpen(void** phas, void* hdrv, void* srcfmt, void* dstfmt,
         return ACMERR_NOTPOSSIBLE;
     if (dst.wBitsPerSample != 16)
         return ACMERR_NOTPOSSIBLE;
-    if (src.wBitsPerSample != 8 && src.wBitsPerSample != 16)
+    if (src.wFormatTag == WAVE_FORMAT_PCM &&
+        src.wBitsPerSample != 8 && src.wBitsPerSample != 16)
         return ACMERR_NOTPOSSIBLE;
+    if (src.wFormatTag == WAVE_FORMAT_ADPCM) {
+        struct ll_acm_fmt probe;
+        if (src.nChannels < 1 || src.nChannels > 2)
+            return ACMERR_NOTPOSSIBLE;
+        if (!adpcm_fmt_read(srcfmt, &src, &probe)) {
+            ll_host_trace("acmStreamOpen: MS ADPCM format block unusable"
+                          " (cbSize %u)", (unsigned)src.cbSize);
+            return ACMERR_NOTPOSSIBLE;
+        }
+    }
 
     if (flags & ACM_STREAMOPENF_QUERY)
         return MMSYSERR_NOERROR;              /* "yes, possible"; no handle */
@@ -195,9 +384,19 @@ int acmStreamOpen(void** phas, void* hdrv, void* srcfmt, void* dstfmt,
     if (!s)
         return MMSYSERR_INVALPARAM;
     s->magic = ACM_STREAM_MAGIC;
+    s->src_tag = src.wFormatTag;
     s->src_bits = src.wBitsPerSample;
     s->channels = src.nChannels;
     s->rate = src.nSamplesPerSec;
+    memset(&s->adpcm, 0, sizeof s->adpcm);
+    if (src.wFormatTag == WAVE_FORMAT_ADPCM) {
+        adpcm_fmt_read(srcfmt, &src, &s->adpcm);
+        ll_host_trace("acmStreamOpen: MS ADPCM %u Hz %u ch, block %u,"
+                      " %u samples/block, %u coef pairs",
+                      (unsigned)src.nSamplesPerSec, (unsigned)src.nChannels,
+                      s->adpcm.block_align, s->adpcm.samples_per_block,
+                      s->adpcm.ncoef);
+    }
     *phas = s;
     return MMSYSERR_NOERROR;
 }
@@ -295,6 +494,36 @@ int acmStreamConvert(void* has, void* phdr, unsigned long flags)
     h_set_u32(phdr, LL_ACMH_DSTUSED, 0);
     if (!src || !dst)
         return MMSYSERR_INVALPARAM;
+
+    /* MS ADPCM, block by block. The source is consumed in whole blocks -- a
+     * block is the codec's unit of state, so half of one decodes to noise --
+     * and cbSrcLengthUsed reports only the blocks that fitted the destination.
+     * That matters for the speech stream: RefillNarrationRing (narration2.c:564)
+     * converts chunks of exactly ten blocks and advances its source ring by
+     * cbSrcLengthUsed. */
+    if (s->src_tag == WAVE_FORMAT_ADPCM) {
+        unsigned int ba = s->adpcm.block_align;
+        unsigned int src_used = 0, dst_used = 0;
+        if (!ba)
+            return MMSYSERR_INVALPARAM;
+        while (src_used < srclen) {
+            unsigned int have = srclen - src_used;
+            unsigned int blk  = have < ba ? have : ba;
+            unsigned int room = (dstcap - dst_used) / 2u;
+            unsigned int got;
+            if (room == 0)
+                break;
+            got = adpcm_block(&s->adpcm, src + src_used, blk,
+                              (short*)(void*)(dst + dst_used), room);
+            if (got == 0)
+                break;
+            dst_used += got * 2u;
+            src_used += blk;
+        }
+        h_set_u32(phdr, LL_ACMH_SRCUSED, src_used);
+        h_set_u32(phdr, LL_ACMH_DSTUSED, dst_used);
+        return MMSYSERR_NOERROR;
+    }
 
     /* Clip to whichever buffer runs out first -- a short destination is a
      * partial conversion, not an error, and that is what the Used counts are
