@@ -2144,8 +2144,8 @@ def main():
     n_rw_str = sum(len(r['str']) for r in rw_rows.values())
     n_rw_sym = sum(len(r['sym']) for r in rw_rows.values())
 
-    rw_md = ['# Image-range words in the rebuilt closure (the census that does',
-             '# not ask the declarations)', '',
+    rw_md = ['# Image-range words in the rebuilt closure', '',
+             '*The census that does not ask the declarations.*', '',
              "`pointers.md` counts the words the game's own declarations call",
              'pointers. This counts the words the IMAGE says are addresses, in every',
              'emitted object, whether or not any declaration reaches it -- because a',
