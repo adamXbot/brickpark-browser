@@ -1261,17 +1261,37 @@ tile field makes the **2:1 isometric terrain grid fill the whole 640×340 map
 area on the next frame**, with no shim change at all — the software renderer,
 the locked surface, the `Blt` and the canvas all work.
 
-**What is still between here and a rendered park** is the typed-callback class,
-twice. `llidb_odf.c:294`'s `obj->fa4(obj->elem)` is reached for *every*
+**The first thing behind it was PORT-M7's**, found here independently and from
+the other end: `llidb_odf.c:294`'s `obj->fa4(obj->elem)` is reached for *every*
 OC_USEDLL class, because no `.dll` ships anywhere in `gamedata` and
-`LoadLibraryExA` is refused — and the slot holds `gen-browser/aliases.c:277`'s
-`void LegoShop1_Create(void) { ((void(*)(void))&LegoShop1_LoadResources)(); }`,
-a `() -> void` cast forwarder in a `(i32) -> void` call. 26 of the 72 rows in
-`manifest.md`'s "Cast forwarders" table are this exact shape. **A7-2 is also
-localised**: it is the **MAP** button specifically (the other five toolbar
-buttons all work), and it is `RenderFullMap` declared `(void)`
-(`mapscreen.c:103`/`:105`, `renderview.c:2935`) stored in `sprite2.c:199`'s
-`void (*)(SpriteRec*)` slot and called at `sprite2.c:253`.
+`LoadLibraryExA` is refused — and the slot held a `() -> void` cast forwarder.
+M7 merged mid-lane and took cast forwarders 72 → 0; merged in here and the trap
+is gone.
+
+**What is in front of the park now is a THIRD class, and it is new.**
+`sweep3.c:162`'s `SetStandardCallbacks` writes five **hard-coded function
+addresses as integer literals**:
+
+```c
+p->f3 = (void*)0x45efe0;   /* AddBasicObject -- PutObjOnMap's cb_add */
+```
+
+These are literals in the CODE, not pointer words in `.data`, so `gen_link.py`
+can never see them: the original is `mov dword ptr [ecx+0x98], 0x45efe0`, an
+immediate that *is* the function address, and the recovery spelled the immediate
+rather than the symbol. On wasm a function pointer is a table index and
+4,517,856 is not one, so the first perimeter object of every level dies with
+`table index is out of bounds` in `PutObjOnMap`. **29 sites in three files**:
+`sweep3.c:164-168` (5, every ODF class), `loaders.c:161-191` (21, the BOATING
+SCHOOL family's built-in GetInterfaces — the file's own comment says "referenced
+by address only"), `coaster10.c:380/475/568` (3, `.data` addresses rather than
+`.text`). The fix is the usual guard, taking `&Fn` instead of the literal.
+
+**A7-2 is localised and still open after M7** (M7 fixed `mapscreen.c`'s
+IconHandler, a different slot): it is the **MAP** button specifically — the
+other five toolbar buttons all work — and it is `RenderFullMap` declared
+`(void)` (`mapscreen.c:115`/`:117`, `renderview.c:2935`) stored in
+`sprite2.c:199`'s `void (*)(SpriteRec*)` slot and called at `sprite2.c:253`.
 
 **A7-3, measured and dismissed.** The one-byte reads are the game's own
 `ReadLine` (`levelkw.c:865`) through the completely unbuffered `RES_ReadFile`
