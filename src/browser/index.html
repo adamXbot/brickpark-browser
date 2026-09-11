@@ -201,9 +201,29 @@
   // unfindable. ll_host_trace (user32.c) and kernel32.c's own copy both prefix
   // with "HOST ", and ddraw.c's one-off window line with "[hostwin] ", so those
   // two prefixes are the filter. Capped at 300: this is a tail, not a log.
+  //
+  // PORT-B9: 300 is a tail of the WRONG END when the question is "what did the
+  // park loader ask the host for". A7 measured 298 of the last 300 host calls
+  // as one-byte ReadFiles, which is precisely a 300-line window that cannot
+  // reach back to the CreateFileA that opened the file. Two query parameters
+  // fix that without changing the default: `?tracekeep=N` resizes the ring,
+  // and `?tracegrep=RE` keeps only the lines matching a regular expression --
+  // `?trace=1&tracegrep=CreateFileA` is a hundred lines instead of a hundred
+  // thousand, and the ring then spans the whole run.
   var LL_TRACE_KEEP = 300;
+  var traceGrep = null;
+  (function () {
+    var m = /[?&]tracekeep=(\d+)/.exec(location.search);
+    if (m) LL_TRACE_KEEP = parseInt(m[1], 10);
+    m = /[?&]tracegrep=([^&]+)/.exec(location.search);
+    if (m) {
+      try { traceGrep = new RegExp(decodeURIComponent(m[1])); }
+      catch (e) { console.warn('[page] bad ?tracegrep=:', e); }
+    }
+  })();
   var traceLog = [];
   function noteTrace(text) {
+    if (traceGrep && !traceGrep.test(text)) return;
     traceLog.push(text);
     if (traceLog.length > LL_TRACE_KEEP) traceLog.shift();
     traceCountEl.textContent = traceLog.length;
@@ -423,6 +443,187 @@
       nameWidth: I[a[5] >> 2],             /* g_profile_name_len, pixels */
       newProfilePopup: I[a[6] >> 2]        /* g_newprof_popup_up */
     };
+  };
+
+  // PORT-B9: every global main.c's LL_DBG_TABLE names, as {name: address}.
+  // The names come from the module (ll_dbg_name), so this list cannot drift
+  // from the addresses the way a hand-kept copy would.
+  window.llAddrs = function () {
+    if (typeof Module._ll_dbg_name !== 'function') return null;
+    var out = {}, i, p, s, c;
+    for (i = 0; i < 256; i++) {
+      p = Module._ll_dbg_name(i);
+      if (!p) break;
+      s = '';
+      while ((c = HEAPU8[p++])) s += String.fromCharCode(c);
+      out[s] = Module._ll_dbg_addr(i);
+    }
+    return out;
+  };
+  // The render state RenderView reads (renderview.c:150's contract block),
+  // decoded. A7-1 asks "why does the frame draw the HUD and not the map", and
+  // the map renderer draws in SOFTWARE between one Lock and one Unlock -- no
+  // host call it makes or fails to make is visible to ?beat=, so the answer
+  // can only come out of the game's own memory.
+  window.llRender = function () {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32, U = HEAPU8;
+    function u16(p) { return U[p] | (U[p + 1] << 8); }
+    function i32(p) { return I[p >> 2]; }
+    function rect(p) { return [i32(p), i32(p + 4), i32(p + 8), i32(p + 12)]; }
+    var map = i32(a.g_map);            // MapHdr*
+    var rows = i32(a.g_map_rows);      // Cell**
+    var tile = i32(a.g_default_tile);
+    var sprp = tile >= 0 && tile < 2048 ? i32(a.g_tile_sprites + tile * 4) : 0;
+    return {
+      gameMode: i32(a.g_game_mode),
+      screenMode: i32(a.g_screen_mode),
+      curScreen: i32(a.g_cur_screen),
+      map: map,
+      mapHdr: map ? {
+        viewW: u16(map + 0x10), viewH: u16(map + 0x12),
+        width: u16(map + 0x14), height: u16(map + 0x16),
+        originX: u16(map + 0x20), originY: u16(map + 0x22)
+      } : null,
+      mapRows: rows,
+      row0: rows ? i32(rows) : 0,
+      scrollX: i32(a.g_scroll_x), scrollY: i32(a.g_scroll_y),
+      defaultTile: tile,
+      tileSprite: sprp,
+      tileH: sprp ? u16(sprp + 0x16) : 0,
+      tileW: sprp ? u16(sprp + 0x14) : 0,
+      bgFullUpdate: i32(a.g_bg_full_update),
+      viewDirty: i32(a.g_view_dirty),
+      groundLast: [i32(a.g_ground_last_x), i32(a.g_ground_last_y)],
+      renderClip: rect(a.g_render_clip),
+      clipRect: rect(a.g_clip_rect),
+      ddsdBits: i32(a.g_ddsd_bits), ddsdPitch: i32(a.g_ddsd_pitch),
+      videoLocked: i32(a.g_video_locked),
+      present: i32(a.g_present),
+      primary: i32(a.g_primary), drawSurface: i32(a.g_draw_surface),
+      surface78: i32(a.g_surface_78), target: i32(a.g_target),
+      editState: i32(a.g_edit_state), showCursor: i32(a.g_show_cursor),
+      odfHead: i32(a.g_odf_head),
+      parkStartPending: i32(a.g_park_start_pending),
+      simFrame: i32(a.g_sim_frame),
+      interfaceBg: i32(a.g_ci_interface_bg),
+      // The level loader's own state -- how far LoadBaseMap got.
+      mapLoaded: i32(a.g_map_loaded),
+      mapReady: i32(a.g_map_ready),
+      mapElem: i32(a.g_map_elem),
+      tsmElem: i32(a.g_tsm_mapping_elem),
+      terrainElem: i32(a.g_terrain_elem),
+      terrainElemData: i32(a.g_terrain_elem_data),
+      terrainObjects: i32(a.g_terrain_objects),
+      perimCount: i32(a.g_perim_count),
+      perimAux: i32(a.g_perim_aux),
+      arrayA: i32(a.g_array_A), arrayB: i32(a.g_array_B),
+      envClass: i32(a.g_env_class),
+      levelDbActive: i32(a.g_level_db_active),
+      freeplayDb: i32(a.g_freeplay_db),
+      buildInProgress: i32(a.g_build_in_progress),
+      mapLoading: i32(a.g_map_loading),
+      // ParseKeywordFile writes this only when RES_OpenFile succeeded.
+      keywordFile: (function () { var p = a.g_keyword_file_name, s = '', c;
+                                  while ((c = U[p++]) && s.length < 128)
+                                    s += String.fromCharCode(c);
+                                  return s; })(),
+      levelNumber: i32(a.g_level_number)
+    };
+  };
+
+  // PORT-B9: the RES master directory, walked. `llRes()` lists every bucket
+  // with its member count; `llRes("Scripts\\")` lists that bucket's members.
+  // res.c's RES_OpenFile splits the path at the last backslash, looks the
+  // bucket up with _stricmp and then walks the bucket with stricmp, so a name
+  // that does not appear here is a name the game cannot open.
+  window.llRes = function (bucket) {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32, U = HEAPU8;
+    function i32(p) { return I[p >> 2]; }
+    function str(p) { var s = '', c; if (!p) return null;
+                      while ((c = U[p++])) s += String.fromCharCode(c); return s; }
+    var out = [], d = i32(a.g_master_dirs), guard = 0;
+    while (d && guard++ < 4096) {
+      var name = str(i32(d + 8));
+      var e = i32(d + 4), n = 0, members = [], g2 = 0;
+      while (e && g2++ < 100000) {
+        n++;
+        if (bucket != null) members.push({ name: str(i32(e + 0x1c)),
+                                           size: i32(e + 0x14),
+                                           base: i32(e + 0x18) });
+        e = i32(e + 4);
+      }
+      if (bucket == null) out.push({ dir: name, files: n });
+      else if (String(name).toLowerCase() === String(bucket).toLowerCase())
+        return { dir: name, files: n, members: members };
+      d = i32(d);
+    }
+    if (bucket != null) return { dir: bucket, missing: true,
+                                 buckets: out.map(function (b) { return b.dir; }) };
+    var vols = [], v = i32(a.g_master_vols), g3 = 0;
+    while (v && g3++ < 64) { vols.push(str(v + 8)); v = i32(v); }
+    return { buckets: out, volumes: vols };
+  };
+
+  // PORT-B9 / A7-1: the level keyword table, read and (optionally) repaired.
+  //
+  // `movie.c:239` declares the 93-pair table as ONE `const void*`, so the
+  // generator is never told that words 1..188 hold pointers: the handler
+  // halves resolve through the function-symbol path anyway, but every KEYWORD
+  // STRING half keeps the raw x86 VA it had in the image. ParseKeywordSections
+  // then does `strcmp(words[0], table[i].keyword)` against a wild address, no
+  // keyword ever matches, `MAP "one"` never runs, LoadBaseMap never runs, and
+  // the park's 36,864 map cells stay zero -- which is exactly the frame A7-1
+  // describes: the HUD draws, the map area does not.
+  //
+  // llKeywordTable() reports it. llFixKeywordTable() translates each raw VA
+  // through the object that contains it and writes the linear address back --
+  // the same arithmetic gen_link.py's "interior of a block" rule would have
+  // done at build time. This is a DIAGNOSTIC, not a fix: the fix belongs in
+  // the generator (or in the declaration), and is PORT-A's.
+  function llKwSpans() {
+    var a = window.llAddrs();
+    // [x86 base, size, linear base] for the two blobs the keyword strings
+    // land inside, plus the table itself (one word points into its own tail).
+    return [[0x004bb9ec, 992, a.g_str_purge],
+            [0x004bbdcc, 696, a.g_str_none],
+            [0x004bb6f8, 756, a.g_level_db_sections]];
+  }
+  window.llKeywordTable = function () {
+    var a = window.llAddrs(), I = HEAP32, U = HEAPU8, spans = llKwSpans();
+    function str(p) { var s = '', c, n = 0;
+                      while ((c = U[p++]) && n++ < 40) s += String.fromCharCode(c);
+                      return s; }
+    var base = a.g_level_db_sections, out = [], raw = 0, ok = 0, i;
+    for (i = 0; i < 93; i++) {
+      var w = I[(base + i * 8) >> 2];
+      var isRaw = w >= 0x00400000 && w < 0x00900000;
+      if (isRaw) raw++; else ok++;
+      if (i < 16 || isRaw === false)
+        out.push({ i: i, word: '0x' + (w >>> 0).toString(16),
+                   raw: isRaw, reads: str(w) });
+    }
+    return { rawKeywordPointers: raw, resolved: ok, sample: out.slice(0, 12) };
+  };
+  window.llFixKeywordTable = function () {
+    var a = window.llAddrs(), I = HEAP32, spans = llKwSpans();
+    var base = a.g_level_db_sections, fixed = 0, unmapped = [], i, j;
+    for (i = 0; i < 93; i++) {
+      var at = (base + i * 8) >> 2, w = I[at];
+      if (!(w >= 0x00400000 && w < 0x00900000)) continue;
+      for (j = 0; j < spans.length; j++) {
+        if (w >= spans[j][0] && w < spans[j][0] + spans[j][1]) {
+          I[at] = spans[j][2] + (w - spans[j][0]);
+          fixed++;
+          break;
+        }
+      }
+      if (j === spans.length) unmapped.push('0x' + (w >>> 0).toString(16));
+    }
+    return { fixed: fixed, unmapped: unmapped };
   };
 
   // fps. llFrame(n) is called by ll_canvas.js once per PRESENTED frame, so this

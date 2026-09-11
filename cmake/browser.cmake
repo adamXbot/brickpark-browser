@@ -206,7 +206,11 @@ target_link_options(legoland_browser PRIVATE
   # the failure mode that made this lane's prototype conflicts so expensive to
   # find. NOTE: it does NOT catch those conflicts -- a signature mismatch is a
   # wasm-ld WARNING and a poisoned call site, not an undefined symbol.
-  -sERROR_ON_UNDEFINED_SYMBOLS=1)
+  -sERROR_ON_UNDEFINED_SYMBOLS=1
+  # PORT-B9/B5: IDBFS, so a profile written this session is still there on the
+  # next page load (main.c mounts it over /gamedata/profiles). The JS library
+  # only -- no ASYNCIFY change is needed, this target already has it.
+  -lidbfs.js)
 set_target_properties(legoland_browser PROPERTIES
   SUFFIX ".html" OUTPUT_NAME "legoland"
   LINK_DEPENDS "${LL_WASM_LINK_DEPENDS}")
@@ -239,7 +243,8 @@ target_link_libraries(legoland_browser_named PRIVATE
   "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_gen_browser>")
 target_compile_options(legoland_browser_named PRIVATE -w)
 target_link_options(legoland_browser_named PRIVATE
-  ${LL_WASM_COMMON_LINK} ${LL_PRELOAD} -g2 -sERROR_ON_UNDEFINED_SYMBOLS=1)
+  ${LL_WASM_COMMON_LINK} ${LL_PRELOAD} -g2 -sERROR_ON_UNDEFINED_SYMBOLS=1
+  -lidbfs.js)
 set_target_properties(legoland_browser_named PROPERTIES
   SUFFIX ".html" OUTPUT_NAME "legoland_dbg"
   LINK_DEPENDS "${LL_WASM_LINK_DEPENDS}")
