@@ -26,20 +26,25 @@
  * InitScreen (screen.c:1343) builds four fonts from one LOGFONT in face
  * "Lego", all upright, no underline, quality 2:
  *
- *     g_font_24   lfHeight 24, lfWeight 700      text.c's SelectFont(.., 1)
- *     g_font_28   lfHeight 28, lfWeight 400      SelectFont(.., default)
- *     g_font_20   lfHeight 20, lfWeight 700      SelectFont(.., 2)
- *     g_font_18   lfHeight 18, lfWeight 600      SelectFont(.., 3)
+ *   0x0066808c  g_font_20   lfHeight 20, lfWeight 700   SelectFont(.., 1)
+ *   0x00668090  g_font_24   lfHeight 24, lfWeight 700   SelectFont(.., other)
+ *   0x00668094  g_font_18   lfHeight 18, lfWeight 600   SelectFont(.., 2)
+ *   0x00668098  g_font_28   lfHeight 28, lfWeight 400   SelectFont(.., 3)
+ *
+ * (PORT-B2 wrote that table with the ids one place out. The mapping above is
+ * the one the ADDRESSES give: screen.c:1866-1869 names the four handles,
+ * text.c:67-70 names the same four addresses as g_font_1 / g_font_default /
+ * g_font_2 / g_font_3, and text.c:167's SelectFont switches between them. It
+ * matters -- the report screen's body text is font 2, so it is the EIGHTEEN
+ * pixel face, not the twenty.)
  *
  * "Lego" is a proportional TrueType face that is not in this tree and could
  * not be rasterised here anyway. The faithful thing is therefore impossible;
  * the useful thing is a face whose METRICS are in the same ballpark, so the
  * game's own layout lands where it landed on Windows. A 6x7 ink box in an
- * 8-row cell, scaled to the requested lfHeight, gives an average advance of
- * about 0.45 em -- a normal proportional-font figure -- so a 640-pixel line
- * holds about 53 characters of the 24-pixel font, which is what the original
- * held. Lines that fitted still fit and lines that wrapped still wrap, within
- * a character.
+ * 8-row cell is scaled to the requested lfHeight, and each glyph advances by
+ * its own ink width (PORT-B10; see ll_font_metrics for why the game's shipped
+ * data requires that and what it costs to get wrong).
  *
  * The glyphs are drawn here as ASCII art, one line per character, eight quoted
  * six-column rows each. They are this lane's own drawing, not a copy of any
@@ -82,7 +87,7 @@ static const char* const kFaceArt[95] = {
 /*  -  */ "......" "......" "......" "XXXXX." "......" "......" "......" "......",
 /*  .  */ "......" "......" "......" "......" "......" "..XX.." "..XX.." "......",
 /*  /  */ ".....X" "....X." "...X.." "..X..." ".X...." "X....." "......" "......",
-/*  0  */ ".XXXX." "XX..XX" "XX.XXX" "XXXXXX" "XXX.XX" "XX..XX" ".XXXX." "......",
+/*  0  */ ".XXXX." "XX..XX" "XX..XX" "XX..XX" "XX..XX" "XX..XX" ".XXXX." "......",
 /*  1  */ "..XX.." ".XXX.." "..XX.." "..XX.." "..XX.." "..XX.." "XXXXXX" "......",
 /*  2  */ ".XXXX." "XX..XX" "....XX" "..XXX." ".XX..." "XX...." "XXXXXX" "......",
 /*  3  */ ".XXXX." "XX..XX" "....XX" "..XXX." "....XX" "XX..XX" ".XXXX." "......",
@@ -165,6 +170,10 @@ static const char* const kFaceArt[95] = {
 
 /* Rows packed to bits, bit (LL_GLYPH_W-1 - column). Built once. */
 static unsigned char g_face[95][LL_GLYPH_H];
+/* PORT-B10: the INK EXTENT of each glyph, in source columns. This is what makes
+ * the face PROPORTIONAL; see the "How wide is a character" block below. */
+static unsigned char g_ink_cols[95];
+static unsigned char g_ink_lo[95];
 static int           g_face_ready;
 
 static void face_build(void)
@@ -174,15 +183,34 @@ static void face_build(void)
         return;
     for (g = 0; g < 95; g++) {
         const char* art = kFaceArt[g];
+        int lo = LL_GLYPH_W, hi = -1;
         for (y = 0; y < LL_GLYPH_H; y++) {
             unsigned char bits = 0;
             for (x = 0; x < LL_GLYPH_W; x++)
-                if (art[y * LL_GLYPH_W + x] != '.')
+                if (art[y * LL_GLYPH_W + x] != '.') {
                     bits |= (unsigned char)(1u << (LL_GLYPH_W - 1 - x));
+                    if (x < lo) lo = x;
+                    if (x > hi) hi = x;
+                }
             g_face[g][y] = bits;
         }
+        /* A blank glyph (the space) still reserves room: half the cell, which
+         * is what a real proportional face gives a word gap. */
+        g_ink_cols[g] = (unsigned char)(hi >= lo ? hi - lo + 1 : LL_INK_W / 2);
+        g_ink_lo[g]   = (unsigned char)(hi >= lo ? lo : 0);
     }
     g_face_ready = 1;
+}
+
+/* The glyph's ink extent, for a byte. Out-of-range bytes draw as a blank but
+ * still reserve a full cell, so a stray high byte shifts the rest of the line
+ * rather than silently disappearing out of it. */
+static void ink_extent(unsigned char ch, int* lo, int* cols)
+{
+    face_build();
+    if (ch < 0x20 || ch > 0x7e) { *lo = 0; *cols = LL_INK_W; return; }
+    *lo   = g_ink_lo[ch - 0x20];
+    *cols = g_ink_cols[ch - 0x20];
 }
 
 /* The glyph rows for a byte. Everything outside 0x20..0x7e draws as a blank,
@@ -199,17 +227,46 @@ static const unsigned char* glyph_of(unsigned char ch)
 
 /* ---- metrics ------------------------------------------------------------ */
 /* lfHeight is a CELL height: em plus internal leading. The ink box is sized
- * from it so that the four fonts InitScreen creates stay distinguishable and
- * the average advance lands near 0.45 em:
+ * from it so the four fonts InitScreen creates stay distinguishable:
  *
- *   lfHeight  ink box   advance (400)   advance (>=600, bold)
- *       18      7x15          8                  9
- *       20      8x16          9                 10
- *       24     10x20         11                 12
- *       28     11x23         12                 13
+ *   lfHeight  ink box   nominal advance (widest glyph)   mean over English
+ *       18      7x12                    8                       6.9
+ *       20      8x13                    9                       7.8
+ *       24     10x16                   11                       9.6
+ *       28     11x18                   12                      10.6
  *
- * A bold face is the same glyph smeared one pixel to the right, so it costs one
- * pixel of advance -- the same relationship a real bold face has.
+ * HOW WIDE IS A CHARACTER  (PORT-B10)
+ * -------------------------------------------------------------------------
+ * PORT-B2 gave every character the SAME advance (`gw + 1`, plus one more for a
+ * bold face). That is a monospaced face, and the game's data is not written for
+ * one. The report/help screen is the proof: movie.c's LoadHelpTextFor reads the
+ * `Intervals\<key>` file as LINES and uimisc2.c's PrintReportLine (0x00491080)
+ * prints each one with DT_SINGLELINE into a box that is always 0x1cc = 460
+ * pixels wide (mapscreen4.c:318/324 pass x = 0xa). The lines are therefore
+ * PRE-WRAPPED IN THE SHIPPED DATA, and the longest of them -- the tutorial
+ * letter's "forgot, we'll practice building paths, too. There's no point in" --
+ * is 63 characters. 63 x 9 is 567 pixels, so with a monospaced advance a third
+ * of every line of the Duty Manager's briefing fell outside the rect and was
+ * clipped, mid-word. The face has to be proportional for the game's own text to
+ * fit the game's own boxes.
+ *
+ * So the advance is per glyph: the glyph's INK EXTENT (g_ink_cols, measured off
+ * the art in face_build) scaled into the ink box, plus one column of side
+ * bearing. 69 of the 95 glyphs use all six source columns and still cost the
+ * full `gw + 1`; the narrow ones (i, l, t, !, ., comma, the quotes) cost two or
+ * three, and a space costs half a cell. Over real English that averages 4.87 of
+ * 6 columns, which takes the 63-character line to 433 pixels -- inside the 460
+ * the game allows, with the whole of the difference coming from the letters
+ * that are genuinely narrow rather than from shrinking the face.
+ *
+ * A bold face no longer buys a pixel of advance. The bold weight here is the
+ * glyph smeared one pixel right, and at a 7-pixel ink box one extra pixel per
+ * character is 14% of the line -- which is most of what broke the report. The
+ * smear still draws; it lands in the side bearing.
+ *
+ * `m->advance` survives as the NOMINAL advance (the widest glyph) because the
+ * gdi32.c trace prints it and because a caller with no character in hand needs
+ * one number; nothing lays text out with it.
  */
 void ll_font_metrics(int cell_h, int weight, LLFontMetrics* m)
 {
@@ -223,16 +280,50 @@ void ll_font_metrics(int cell_h, int weight, LLFontMetrics* m)
     m->cell_h = h;
     m->weight = weight;
     m->bold   = weight >= 600;
-    m->gh     = h * 5 / 6;
+    /* THE INK BOX IS NOT THE CELL (PORT-B10). PORT-B2 made the ink 5/6 of the
+     * cell, which is what a font looks like if you forget that lfHeight buys
+     * internal leading and a descender as well as a capital. It cost the money
+     * readout its zeroes: money.c:156 hands the count to the cached-text
+     * blitter in a box exactly g->h tall -- the coin bar sprite's own height,
+     * about 20 pixels -- while the font it asks for is the lfHeight 24 one, so
+     * a 20-pixel ink box centred in a 24-pixel cell ran two rows past the
+     * bottom of the cell and every '0' lost the curve that closes it. (With
+     * PORT-B2's slashed zero art what was left read as a capital A: the park's
+     * 1030 bricks displayed as "1A3A".) Two thirds of the cell for the ink, a
+     * seventh of that again for the descender, and what is left biased towards
+     * the top as internal leading, all fit inside a box the game sizes from a
+     * sprite rather than from the font. */
+    m->gh     = h * 2 / 3;
     m->gw     = h * 5 / 12;
     if (m->gh < LL_INK_H) m->gh = LL_INK_H;
     if (m->gw < 3)        m->gw = 3;
-    m->advance = m->gw + 1 + (m->bold ? 1 : 0);
+    m->advance = m->gw + 1;         /* nominal: the widest glyph */
     m->line_h  = h;
     m->ascent  = m->gh;
 }
 
 void ll_font_default_metrics(LLFontMetrics* m) { ll_font_metrics(20, 400, m); }
+
+/* How wide the glyph's ink is, in pixels, at these metrics. draw_glyph draws
+ * exactly this many columns starting at the pen, so the ink and the pen cannot
+ * disagree -- which they would if the advance came from the ink extent while
+ * the drawing still started at the left edge of a six-column box: a full stop
+ * inks columns 2 and 3 of 6, so it would be drawn a third of a cell to the
+ * right of where its four pixels of advance said it was and would sit on the
+ * letter after it. */
+static int glyph_ink_px(const LLFontMetrics* m, unsigned char ch)
+{
+    int lo, cols;
+    ink_extent(ch, &lo, &cols);
+    return (cols * m->gw + LL_INK_W - 1) / LL_INK_W;
+}
+
+/* The pen movement for one character: its ink, plus one column of side
+ * bearing. */
+static int glyph_advance(const LLFontMetrics* m, unsigned char ch)
+{
+    return glyph_ink_px(m, ch) + 1;
+}
 
 int ll_font_text_width(const LLFontMetrics* m, const char* s, int n)
 {
@@ -242,7 +333,7 @@ int ll_font_text_width(const LLFontMetrics* m, const char* s, int n)
     for (i = 0; i < n; i++) {
         if (s[i] == '\n' || s[i] == '\r')
             break;
-        w += m->advance;
+        w += glyph_advance(m, (unsigned char)s[i]);
     }
     return w;
 }
@@ -257,7 +348,13 @@ static void draw_glyph(const LLFontTarget* t, const LLFontMetrics* m,
 {
     const unsigned char* rows = glyph_of(ch);
     int box_h = m->gh * (LL_INK_H + 1) / LL_INK_H;   /* room for row 7 */
+    int lo, cols, box_w;
     int ty, tx;
+
+    ink_extent(ch, &lo, &cols);
+    box_w = glyph_ink_px(m, ch);
+    if (box_w <= 0 || cols <= 0)
+        return;
 
     for (ty = 0; ty < box_h; ty++) {
         int py = y + ty;
@@ -271,8 +368,11 @@ static void draw_glyph(const LLFontTarget* t, const LLFontMetrics* m,
         if (py < t->clip.top || py >= t->clip.bottom)
             continue;
         row = (unsigned short*)((char*)t->bits + (long)py * t->pitch);
-        for (tx = 0; tx < m->gw; tx++) {
-            int sx = tx * LL_INK_W / m->gw;
+        /* Only the INK columns are scaled, and they start at the pen: the left
+         * side bearing is dropped rather than drawn as blank pixels, which is
+         * what makes the per-glyph advance mean what it says. */
+        for (tx = 0; tx < box_w; tx++) {
+            int sx = lo + tx * cols / box_w;
             int px = x + tx;
             if (!(bits & (1u << (LL_GLYPH_W - 1 - sx))))
                 continue;
@@ -284,9 +384,9 @@ static void draw_glyph(const LLFontTarget* t, const LLFontMetrics* m,
     }
 }
 
-/* Fill the cell behind a run of text (SetBkMode(OPAQUE), which Print and
- * PrintCentOpaque both ask for). Win32 fills the character cell, not the ink
- * box, so the fill is advance x line_h. */
+/* Fill the cells behind a run of text (SetBkMode(OPAQUE), which Print and
+ * PrintCentOpaque both ask for). Win32 fills the character cells, not the ink
+ * boxes, so the fill is the run's width x line_h. */
 static void fill_cells(const LLFontTarget* t, const LLFontMetrics* m,
                        int x, int y, int w, unsigned short bg)
 {
@@ -312,16 +412,20 @@ void ll_font_text_out(const LLFontTarget* t, const LLFontMetrics* m,
                       unsigned short fg, int opaque, unsigned short bg)
 {
     int i;
-    int lead = (m->line_h - m->gh) / 2;
+    /* The internal leading above the ink. Biased to a THIRD of the slack, not
+     * a half: what hangs below the ink box is the descender row, and a caller
+     * that gives the text less room than the font's cell (money.c:156 is the
+     * one that does) should lose descender before it loses a capital. */
+    int lead = (m->line_h - m->gh * (LL_INK_H + 1) / LL_INK_H) / 3;
     if (!t || !t->bits || !s || n <= 0)
         return;
     if (lead < 0)
         lead = 0;
     if (opaque)
-        fill_cells(t, m, x, y, n * m->advance, bg);
+        fill_cells(t, m, x, y, ll_font_text_width(m, s, n), bg);
     for (i = 0; i < n; i++) {
         draw_glyph(t, m, x, y + lead, (unsigned char)s[i], fg);
-        x += m->advance;
+        x += glyph_advance(m, (unsigned char)s[i]);
     }
 }
 
@@ -355,13 +459,16 @@ static int break_lines(const LLFontMetrics* m, const char* s, int n,
         int start = i;
         int last_space = -1;
         int end;
+        int run = 0;                /* pixels used by s[start..i), proportional */
         if (i == n && count > 0)
             break;                  /* trailing empty line only if the text is */
         while (i < n && s[i] != '\n' && s[i] != '\r') {
+            int a = glyph_advance(m, (unsigned char)s[i]);
             if ((format & DT_WORDBREAK) && width > 0 &&
-                (i - start + 1) * m->advance > width && i > start) {
+                run + a > width && i > start) {
                 break;
             }
+            run += a;
             if (s[i] == ' ')
                 last_space = i;
             i++;
@@ -422,7 +529,7 @@ int ll_font_draw_text(const LLFontTarget* t, const LLFontMetrics* m,
     if (nlines > LL_MAX_LINES)
         nlines = LL_MAX_LINES;
     for (i = 0; i < nlines; i++) {
-        int w = lens[i] * m->advance;
+        int w = ll_font_text_width(m, starts[i], lens[i]);
         if (w > widest)
             widest = w;
     }
@@ -459,7 +566,7 @@ int ll_font_draw_text(const LLFontTarget* t, const LLFontMetrics* m,
             y = (int)rc->bottom - total_h;
     }
     for (i = 0; i < nlines; i++) {
-        int w = lens[i] * m->advance;
+        int w = ll_font_text_width(m, starts[i], lens[i]);
         int x = (int)rc->left;
         if (format & DT_CENTER)
             x = (int)rc->left + (box_w - w) / 2;
