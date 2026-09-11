@@ -252,6 +252,15 @@ class Object:
             return None
         return self.type.size * self.count
 
+    @property
+    def full_type(self):
+        """The type of the OBJECT, not of one element: `extern LevelMarker
+        g_low_markers[5]` is an array of five records and every field offset
+        past the first element belongs to it. None when it has no size."""
+        if self.type.size is None or self.count is None:
+            return None
+        return array_of(self.type, self.count) if self.count != 1 else self.type
+
 
 class TU:
     """One translation unit: the file's own types, then `legoland.h`'s."""
@@ -660,6 +669,74 @@ def is_field_boundary(ty, off):
     return False
 
 
+def has_pointer(ty, _depth=0):
+    """Does `ty` contain a pointer anywhere inside it? Cheap pre-test so that
+    `pointer_offsets` never walks an array of a pointer-free element type."""
+    if ty is None or ty.size is None or _depth > MAX_WALK_DEPTH:
+        return False
+    if ty.kind == 'ptr':
+        return True
+    if ty.kind in ('struct', 'union', 'array'):
+        return any(has_pointer(f[2], _depth + 1) for f in ty.fields)
+    return False
+
+
+MAX_WALK_DEPTH = 16
+
+
+def pointer_offsets(ty):
+    """`(offsets, ambiguous)` -- the byte offsets inside `ty` of every field
+    the declaration says is a POINTER, walking nested aggregates and every
+    element of every array.
+
+    This is the other half of the extents work: `sizeof` says how far an object
+    reaches, and this says which of its words hold addresses that have to be
+    re-pointed at the rebuilt symbols. Before it, `gen_link.py` could only read
+    pointer-ness off a TOP-LEVEL declaration (`extern char* g_x[3]`), so a
+    `char*` MEMBER of a struct kept the original binary's address -- which is
+    what made `g_low_markers[i].lit_name` a raw x86 VA and hung the park
+    (docs/lanes/scope-port-b8.md).
+
+    `ambiguous` is the offsets a UNION makes undecidable: one arm says pointer
+    and another says it is not. The caller must not re-point those (a wrong
+    re-point writes a new value where the image had a plain number), and they
+    want a human's eye; the sources have no such union today, measured.
+    """
+    ptr, nonptr = set(), set()
+
+    def walk(ty, base, depth=0):
+        if ty is None or ty.size is None or depth > MAX_WALK_DEPTH:
+            return
+        if ty.kind == 'ptr':
+            ptr.add(base)
+            return
+        if ty.kind == 'array':
+            if not ty.fields:
+                return
+            ety = ty.fields[0][2]
+            if not ety.size or not has_pointer(ety):
+                nonptr.add(base)
+                return
+            for i in range(ty.size // ety.size):
+                walk(ety, base + i * ety.size, depth + 1)
+            return
+        if ty.kind in ('struct', 'union'):
+            for _nm, foff, fty, count in ty.fields:
+                if fty.size is None:
+                    continue
+                if not has_pointer(fty):
+                    nonptr.add(base + foff)       # a union arm that is not one
+                    continue
+                for i in range(count):
+                    walk(fty, base + foff + i * fty.size, depth + 1)
+            return
+        nonptr.add(base)
+
+    walk(ty, 0)
+    amb = sorted(ptr & nonptr)
+    return sorted(ptr - set(amb)), amb
+
+
 def field_name_at(ty, off):
     """A readable `a.b[2].c` for `off`, or '' when it is not a boundary."""
     if ty is None or ty.size is None or off >= ty.size:
@@ -932,6 +1009,23 @@ static Nat g_not_extern;         /* 0x00400d00 */
 extern int  g_scalar;            /* 0x00400e00 */
 extern char* g_ptr;              /* 0x00400f00 */
 extern Nat  g_func(void);        /* 0x00401000 */
+/* pointer fields: the record whose name pointers hung the park, and a union
+ * that makes one word undecidable. */
+typedef struct Marker {
+    const char* lit_name;   /* +0x00 */
+    const char* dim_name;   /* +0x04 */
+    int         str_id;     /* +0x08 */
+    int         x;          /* +0x0c */
+    int         y;          /* +0x10 */
+    void*       lit;        /* +0x14 */
+    void*       dim;        /* +0x18 */
+} Marker;                   /* 0x1c */
+typedef union Amb { char* p; int i; } Amb;
+typedef struct HasAmb { int n; Amb u; char* s; } HasAmb;   /* 12 */
+extern Marker  g_markers[5];     /* 0x00402000 */
+extern HasAmb  g_hasamb;         /* 0x00402100 */
+extern char*   g_ptrs[3];        /* 0x00402200 */
+extern Nat     g_noptrs[4];      /* 0x00402300 */
 """
 
 
@@ -978,6 +1072,43 @@ def selftest():
     arr = tu.typedefs['Arr']
     chk('Arr +16 names p[2].x', field_name_at(arr, 16), 'p[2].x')
     chk('Arr +20 names p[2].y', field_name_at(arr, 20), 'p[2].y')
+
+    # pointer fields -- what gen_link re-points (PORT-A7). The whole point is
+    # that these offsets are NOT readable off the top-level declaration: every
+    # one of g_markers' ten name pointers is a struct MEMBER.
+    off, amb = pointer_offsets(objs['g_markers'].full_type)
+    chk('g_markers pointer offsets', off,
+        sorted(i * 0x1c + k for i in range(5) for k in (0, 4, 0x14, 0x18)))
+    chk('g_markers has no ambiguous word', amb, [])
+    off, amb = pointer_offsets(objs['g_ptrs'].full_type)
+    chk('g_ptrs pointer offsets', off, [0, 4, 8])
+    off, amb = pointer_offsets(objs['g_noptrs'].full_type)
+    chk('a pointer-free array has no pointer offsets', off, [])
+    off, amb = pointer_offsets(objs['g_hasamb'].full_type)
+    chk('HasAmb: the union word is ambiguous, not a pointer', (off, amb),
+        ([8], [4]))
+    chk('a scalar pointer is offset 0', pointer_offsets(objs['g_ptr'].full_type),
+        ([0], []))
+    chk('has_pointer(Fp)', has_pointer(tu.typedefs['Fp']), True)
+    chk('has_pointer(Nat)', has_pointer(tu.typedefs['Nat']), False)
+    chk('a function pointer is a pointer field',
+        pointer_offsets(tu.typedefs['WithCb']), ([0], []))
+
+    # The park's record, from the real sources: LevelMarker must yield two name
+    # pointers per 0x1c-byte element for all five tutorial markers.
+    real_tus, real_headers = parse_tree()
+    real_objs = [o for t in real_tus + list(real_headers.values())
+                 for o in t.objects]
+    low = [o for o in real_objs
+           if o.name == 'g_low_markers' and o.addr == 0x004beca0]
+    chk('g_low_markers is declared at 0x004beca0', bool(low), True)
+    if low:
+        off, _amb = pointer_offsets(low[0].full_type)
+        # lit_name/dim_name at +0/+4 and the two Sprite* at +0x14/+0x18, per
+        # 0x1c-byte record; the first two of record 1 are at +0x1c/+0x20.
+        chk('g_low_markers name pointers (B2)', off[:6],
+            [0, 4, 0x14, 0x18, 0x1c, 0x20])
+        chk('g_low_markers has 4 pointer fields x 5 records', len(off), 20)
 
     # The regression test proper: the five rows the hand table carried. Each
     # must be REPRODUCED -- cited by some TU at exactly the hand value -- and

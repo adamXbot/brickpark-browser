@@ -51,6 +51,31 @@ re-points 1,650 words of which 1,209 are string TEXT, 264 of them inside the
 `GUID_NULL` block alone. The declaration rule re-points 441, every one of them
 a real string pointer.
 
+**A pointer FIELD is a pointer too**, and reading pointer-ness off the
+top-level declaration alone was the port's second real blocker.
+`extern LevelMarker g_low_markers[5]` has pointer depth 0, so the ten
+`const char*` sprite names of the two progress screens kept the ORIGINAL
+binary's addresses, `LoadSprite` failed, `g_low_markers[i].lit` stayed NULL and
+`while (KillSprite(NULL) == 0) ;` hung the page on BOTH doors into the park
+(docs/lanes/scope-port-b8.md, docs/lanes/scope-port-a7.md). `cdecl.py` has laid
+these structs out since the extents work; `cdecl.pointer_offsets` now walks the
+laid-out type and says which of its words are pointers, per array element, so
+the rule is the one the declaration always implied: **a word is a pointer slot
+when some declaration's type puts a pointer field at that ADDRESS.** Keyed by
+address, not by an offset into whichever block is emitted -- `g_level_markers`
+is declared at 0x004beb80 by screens3.c and, eight bytes in and with its fields
+rotated to match, at 0x004beb88 by bigscreens.c, and the block lands at the
+second of those.
+
+The value still gets one vote, and only ever a veto: a declaration that claims
+a pointer where the image holds something that cannot be an address in any
+layout (`void* g_music_sys` holding 1) is rejected for that array element and
+reported. `gen/pointers.md` is the census -- every declared pointer word, what
+became of it, and **`raw pointer words`, which must be 0**: the count of
+declared pointer words inside the image that nothing re-pointed. The words left
+raw on purpose are listed there with their reason (a word into `.text` is a
+function-table index on wasm, so an interior offset into one is meaningless).
+
 **ONE block per object, and the extent comes from `sizeof`.** The same gap
 tiling that swallows unnamed literals also splits a named object that several
 names reach into at different offsets.
@@ -96,6 +121,7 @@ Two things are decided by the object format, not by a flag:
 """
 import argparse
 import bisect
+import collections
 import glob
 import os
 import re
@@ -557,10 +583,10 @@ def emit_bytes(name, size, data, align=16, nocommon=False):
 
 
 def emit_words(name, size, data, resolve, ptr_words, refs, align=16,
-               nocommon=False):
+               nocommon=False, base=0):
     """ILP32: 4-byte words, with addresses re-pointed at the rebuilt symbols.
 
-    `resolve(word, is_pointer_slot)` returns `(symbol, offset)` or None;
+    `resolve(word, is_pointer_slot, va)` returns `(symbol, offset)` or None;
     `ptr_words` is the set of WORD INDICES the declarations say hold pointers.
     It is a set rather than a count because a block can now host interior
     aliases: `g_volume_names`'s three pointers are words 0..2 of the object at
@@ -572,7 +598,7 @@ def emit_words(name, size, data, resolve, ptr_words, refs, align=16,
     words = []
     for i in range(0, size, 4):
         w = struct.unpack_from('<I', data, i)[0]
-        hit = resolve(w, i // 4 in ptr_words)
+        hit = resolve(w, i // 4 in ptr_words, base + i)
         if hit is None:
             words.append(f'0x{w:08x}u')
             continue
@@ -667,13 +693,69 @@ def trap_body(name, dll, users, sig=None):
     return f'void {name}(void) {{ {call} }}'
 
 
+RAW_PTR_RE = re.compile(r'^- \*\*raw pointer words: (\d+)\*\*')
+
+
+def check_pointers(build_dir):
+    """The ctest (`pointer_words`): every manifest this build wrote must say
+    `raw pointer words: 0`.
+
+    A non-zero count means some word the game's own declarations call a pointer
+    still holds an address from the ORIGINAL binary. Nothing is there any more,
+    so the game dereferences a number: the failure mode is a NULL where a
+    loaded asset should be, and the one that cost this port a lane was an
+    infinite loop with no host call in it at all, on the only two paths into the
+    park (docs/lanes/scope-port-b8.md). It is silent, it is not a link error and
+    no byte gate can see it, so it gets a test.
+
+    Asset-free: it reads the manifests the build already wrote.
+    """
+    found, bad = [], []
+    for root, _dirs, files in os.walk(build_dir):
+        if 'manifest.md' not in files:
+            continue
+        path = os.path.join(root, 'manifest.md')
+        n = None
+        for line in open(path, encoding='utf-8', errors='replace'):
+            m = RAW_PTR_RE.match(line)
+            if m:
+                n = int(m.group(1))
+                break
+        rel = os.path.relpath(path, build_dir)
+        if n is None:
+            bad.append((rel, 'no "raw pointer words" line -- a stale manifest '
+                        'from before PORT-A7, or gen_link did not run'))
+            continue
+        found.append((rel, n))
+        if n:
+            bad.append((rel, f'{n} raw pointer words -- see '
+                        f'{os.path.dirname(rel)}/pointers.md'))
+    for rel, n in found:
+        print(f'  {rel}: raw pointer words: {n}')
+    if not found and not bad:
+        print('FAIL no manifest.md under ' + build_dir +
+              ': build the closure before running this test')
+        return 1
+    for rel, why in bad:
+        print(f'FAIL {rel}: {why}')
+    print(f'pointer gate: {len(bad)} failure(s) in {len(found)} manifest(s)')
+    return 1 if bad else 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('build_dir')
-    ap.add_argument('--out', required=True)
+    ap.add_argument('--out')
     ap.add_argument('--exe', default=os.path.join(lr.ROOT, 'original', 'legoland.exe'))
     ap.add_argument('--ilp32', action='store_true')
+    ap.add_argument('--check-pointers', action='store_true',
+                    help='the ctest: every manifest.md under build_dir must '
+                         'report `raw pointer words: 0`')
     args = ap.parse_args()
+    if args.check_pointers:
+        sys.exit(check_pointers(args.build_dir))
+    if not args.out:
+        ap.error('--out is required')
     os.makedirs(args.out, exist_ok=True)
 
     objs, _, _, undefined = lr.collect_objects(args.build_dir)          # what the game references
@@ -792,7 +874,99 @@ def main():
     # translation unit, from cdecl.py's parse of the game's own `typedef
     # struct` definitions. This is what STRUCT_EXTENTS used to carry by hand,
     # for the five records somebody had noticed.
-    src_ext = cdecl.scan()
+    src_tus, src_headers = cdecl.parse_tree()
+    src_tus = src_tus + list(src_headers.values())
+    src_ext = cdecl.scan(tus=src_tus)
+    src_objs = [o for tu in src_tus for o in tu.objects]
+
+    # ---- which WORDS hold pointers: the declared type, walked --------------
+    #
+    # PORT-A2 read pointer-ness off the TOP-LEVEL declaration only: `extern
+    # const char* g_volume_names[3]` is three pointer slots, and a `char*`
+    # MEMBER of a struct was "a known limit, nothing on the spine needs it
+    # yet". It did: `extern LevelMarker g_low_markers[5]` has pointer depth 0,
+    # so the ten sprite-name words of the progress screens kept the ORIGINAL
+    # binary's addresses, `LoadSprite("\x40\xed\x4b\x00...")` failed, and
+    # `while (KillSprite(NULL) == 0) ;` took the page's main thread with it --
+    # the only two doors into the park (docs/lanes/scope-port-b8.md §2).
+    #
+    # cdecl.py has laid out these structs since PORT-A6; it was only ever asked
+    # for their SIZE. Asked for their pointer fields too, the rule becomes the
+    # one the declaration always implied: a word is a pointer slot when some
+    # declaration's type puts a pointer FIELD at that address.
+    #
+    # Three properties this has and the old scan did not:
+    #
+    # * It is keyed by ABSOLUTE address, not by an offset into the block that
+    #   happens to be emitted. `g_level_markers` is declared at 0x004beb80 by
+    #   screens3.c and at 0x004beb88 by bigscreens.c (deliberately, eight bytes
+    #   in -- it only uses the five fields past the names), and `externs` keeps
+    #   one address per name, so the BLOCK is at 0x004beb88 and every pointer
+    #   in it is at +0x14/+0x18 of a 0x1c record. An offset-into-the-block rule
+    #   cannot see that; an address rule does, and it also re-points the first
+    #   record's two names, which live in the tail of `g_mode_wplus`'s block.
+    # * A framing that is wrong is rejected, not believed. The value of a word
+    #   may never decide that a word IS a pointer (PORT-A2: 1,209 of 1,650
+    #   value-chosen words are string TEXT), but it can veto a declaration that
+    #   claims one: 0x00000019 is not an address in any layout. Corroboration
+    #   is per ARRAY ELEMENT, so one odd entry costs its own record and not the
+    #   whole table, and every rejection is a row of gen/pointers.md.
+    # * A union whose arms disagree is ambiguous and is left alone, reported.
+    TEXT_LO, TEXT_HI = lr.SECTIONS[0][1], lr.SECTIONS[0][2]
+    MAX_PTR_SCAN = 1 << 20    # bytes of one declared type worth walking
+
+    def plausible_addr(w):
+        """Could `w` be an address in this image at all? The only use of a
+        word's VALUE in the whole pass, and only ever to REJECT a claim."""
+        return w == 0 or TEXT_LO <= w < DATA_HI or w in symbol_at
+
+    ptr_va = {}               # VA -> (object, field, 'file:line')
+    ptr_amb = []              # (VA, object, field, cite): a union's two arms
+    ptr_reject = []           # (addr, name, typename, cite, nbad, nclaim, [ex])
+    ptr_toobig = []           # (addr, name, typename, size)
+    for obj in sorted(src_objs, key=lambda o: (o.addr, o.name)):
+        ty = obj.full_type
+        if ty is None or not cdecl.has_pointer(ty):
+            continue
+        if ty.size > MAX_PTR_SCAN:
+            ptr_toobig.append((obj.addr, obj.name, obj.typename, ty.size))
+            continue
+        offs, amb = cdecl.pointer_offsets(ty)
+        if not offs and not amb:
+            continue
+        cite = f'{obj.file}:{obj.line}'
+        data = read(obj.addr, ty.size) if read else None
+        # One corroboration group per array element: a wrong framing is wrong
+        # in every element, a sentinel is wrong only in its own.
+        esz = ty.fields[0][2].size if ty.kind == 'array' and ty.fields else None
+        groups = {}
+        for o in offs:
+            groups.setdefault(o // esz if esz else 0, []).append(o)
+        nbad, examples = 0, []
+        for _g, gofs in sorted(groups.items()):
+            bad = []
+            for o in gofs:
+                if o % 4:
+                    bad.append((obj.addr + o, None))
+                    continue
+                if data is None:
+                    continue
+                w = struct.unpack_from('<I', data, o)[0]
+                if not plausible_addr(w):
+                    bad.append((obj.addr + o, w))
+            if bad:
+                nbad += len(gofs)
+                examples += bad[:2]
+                continue
+            for o in gofs:
+                ptr_va.setdefault(obj.addr + o,
+                                  (obj.name, cdecl.field_name_at(ty, o), cite))
+        if nbad:
+            ptr_reject.append((obj.addr, obj.name, obj.typename, cite, nbad,
+                               len(offs), examples[:4]))
+        for o in amb:
+            ptr_amb.append((obj.addr + o, obj.name,
+                            cdecl.field_name_at(ty, o), cite))
 
     def declared_extent(addr):
         """The byte extent the game's own declarations give the object at
@@ -954,7 +1128,21 @@ def main():
                         n = k
                         break
             slots.update(range(base, base + n))
+            for k in range(base, base + n):
+                ptr_bounds.setdefault(addr + 4 * k, nm)
+        # ...and every word some declared TYPE puts a pointer field at. This is
+        # the part that does not care which name the block is emitted under:
+        # the pointer fields of a struct are at absolute addresses, and an
+        # unbounded `[]` that the loop above bounds by the data is the one case
+        # no type can describe, which is why both passes run.
+        for k in range(nwords):
+            if addr + 4 * k in ptr_va:
+                slots.add(k)
         return slots
+
+    ptr_bounds = {}           # VA -> name: pointer slots from the ARRAY-BOUNDS
+                              # pass (an `extern char* g_x[8]`), so that a word
+                              # left raw can name the declaration behind it.
 
     blocks = {}               # start -> (name, size): every rebuilt data block
     for addr, primary, size, _d, _r, _w, _i in plan:
@@ -1002,8 +1190,9 @@ def main():
         return hit
 
     n_exact = n_interior = n_raw_ptr = 0
+    raw_words = []            # (VA, value, reason): every slot left raw
 
-    def resolve(w, is_ptr_slot):
+    def resolve(w, is_ptr_slot, va=None):
         nonlocal n_exact, n_interior, n_raw_ptr
         if w in symbol_at:                          # a symbol's own address
             n_exact += 1
@@ -1011,10 +1200,14 @@ def main():
         if not is_ptr_slot or not (DATA_LO <= w < DATA_HI):
             if is_ptr_slot and w:
                 n_raw_ptr += 1
+                raw_words.append((va, w, 'into .text (function-table index)'
+                                  if TEXT_LO <= w < TEXT_HI else
+                                  'the value is not an address'))
             return None
         hit = resolve_pointer(w)
         if hit is None:
             n_raw_ptr += 1
+            raw_words.append((va, w, 'in the image, but no block and no gap'))
             return None
         n_interior += 1
         return hit
@@ -1053,7 +1246,7 @@ def main():
         if words:
             body.append(emit_words(primary, size, data, resolve,
                                    n_ptr_of.get(addr, ()), refs,
-                                   nocommon=bool(inter)))
+                                   nocommon=bool(inter), base=addr))
         else:
             body.append(emit_bytes(primary, size, data, nocommon=bool(inter)))
         typ, count = decl_of[primary]
@@ -1365,6 +1558,137 @@ def main():
     ext_md += ['', f'{len(near)} addresses (of {len(unsized)} unsized declarations).',
                '']
 
+    # ---- gen/pointers.md: the raw-pointer-word census ----------------------
+    #
+    # PORT-B8 wrote this census by hand against the generated globals.c after
+    # the park wedged on a word that was never re-pointed, and asked for it to
+    # be part of the generator. It is, and it is the DECLARATION's census, not
+    # the value's: B8's script counts any word whose value happens to land in
+    # an emitted object, which over-counts by 469 (string TEXT -- `"Appr"` is
+    # 0x72707041 and three-character strings are small enough to look like
+    # addresses; PORT-A2 measured 1,209 such false positives out of 1,650).
+    # The number that has to be zero is the number of words the game's own
+    # declarations say are pointers and that the closure still emits raw.
+    pl_starts = sorted(p[0] for p in plan)
+    pl_at = {p[0]: p for p in plan}
+    raw_by_reason = collections.Counter()
+    for _va, _w, why in raw_words:
+        raw_by_reason[why] += 1
+    n_bytes_block = n_noblock = 0
+    bytes_block, noblock = [], []
+    # Only under --ilp32 is there anything to be raw ABOUT: on a 64-bit host
+    # every pointer table is wrong by construction and the raw bytes are kept
+    # on purpose, so the gate is vacuous there rather than 7,348 failures.
+    for va in sorted(ptr_va) if args.ilp32 else ():
+        i = bisect.bisect_right(pl_starts, va) - 1
+        p = pl_at[pl_starts[i]] if i >= 0 else None
+        if p is None or va >= p[0] + p[2]:
+            n_noblock += 1
+            noblock.append(va)
+            continue
+        if not p[5]:                      # emitted as bytes, never re-pointed
+            n_bytes_block += 1
+            bytes_block.append((va, p[1]))
+    n_unexplained = raw_by_reason['in the image, but no block and no gap'] + \
+        n_bytes_block
+    ptr_md = ['# Pointer words in the rebuilt closure', '',
+              'Every 4-byte word the game\'s own declarations say is a POINTER, and',
+              'what the generator did with it. A pointer word that keeps the ORIGINAL',
+              "binary's address is a live defect: the rebuilt objects are nowhere near",
+              '0x004b4000, so the game dereferences a number that means nothing. That',
+              'is what hung both doors into the park (docs/lanes/scope-port-b8.md).', '',
+              'Pointer-ness is read off the DECLARED TYPE, never off the value',
+              '(PORT-A2); the value is used only to REJECT a declaration that claims a',
+              'pointer where the image has something that cannot be an address.', '',
+              f'- re-pointing (--ilp32): {"on" if args.ilp32 else "OFF -- the 64-bit build keeps the raw bytes by construction, so there is nothing for the gate to check"}',
+              f'- declared pointer words: {len(ptr_va)}',
+              f'- of those, in a block emitted as WORDS (so offered to the resolver): '
+              f'{len(ptr_va) - n_bytes_block - n_noblock if args.ilp32 else 0}',
+              f'- in a block emitted as BYTES (NOT re-pointed): {n_bytes_block}',
+              f'- in no emitted block (the game defines the object, or nothing emits '
+              f'it): {n_noblock}',
+              f'- re-pointed at a symbol address: {n_exact}',
+              f'- re-pointed INTO a block: {n_interior}',
+              f'- left raw: {n_raw_ptr}' +
+              (' (' + ', '.join(f'{n} {why}' for why, n in
+                                sorted(raw_by_reason.items())) + ')'
+               if raw_words else ''),
+              f'- **raw pointer words: {n_unexplained}** -- the gate: a declared',
+              '  pointer word, inside the image, that nothing re-pointed and nothing',
+              '  can explain.', '']
+    if raw_words:
+        ptr_md += ['## Pointer words left raw, with the reason', '',
+                   'A word into `.text` is a function address the wasm target cannot',
+                   'offset into at all (a function "pointer" is a table index), and it',
+                   'is left raw on purpose: an EXACT function address is re-pointed by',
+                   'the symbol path above, and an interior one is meaningless. A word',
+                   'whose value is not an address is a DECLARATION to check -- some',
+                   'file says pointer where the image holds a number.', '',
+                   '| word | value | declared by | field | reason |',
+                   '| --- | --- | --- | --- | --- |']
+        for va, w, why in sorted(raw_words)[:200]:
+            nm, fld, cite = ptr_va.get(
+                va, (ptr_bounds.get(va, '-'), '', 'array bounds'))
+            ptr_md.append(f'| `0x{va:08x}` | `0x{w:08x}` | `{nm}` ({cite}) '
+                          f'| {fld or "-"} | {why} |')
+        ptr_md += ['', f'{len(raw_words)} rows'
+                   + (' (first 200 shown)' if len(raw_words) > 200 else '') + '.', '']
+    if bytes_block:
+        ptr_md += ['## Pointer words in a block emitted as BYTES', '',
+                   'A block is emitted as words only when its address and size are both',
+                   '4-aligned and the exe could be read. Any pointer in one of these',
+                   'keeps the original address: a real defect of the B2 class.', '',
+                   '| word | block |', '| --- | --- |'] + \
+            [f'| `0x{va:08x}` | `{nm}` |' for va, nm in bytes_block[:50]] + ['']
+    if ptr_reject:
+        ptr_md += ['## Declarations whose pointer claim the image rejects', '',
+                   'The declaration says this word holds a pointer and the image holds',
+                   'something that cannot be an address in any layout, so the claim is',
+                   'dropped for that array ELEMENT and the word is left exactly as the',
+                   'image has it. Every row is a file that is wrong about this address --',
+                   'usually a deliberate framing (`bigscreens.c` declares',
+                   '`g_level_markers` eight bytes into the record because it only uses',
+                   'the fields past the two names), occasionally a type to fix.', '',
+                   '| address | object | type | declared by | words claimed | rejected | e.g. |',
+                   '| --- | --- | --- | --- | --- | --- | --- |']
+        for addr, nm, tn, cite, nbad, nclaim, ex in ptr_reject:
+            egs = ', '.join(f'`0x{v:08x}`=' +
+                            (f'`0x{w:08x}`' if w is not None else 'unaligned')
+                            for v, w in ex)
+            ptr_md.append(f'| `0x{addr:08x}` | `{nm}` | `{tn}` | {cite} | {nclaim} '
+                          f'| {nbad} | {egs} |')
+        ptr_md += ['', f'{len(ptr_reject)} declarations, '
+                   f'{sum(r[4] for r in ptr_reject)} words.', '']
+    if ptr_amb:
+        ptr_md += ['## Words a union makes undecidable', '',
+                   'One arm of a union says pointer and another says it is not. Nothing',
+                   're-points these: a wrong re-point writes an address where the image',
+                   'had a plain number. Worth a human deciding which arm the image',
+                   'holds.', '', '| word | object | field | declared by |',
+                   '| --- | --- | --- | --- |'] + \
+            [f'| `0x{va:08x}` | `{nm}` | {fld or "-"} | {cite} |'
+             for va, nm, fld, cite in ptr_amb[:50]] + ['']
+    if ptr_toobig:
+        ptr_md += ['## Declared types too large to walk', '',
+                   f'Over {MAX_PTR_SCAN} bytes.', ''] + \
+            [f'- `0x{a:08x}` `{nm}` `{tn}` {sz} bytes' for a, nm, tn, sz in ptr_toobig] + ['']
+
+    manifest += ['', '## Pointer words (gen/pointers.md)', '',
+                 f'- declared pointer words: {len(ptr_va)}'
+                 + ('' if args.ilp32 else ' (re-pointing off: --ilp32 not given)'),
+                 f'- **raw pointer words: {n_unexplained}**',
+                 f'- pointer words left raw with a reason: {n_raw_ptr}'
+                 + (' (' + ', '.join(f'{n} {why}' for why, n in
+                                     sorted(raw_by_reason.items())) + ')'
+                    if raw_words else ''),
+                 f'- pointer claims the image rejects (wrong framing or wrong type): '
+                 f'{sum(r[4] for r in ptr_reject)} words in {len(ptr_reject)} '
+                 f'declarations',
+                 f'- words a union makes undecidable (left alone): {len(ptr_amb)}']
+    if n_unexplained:
+        print(f'gen_link: WARNING {n_unexplained} raw pointer word(s) -- '
+              f'see gen/pointers.md', file=sys.stderr)
+
     manifest += ['', '## Source-derived extents (gen/extents.md)', '',
                  f'- objects the gap tiling would have split: {len(split_log)}',
                  f'- of those, merged into one block: {len(merged)} '
@@ -1377,7 +1701,8 @@ def main():
 
     for fname, text in (('globals.c', globals_c), ('aliases.c', aliases_c),
                         ('stubs.c', stubs_c), ('host_stubs.c', host_c),
-                        ('manifest.md', manifest), ('extents.md', ext_md)):
+                        ('manifest.md', manifest), ('extents.md', ext_md),
+                        ('pointers.md', ptr_md)):
         with open(os.path.join(args.out, fname), 'w') as f:
             f.write('\n'.join(text) + '\n')
     with open(os.path.join(args.out, 'll_gen.h'), 'w') as f:

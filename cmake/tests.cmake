@@ -268,3 +268,27 @@ ll_add_test(coaster_span  "${CMAKE_BINARY_DIR}"       FALSE)
 add_library(legoland_cbtypes OBJECT "${LL_TESTS_DIR}/test_callback_types.c")
 target_compile_options(legoland_cbtypes PRIVATE
                        -Werror=incompatible-function-pointer-types)
+
+# ---- PORT-A7: the pointer gate ---------------------------------------------
+# `gen/pointers.md` counts every 4-byte word the game's own declarations say is
+# a POINTER and says what the generator did with it. `raw pointer words` is the
+# number that still holds an address from the ORIGINAL binary: nothing is at
+# 0x004b4000 in the rebuilt layout, so the game dereferences a number. That is
+# invisible to every other gate -- it is not a link error, not a trap, and the
+# bytes are exactly what the image had -- and the one time it bit, it was ten
+# words of sprite names that made `g_low_markers[i].lit` NULL and turned
+# `while (KillSprite(NULL) == 0) ;` into an infinite loop on BOTH doors into the
+# park (docs/lanes/scope-port-b8.md, docs/lanes/scope-port-a7.md).
+#
+# Asset-free and toolchain-independent: it reads the manifests this build wrote.
+# Every gen directory is checked, so the browser closure (`gen-browser/`) is
+# covered as soon as it has been generated, and the count is vacuously 0 in the
+# 64-bit build, where re-pointing is off by construction.
+add_test(NAME pointer_words
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_link.py"
+                 "${CMAKE_BINARY_DIR}" --check-pointers)
+set_tests_properties(pointer_words PROPERTIES
+  PASS_REGULAR_EXPRESSION "pointer gate: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
