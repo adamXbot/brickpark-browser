@@ -974,6 +974,71 @@ twice-cited row each in `docs/lanes/scope-port-b6.md` §6): the 12-byte mouse-hi
 record at `0x004bdd00` is three objects, so no front-end icon can ever be
 focussed; and the 270-byte `CurProfile` at `0x0080ffa0` is eight, so the
 new-profile name editor is never called.
+## Object extents computed from the sources (scope PORT-A6)
+
+The extent of a global is `sizeof` of the type the game's own source declares
+it with, and `portable/tools/cdecl.py` computes it: a C declaration parser over
+`LEGOLAND/*.c` and `*.h` that reads the `typedef struct` definitions (nested,
+anonymous, unions, arrays of them, function pointers) and lays them out as MSVC
+does on x86 — `#pragma pack` honoured at each member's own line, ILP32 sizes,
+`long` and every pointer 4 bytes.
+
+This closes the class that had bitten five times. `gen_link.py` sizes every
+global by the gap to the next NAMED address, and for a record whose fields other
+files declare individually that gap is *its own second field*: the record came
+out as one block per field and the half of the game that writes it addressed
+different memory from the half that reads it. Each instance was found by a
+symptom and then fixed by a hand-written row in `STRUCT_EXTENTS` —
+`g_key_state`, `g_gpu_state`, `GameInput` (no input at all, A5), `PopUpUI`,
+`Profile`, the 12-byte hit record (nothing clickable, B6) and `CurProfile` (no
+name editor, B6). **That table is now the REGRESSION FIXTURE for the parser**,
+not the mechanism: all five rows are reproduced from the sources, they are kept
+as a floor so a parser regression cannot silently re-split them, and the ctest
+`cdecl_extents` (asset-free, both toolchains, runs in CI) fails if one stops
+being reproduced.
+
+`gen/extents.md`, new next to `gen/manifest.md`, is the whole class in one
+table: every object whose computed extent exceeds the gap-tiled size — i.e.
+every object that would have been split — with the file:line of the declaration
+and of the struct definition, what the interior-alias pass did with it, every
+interior alias with the FIELD its offset lands on (`g_mouse_buttons+0x84
+(btn0.state)`), the addresses two translation units size differently, and the
+residue the parser still cannot size.
+
+Measured, both toolchains, clean dirs: objects merged into one block **18 ->
+44** (27 newly merged), interior offset aliases **202 -> 307**, globals defined
+**2125 -> 2042**, data aliases **338 -> 316**, and **3705868 bytes of image both
+times**. Every initialised byte and every pointer TARGET ADDRESS in the
+generated `globals.c` is identical before and after. Two of the new merges are
+front-end state nobody had reported: `FrontEndState g_front` at `0x0080ff80`
+(`SaveFrontEndState` copies twelve bytes out of what was a four-byte object,
+while `g_cur_screen` and `g_screen_mode` live at +4 and +8) and `EditMode` at
+`0x008119b0` (`g_game_mode` at +4).
+
+One fix had to come with it: which words of a block are POINTERS was a leading
+COUNT, so a pointer field reached through an INTERIOR name would have kept the
+original binary's address. It is now the set of word indices the declarations
+give, gathered from the host's names and from every interior alias at its own
+offset; the re-pointing counters are unchanged (299 at a symbol, 441 into a
+block, 12 raw).
+
+`linkreport.py`'s extern scan is statement-oriented at last (PORT-M4 section 6):
+it reads to the `;` that ends the declaration, brace-aware, takes the last
+identifier outside any parameter list or array bound, handles `extern int
+(*g_present)(void);` and `extern char g_key_prev[KEYMAP_COUNT];`, scans
+`LEGOLAND/*.h`, and ignores the word `extern` inside comments. Externs found
+5301 -> 5354 with **zero** names changing address or class, and the census's
+unclassified count stays at 4 — all four the toolchain's own.
+
+`python3 portable/tools/cdecl.py --overlaps` is PORT-A3's optimiser-hazard
+sweep as a command: the pairs one translation unit declares whose storage
+overlaps, with the functions that touch both and the direction of each access.
+372 pairs, 167 of them written through by a single function, 61 in a front-end
+TU; nothing measured misbehaves at `-O2` and the recipe for a matching lane is
+in `docs/lanes/scope-port-a6.md` §7.
+
+Notes: `docs/lanes/scope-port-a6.md`.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
