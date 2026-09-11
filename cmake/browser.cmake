@@ -127,6 +127,7 @@ add_custom_command(
   DEPENDS legoland_core legoland_hostwin
           "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_link.py"
           "${CMAKE_CURRENT_SOURCE_DIR}/tools/linkreport.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tools/cdecl.py"
           "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/closure_filter.py"
   COMMENT "gen_link.py + closure_filter.py: the browser target's link closure"
   VERBATIM)

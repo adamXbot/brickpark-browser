@@ -23,6 +23,24 @@ target_sources(legoland_core PRIVATE
 set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/kernel32.c"
   PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Wno-unused-parameter")
 
+# ---- the extent parser's own gate (PORT-A6) ---------------------------------
+# `cdecl.py` computes every object's extent from the game's own struct
+# definitions; `STRUCT_EXTENTS` in gen_link.py is now the REGRESSION FIXTURE for
+# it -- five records that each broke something visible before somebody worked
+# out its size by hand. The selftest checks the MSVC layout rules against
+# hand-computed types and then checks that all five of those rows are still
+# reproduced from the real sources. It reads only LEGOLAND/*.c, so unlike
+# headless_spine and probe_input it needs no gamedata/ and runs in CI, on both
+# toolchains.
+enable_testing()
+add_test(NAME cdecl_extents
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/cdecl.py" --selftest)
+set_tests_properties(cdecl_extents PROPERTIES
+  PASS_REGULAR_EXPRESSION "cdecl selftest: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
+
 if(EMSCRIPTEN)
   # Two harnesses from the same sources: `legoland_headless` is the one to run,
   # and `legoland_headless_debug` is the one that NAMES a trap. See

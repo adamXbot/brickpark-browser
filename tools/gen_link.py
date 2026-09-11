@@ -51,8 +51,9 @@ re-points 1,650 words of which 1,209 are string TEXT, 264 of them inside the
 `GUID_NULL` block alone. The declaration rule re-points 441, every one of them
 a real string pointer.
 
-**ONE block per object.** The same gap tiling that swallows unnamed literals
-also splits a named object that several names reach into at different offsets.
+**ONE block per object, and the extent comes from `sizeof`.** The same gap
+tiling that swallows unnamed literals also splits a named object that several
+names reach into at different offsets.
 `extern unsigned char g_key_state[256]` at 0x007fdda0 is also `g_left_ctrl`
 (+0x1d), `g_left_shift` (+0x2a), `g_right_shift` (+0x36) and `g_right_ctrl`
 (+0x9d); tiled, those become five separately aligned arrays, so a 256-byte
@@ -66,6 +67,16 @@ aliases -- the only interior-alias form there is, and it survives both the
 Mach-O and the wasm backends. A declaration whose element type has no known
 size hosts nothing and keeps the tiling, and the extent is clamped at any
 address that is not an extern-only data name.
+
+The declared extent is `sizeof` of the declared type, computed by `cdecl.py`
+from the game's own `typedef struct` definitions -- not just the array bounds of
+a primitive element type, which is all this generator could see before and which
+is why a struct-typed record (`GameInput`, `PopUpUI`, `Profile`, `CurProfile`,
+the 12-byte hit record) had to be entered in a hand table once somebody noticed
+the symptom. `gen/extents.md` is the resulting table: every object whose
+computed extent exceeds the gap-tiled size, which is to say every object that
+would have been split, with the citations, the disagreements between
+translation units, and the residue the parser still cannot size.
 
 Two things are decided by the object format, not by a flag:
 
@@ -93,6 +104,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import linkreport as lr  # noqa: E402
+import cdecl  # noqa: E402
 
 IMAGE_BASE = 0x400000
 
@@ -101,31 +113,36 @@ IMAGE_BASE = 0x400000
 # known. Generous, because some of these names are structs.
 UNKNOWN_DATA_SIZE = 256
 
-# ---- records whose extent is a STRUCT, not an array ------------------------
-# The interior-alias pass below takes an object's extent from the game's own
-# declaration, which works when the declaration is `extern unsigned char
-# g_key_state[256]` -- array bounds times an element size that is a language
-# fact. It gives NOTHING for `extern GameInput g_input;`: a struct type has no
-# size until somebody writes the struct out, and gen_link does not parse C. Such
-# an object therefore falls back to the gap tiling, which sizes it by the
-# distance to the next NAMED address -- and for a record whose fields other
-# files declare individually, the next named address is its own SECOND FIELD. The
-# record comes out as one block per field, 16-byte aligned, in declaration order,
-# and the two halves of the game disagree about where every field is: the files
-# that write `g_input.point` write at `g_input + 4` (inside a FOUR-byte block,
-# i.e. into the padding after it), the files that read `g_gfx_point` read a
-# different block entirely. Silent, and total.
+# ---- records whose extent is a STRUCT: now the REGRESSION FIXTURE ----------
+# `cdecl.py` computes every object's extent from the game's own `typedef struct`
+# definitions, so this table is no longer how a struct gets its size. It is kept
+# as the regression test for that parser: each row was established by hand, from
+# two independent citations in the sources, after the split record it describes
+# had broken something visible. `gen/extents.md` prints one line per row saying
+# whether the parser reproduces the number, and gen_link warns on stderr if it
+# does not. The extents themselves are still taken as a FLOOR (declared_extent
+# maxes over all three sources), so a parser that ever stops seeing one of these
+# records cannot silently re-split it.
 #
-# This table is the extent for those records, and a row is only allowed when the
-# game's own sources pin it TWICE -- the struct's last field offset, and an
-# independent `extern` at that field's own address whose comment gives the same
-# address. Both citations are in the row. Anything merged here still goes through
-# the pass's clamp (rule 2: stop at any address a game object defines), so a row
-# can only ever claim storage that was going to be tiled to these names anyway.
+# What the class was: the interior-alias pass takes an object's extent from the
+# game's own declaration, which worked when the declaration is `extern unsigned
+# char g_key_state[256]` -- array bounds times an element size that is a
+# language fact -- and gave NOTHING for `extern GameInput g_input;`, because a
+# struct type has no size until somebody parses the struct. Such an object fell
+# back to the gap tiling, which sizes it by the distance to the next NAMED
+# address -- and for a record whose fields other files declare individually, the
+# next named address is its own SECOND FIELD. The record came out as one block
+# per field, 16-byte aligned, in declaration order, and the two halves of the
+# game disagreed about where every field is: the files that write
+# `g_input.point` write at `g_input + 4` (inside a FOUR-byte block, i.e. into
+# the padding after it), the files that read `g_gfx_point` read a different
+# block entirely. Silent, and total.
 #
-# Found by: every extern whose address comment attributes it to a record
-# (`/* 0x007cad80  g_temp_profile.age */`) -- see docs/lanes/scope-port-a5.md for
-# the tree-wide sweep and for the three live records it turned up.
+# The rows were found by the sweep in docs/lanes/scope-port-a5.md -- every
+# extern whose address comment attributes it to a record
+# (`/* 0x007cad80  g_temp_profile.age */`) -- which is exactly the limitation
+# the parser removes: a record whose fields were all recovered under separate
+# names, with no comment tying them together, was still split and still silent.
 STRUCT_EXTENTS = {
     # GameInput @ 0x00813a40, the one the front end reads every frame.
     # bighelp.c:35 lays it out to `move_tick` at +0xa0 (0x00813ae0), and
@@ -539,17 +556,23 @@ def emit_bytes(name, size, data, align=16, nocommon=False):
     return f'__attribute__((aligned({align}))) unsigned char {name}[{size}] = {{\n    {body}\n}};\n'
 
 
-def emit_words(name, size, data, resolve, n_ptr, refs, align=16, nocommon=False):
+def emit_words(name, size, data, resolve, ptr_words, refs, align=16,
+               nocommon=False):
     """ILP32: 4-byte words, with addresses re-pointed at the rebuilt symbols.
 
-    `resolve(word, is_pointer_slot)` returns `(symbol, offset)` or None; the
-    first `n_ptr` words are the slots the declaration says hold pointers.
-    Every symbol named here is added to `refs`; the caller declares them in
-    the prologue, with the types the definitions use."""
+    `resolve(word, is_pointer_slot)` returns `(symbol, offset)` or None;
+    `ptr_words` is the set of WORD INDICES the declarations say hold pointers.
+    It is a set rather than a count because a block can now host interior
+    aliases: `g_volume_names`'s three pointers are words 0..2 of the object at
+    its own address, but a pointer declared at +0x30 of a merged record is word
+    12 of the host, and sizing the pointer region by a count would silently
+    stop re-pointing it (the bytes would stay the ORIGINAL addresses, which no
+    longer exist). Every symbol named here is added to `refs`; the caller
+    declares them in the prologue, with the types the definitions use."""
     words = []
     for i in range(0, size, 4):
         w = struct.unpack_from('<I', data, i)[0]
-        hit = resolve(w, i // 4 < n_ptr)
+        hit = resolve(w, i // 4 in ptr_words)
         if hit is None:
             words.append(f'0x{w:08x}u')
             continue
@@ -765,15 +788,37 @@ def main():
     fn_names = {name for name, _file in defined_at.values()}
     fn_names |= {n for n, (_a, kind) in externs.items() if kind == 'fn'}
 
+    # Every extent the sources compute: `sizeof` of the declared type, per
+    # translation unit, from cdecl.py's parse of the game's own `typedef
+    # struct` definitions. This is what STRUCT_EXTENTS used to carry by hand,
+    # for the five records somebody had noticed.
+    src_ext = cdecl.scan()
+
     def declared_extent(addr):
         """The byte extent the game's own declarations give the object at
-        `addr`, or 0 when no declaration there has a computable size."""
+        `addr`, or 0 when no declaration there has a computable size.
+
+        Three sources, widest wins: the computed `sizeof` of the declared type
+        (cdecl.py -- structs, unions, arrays of them, per TU), the array bounds
+        the pointer scan already reads, and STRUCT_EXTENTS, which is now a
+        REGRESSION FIXTURE rather than the mechanism (see check_hand_table)."""
         best = STRUCT_EXTENTS.get(addr, (0, ''))[0]
+        e = src_ext.get(addr)
+        if e is not None:
+            best = max(best, e.size)
         for nm in data_names.get(addr, ()):
             for daddr, _depth, _count, nbytes in decls.get(nm, []):
                 if daddr == addr and nbytes:
                     best = max(best, nbytes)
         return best
+
+    def extent_cite(addr):
+        """file:line of the declaration and of the struct definition behind the
+        extent at `addr`."""
+        e = src_ext.get(addr)
+        if e is not None:
+            return e.citation()
+        return STRUCT_EXTENTS.get(addr, (0, ''))[1]
 
     # ---- ONE object per object: interior aliases ---------------------------
     # Every global is otherwise sized by the gap to the next named address, so
@@ -793,26 +838,46 @@ def main():
     absorbed = {}             # absorbed addr -> host addr
     interiors = {}            # host addr -> [(name, offset)]
     host_end = {}             # host addr -> end address the merge must cover
+    split_log = []            # every object the tiling would have split
     for addr in sorted(data_names):
         if addr in absorbed:
             continue
         ext = declared_extent(addr)
         if ext <= 1:
             continue
+        tiled = next_addr.get(addr, addr + 4) - addr
+        log = None
+        if ext > tiled:
+            # The object is wider than its tile, so the tiling WOULD have split
+            # it: one block per named field. Every one of these is a row of
+            # gen/extents.md whatever happens next.
+            log = {'addr': addr, 'ext': ext, 'tiled': tiled, 'state': '',
+                   'names': sorted(data_names[addr]), 'taken': [],
+                   'end': addr + ext, 'cite': extent_cite(addr)}
+            split_log.append(log)
         names = sorted(data_names[addr])
         if any(n in defined for n in names) or \
                 not [n for n in names if n in missing_data and c_ident_ok(n)]:
+            if log:
+                log['state'] = 'no block here (a game object defines it)'
             continue          # no block is emitted here, so it can host nothing
         taken, end = [], addr + ext
+        clamped = None
         i = bisect.bisect_right(known, addr)
         while i < len(known) and known[i] < end:
             k = known[i]
             if k not in data_names or any(n in defined for n in data_names[k]):
                 end = k       # not ours: clamp the extent here
+                clamped = k
                 break
             taken.append(k)
             end = max(end, next_addr.get(k, k + 4))
             i += 1
+        if log:
+            log['taken'] = taken
+            log['end'] = end
+            log['state'] = ('merged' if taken else 'nothing named inside it') + \
+                (f' (clamped at 0x{clamped:08x})' if clamped else '')
         if not taken:
             continue
         for k in taken:
@@ -851,29 +916,45 @@ def main():
         symbol_at[addr] = primary
 
     # ---- which words are pointers, and what they point INTO ----------------
-    # the leading `n_ptr` words of a global are pointers when any extern
-    # declaration of a name at that address has pointer depth >= 1. An
-    # unbounded `[]` is bounded by the data itself -- the table ends at the
-    # first word that could not be a pointer, which is where the literals it
-    # points at usually begin.
+    # A word of a global is a pointer slot when an extern declaration of a name
+    # AT THAT WORD has pointer depth >= 1 -- the name at the block's own address
+    # or any interior alias of it. An unbounded `[]` is bounded by the data
+    # itself -- the table ends at the first word that could not be a pointer,
+    # which is where the literals it points at usually begin.
 
-    def ptr_slot_count(addr, names, size, data):
-        declared, unbounded = 0, False
-        for nm in names:
+    def ptr_slot_words(addr, names, size, data, inter):
+        """The word indices of `addr`'s block that hold pointers.
+
+        One pass per name in the block -- the host's own names at offset 0 and
+        every interior alias at its own offset -- because a merged record's
+        pointer fields are reached through the interior name, not through the
+        host. Before the extents were computed from the sources this could only
+        ever be a leading count, and an interior pointer word would have kept
+        the original binary's address."""
+        slots = set()
+        nwords = size // 4
+        for nm, off in [(n, 0) for n in names] + list(inter):
+            if off % 4:
+                continue                            # not a word boundary
+            base = off // 4
+            declared, unbounded = 0, False
             for daddr, depth, count, _nbytes in decls.get(nm, []):
-                if daddr != addr or depth < 1:
+                if daddr != addr + off or depth < 1:
                     continue
                 if count is None:
                     unbounded = True
                 else:
                     declared = max(declared, count)
-        n = min(max(declared, size // 4 if unbounded else 0), size // 4)
-        if unbounded and data is not None:
-            for k in range(n):                      # stop where the table does
-                w = struct.unpack_from('<I', data, k * 4)[0]
-                if not (w == 0 or DATA_LO <= w < DATA_HI or w in symbol_at):
-                    return k
-        return n
+            n = min(max(declared, nwords - base if unbounded else 0),
+                    nwords - base)
+            if unbounded and data is not None:
+                for k in range(n):                  # stop where the table does
+                    w = struct.unpack_from('<I', data, (base + k) * 4)[0]
+                    if not (w == 0 or DATA_LO <= w < DATA_HI or w in symbol_at):
+                        n = k
+                        break
+            slots.update(range(base, base + n))
+        return slots
 
     blocks = {}               # start -> (name, size): every rebuilt data block
     for addr, primary, size, _d, _r, _w, _i in plan:
@@ -942,10 +1023,11 @@ def main():
     # the synthesised gap blocks are part of the plan (and of the prologue's
     # declarations) by the time the first global is written.
     n_ptr_of = {}
-    for addr, primary, size, data, _rest, words, _i in plan:
-        n = ptr_slot_count(addr, sorted(data_names[addr]), size, data) if words else 0
-        n_ptr_of[addr] = n
-        for k in range(n):
+    for addr, primary, size, data, _rest, words, inter in plan:
+        slots = ptr_slot_words(addr, sorted(data_names.get(addr, [])), size,
+                               data, inter) if words else set()
+        n_ptr_of[addr] = slots
+        for k in sorted(slots):
             w = struct.unpack_from('<I', data, k * 4)[0]
             if w and w not in symbol_at and DATA_LO <= w < DATA_HI:
                 resolve_pointer(w)
@@ -970,7 +1052,8 @@ def main():
                     f'{" interior: " + ", ".join(f"{n}+0x{o:x}" for n, o in inter) if inter else ""} */')
         if words:
             body.append(emit_words(primary, size, data, resolve,
-                                   n_ptr_of.get(addr, 0), refs, nocommon=bool(inter)))
+                                   n_ptr_of.get(addr, ()), refs,
+                                   nocommon=bool(inter)))
         else:
             body.append(emit_bytes(primary, size, data, nocommon=bool(inter)))
         typ, count = decl_of[primary]
@@ -1164,8 +1247,137 @@ def main():
         for a, r, asig, rsig in sorted(cast_fwd):
             manifest.append(f'| `{a}` | `{r}` | `{lr.sig_text(asig)}` | '
                             f'`{lr.sig_text(rsig)}` |')
+    # ---- gen/extents.md: every object the gap tiling would have split -------
+    # The whole split-record class in one table, computed rather than noticed:
+    # an object whose type is wider than the gap to the next named address was
+    # going to come out as one block per named field, with the writers and the
+    # readers addressing different memory. The hand table at the top of this
+    # file is now the regression test for the parser, not the mechanism.
+    ext_md = ['# Source-derived object extents', '',
+              "Computed by `portable/tools/cdecl.py` from the game's own",
+              '`typedef struct` definitions and `extern` declarations (MSVC x86',
+              'layout, `#pragma pack` honoured, ILP32 sizes). Every row is an object',
+              'whose computed extent exceeds the size the gap tiling would have given',
+              'it -- i.e. every object that WOULD have been split into one block per',
+              'named field, with the files that write it and the files that read it',
+              'addressing different memory.', '']
+    hand_rows = []
+    for addr in sorted(STRUCT_EXTENTS):
+        want, cite = STRUCT_EXTENTS[addr]
+        e = src_ext.get(addr)
+        cited = sorted({c[0] for c in e.cites}) if e else []
+        hand_rows.append((addr, want, e.size if e else 0, want in cited, cite))
+    ext_md += ['## Regression: the rows the hand table carried', '',
+               'Each must be reproduced by the parser -- cited by some translation unit',
+               'at exactly the hand-written number -- and the extent actually used must',
+               'cover it. A `NO` in either column is a parser regression, not a new',
+               'finding.', '',
+               "| address | hand table | computed | reproduced | the hand row's citation |",
+               '| --- | --- | --- | --- | --- |']
+    for addr, want, got, ok, cite in hand_rows:
+        ext_md.append(f'| `0x{addr:08x}` | {want} (0x{want:x}) | {got} (0x{got:x}) '
+                      f'| {"yes" if ok and got >= want else "**NO**"} | {cite} |')
+    n_repro = sum(1 for _a, w, g, ok, _c in hand_rows if ok and g >= w)
+    ext_md += ['', f'{n_repro}/{len(hand_rows)} reproduced.', '']
+    if n_repro != len(hand_rows):
+        print(f'gen_link: WARNING {len(hand_rows) - n_repro} STRUCT_EXTENTS row(s) '
+              f'not reproduced by cdecl.py -- see gen/extents.md', file=sys.stderr)
+
+    ext_md += ['## Every object whose computed extent exceeds the gap-tiled size',
+               '',
+               '`state` is what the interior-alias pass did with it: `merged` (one',
+               'block, the other names offset aliases of it), `clamped` at an address',
+               'the pass may not claim, `nothing named inside it` (the extent is real',
+               'but no other name reaches into it, so the tiling was already right), or',
+               '`no block here` (a game object defines this address and the generator',
+               'emits nothing for it). `field` names the struct field each interior',
+               'offset lands on; `NOT A FIELD` marks an offset that is not on a field',
+               'boundary of the declared type -- legitimate for a byte name inside a',
+               'dword, and the first thing to check if a type looks wrong.', '',
+               '| address | object | type, extent | tiled | state | interior aliases |',
+               '| --- | --- | --- | --- | --- | --- |']
+    n_hand = 0
+    for log in split_log:
+        addr = log['addr']
+        e = src_ext.get(addr)
+        ty = e.type if e else None
+        inter = interiors.get(addr, [])
+        bits = []
+        for nm, off in inter:
+            fname_ = cdecl.field_name_at(ty, off) if ty else ''
+            ok = cdecl.is_field_boundary(ty, off) if ty else None
+            bits.append(f'`{nm}`+0x{off:x}' +
+                        (f' ({fname_})' if fname_ else '') +
+                        ('' if ok is not False else ' **NOT A FIELD**'))
+        if addr in STRUCT_EXTENTS:
+            n_hand += 1
+        ext_md.append(
+            f'| `0x{addr:08x}` | ' + ', '.join(f'`{n}`' for n in log['names'][:4]) +
+            (' ...' if len(log['names']) > 4 else '') +
+            f' | {log["cite"] or "-"} -> {log["ext"]} (0x{log["ext"]:x}) '
+            f'| {log["tiled"]} | {log["state"]}'
+            f'{" [hand table]" if addr in STRUCT_EXTENTS else ""} '
+            f'| {", ".join(bits) if bits else "-"} |')
+    merged = [lg for lg in split_log if lg['state'].startswith('merged')]
+    ext_md += ['', f'{len(split_log)} objects would have been split; '
+               f'{len(merged)} are merged here ({n_hand} of them were in the hand '
+               f'table, {len(merged) - n_hand} are new).', '']
+
+    dis = [(a, e) for a, e in sorted(src_ext.items())
+           if len({c[0] for c in e.cites}) > 1]
+    ext_md += ['## Translation units that disagree about an extent', '',
+               'The sources define their types locally on purpose, so the same address',
+               'can be declared as a 4-byte pointer in one file and a 36-byte table in',
+               'another. The widest declaration wins (it is the only one that can cover',
+               'the whole record) and the clamp keeps it to storage the tiling was going',
+               "to hand these names anyway -- but a disagreement is worth a human's",
+               'eye, because one of the two files is wrong about the image.', '',
+               '| address | used | the declarations |', '| --- | --- | --- |']
+    for a, e in dis:
+        rows = ', '.join(f'`{nm}` {tn} = {ext} ({where})'
+                         for ext, nm, tn, where, _d in
+                         sorted(e.cites, key=lambda c: -c[0]))
+        ext_md.append(f'| `0x{a:08x}` | {e.size} | {rows} |')
+    ext_md += ['', f'{len(dis)} addresses with more than one computed extent.', '']
+
+    unsized = cdecl.unsized_objects()
+    near = []
+    for a in sorted(unsized):
+        if a not in data_names:
+            continue
+        tile = next_addr.get(a, a + 4) - a
+        if tile > 64:
+            continue            # nothing close enough behind it to be a field
+        near.append((a, tile, unsized[a]))
+    ext_md += ['## The residue: objects whose type the parser cannot size', '',
+               'A type no translation unit lays out (a `windows.h` struct, an array',
+               'whose bound is a macro) still has no extent, so these objects are still',
+               'sized by the gap to the next named address. Listed are the ones whose',
+               'tile is 64 bytes or less -- small enough that the next named address',
+               'could be their own second field. A split record is still the first thing',
+               'to suspect for any "the game ignores X" report, and this is the list.', '',
+               '| address | tile | declarations with no computable size |',
+               '| --- | --- | --- |']
+    for a, tile, rows in near:
+        ext_md.append(f'| `0x{a:08x}` | {tile} | ' +
+                      ', '.join(f'`{nm}` {tn} ({w})' for nm, tn, w in rows[:6]) +
+                      (' ...' if len(rows) > 6 else '') + ' |')
+    ext_md += ['', f'{len(near)} addresses (of {len(unsized)} unsized declarations).',
+               '']
+
+    manifest += ['', '## Source-derived extents (gen/extents.md)', '',
+                 f'- objects the gap tiling would have split: {len(split_log)}',
+                 f'- of those, merged into one block: {len(merged)} '
+                 f'({n_hand} from the hand table, {len(merged) - n_hand} new)',
+                 f'- STRUCT_EXTENTS rows reproduced by cdecl.py: '
+                 f'{n_repro}/{len(hand_rows)}',
+                 f'- addresses two TUs give different extents: {len(dis)}',
+                 f'- declarations with no computable size next to a close '
+                 f'neighbour: {len(near)}']
+
     for fname, text in (('globals.c', globals_c), ('aliases.c', aliases_c),
-                        ('stubs.c', stubs_c), ('host_stubs.c', host_c), ('manifest.md', manifest)):
+                        ('stubs.c', stubs_c), ('host_stubs.c', host_c),
+                        ('manifest.md', manifest), ('extents.md', ext_md)):
         with open(os.path.join(args.out, fname), 'w') as f:
             f.write('\n'.join(text) + '\n')
     with open(os.path.join(args.out, 'll_gen.h'), 'w') as f:

@@ -69,6 +69,7 @@ add_custom_command(
   DEPENDS legoland_core
           "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_link.py"
           "${CMAKE_CURRENT_SOURCE_DIR}/tools/linkreport.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tools/cdecl.py"
           "${CMAKE_CURRENT_SOURCE_DIR}/tools/win32_imports.txt"
   COMMENT "gen_link.py: globals, aliases and stubs for the link closure"
   VERBATIM)
