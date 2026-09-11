@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include <emscripten.h>
+#include <emscripten/eventloop.h>       /* emscripten_set_interval (B5's flush) */
 
 #include "ll_host.h"
 
@@ -58,18 +59,241 @@ extern unsigned char g_cert_message[];      /* 0x0080ffa0  g_cur_profile */
 extern unsigned char g_profile_name_len[];  /* 0x00798894 */
 extern unsigned char g_newprof_popup_up[];  /* 0x007986e8 */
 
+/* ---- PORT-B9: the RENDER state, by name ----------------------------------
+ *
+ * A7-1 ("the in-game screen draws the HUD and not the map") cannot be settled
+ * from the canvas or from the host-call ring, because the map renderer draws
+ * in SOFTWARE into a surface the host has already handed over: between Lock
+ * and Unlock the game touches no host entry point at all, so a frame that
+ * paints ten thousand terrain tiles and a frame that paints none look
+ * identical from `?beat=`. The only witness is the game's own memory.
+ *
+ * These are exactly the globals renderview.c's "HOST / BROWSER-RENDERER
+ * CONTRACT" block (renderview.c:150) lists as RenderView's inputs, plus the
+ * three that say whether its ground pass RAN (`g_ground_last_x/y`, which
+ * sysmisc3.c's RenderGroundLayer stores after PaintTileLayer returns) and the
+ * surface/lock state surface.c publishes. Nothing here changes the game or
+ * the closure: each case is one address.
+ *
+ * `ll_dbg_name` keeps the page's labels from drifting from the addresses --
+ * the two lists cannot disagree because there is only one list. */
+extern unsigned char g_map[];               /* 0x004bcbf4  MapHdr* (alias of g_game) */
+extern unsigned char g_map_rows[];          /* 0x00801400  Cell** */
+extern unsigned char g_scroll_x[];          /* 0x00667cb4  24.8 */
+extern unsigned char g_scroll_y[];          /* 0x00667cb8  24.8 */
+extern unsigned char g_default_tile[];      /* 0x00667ca4 */
+extern unsigned char g_tile_sprites[];      /* 0x00805f60  Sprite*[] */
+extern unsigned char g_bg_full_update[];    /* 0x004b9220 */
+extern unsigned char g_view_dirty[];        /* 0x00667cc4 */
+extern unsigned char g_ground_last_x[];     /* 0x004b95e8  RenderGroundLayer's store */
+extern unsigned char g_ground_last_y[];     /* 0x004b95ec */
+extern unsigned char g_render_clip[];       /* 0x00668108  WinRect */
+extern unsigned char g_clip_rect[];         /* 0x004bdea0  WinRect */
+extern unsigned char g_ddsd_bits[];         /* 0x006680c0  last Lock's lpSurface */
+extern unsigned char g_ddsd_pitch[];        /* 0x006680ac */
+extern unsigned char g_video_locked[];      /* 0x00668148 */
+extern unsigned char g_present[];           /* 0x004bd3c8  the present callback */
+extern unsigned char g_primary[];           /* 0x00668070 */
+extern unsigned char g_draw_surface[];      /* 0x0066807c */
+extern unsigned char g_surface_78[];        /* 0x00668078 */
+extern unsigned char g_target[];            /* 0x00668118 */
+extern unsigned char g_game_mode[];         /* 0x008119b4 */
+extern unsigned char g_screen_mode[];       /* 0x0080ff88 */
+extern unsigned char g_cur_screen[];        /* 0x0080ff84 */
+extern unsigned char g_edit_state[];        /* 0x008119b0 */
+extern unsigned char g_show_cursor[];       /* 0x00667d40 */
+extern unsigned char g_odf_head[];          /* 0x00669240 */
+extern unsigned char g_zb_base[];           /* 0x004b3f10 */
+extern unsigned char g_park_start_pending[];
+extern unsigned char g_sim_frame[];
+extern unsigned char g_ci_interface_bg[];   /* the toolbar sprite that DOES draw */
+
+/* The LEVEL LOADER's own state. The map RenderView walks is filled by
+ * loadmap.c's LoadBaseMap (0x00461a50), which the level script reaches through
+ * levelkw.c's `MAP <name>` keyword (LevelKw_MAP, 0x00478ac0). LoadBaseMap has
+ * four numbered early returns before it writes a single cell -- -1 no name,
+ * -2 LLIDB_FindElement, -3 RES_OpenFile, and the short `g_perim_count` exit --
+ * and each one leaves a different one of these globals at its .data value, so
+ * reading them says HOW FAR the load got without a single line of game code
+ * changing. */
+extern unsigned char g_map_loaded[];        /* set 1 on every LoadBaseMap exit */
+extern unsigned char g_map_ready[];         /* StartPark's last store */
+extern unsigned char g_map_elem[];          /* the map's LLIDB element */
+extern unsigned char g_tsm_mapping_elem[];  /* the tile-set mapping element */
+extern unsigned char g_terrain_elem[];      /* the terrain element */
+extern unsigned char g_terrain_elem_data[];
+extern unsigned char g_terrain_objects[];   /* the perimeter list */
+extern unsigned char g_perim_count[];       /* S4's count, read from the file */
+extern unsigned char g_perim_aux[];
+extern unsigned char g_array_A[];
+extern unsigned char g_array_B[];
+extern unsigned char g_env_class[];
+extern unsigned char g_level_db_active[];
+extern unsigned char g_freeplay_db[];
+extern unsigned char g_build_in_progress[];
+extern unsigned char g_map_loading[];
+
+/* The RES master directory (audio3.c:537). Every mounted volume's members are
+ * flattened into a list of directory BUCKETS, each {next, files, name}, and
+ * `RES_OpenFile` (res.c:93) splits its path at the last backslash and looks the
+ * bucket up by name before walking the bucket's members. Walking the two lists
+ * from the page answers "is the file the loader asked for actually in an
+ * archive, and under what name" without opening anything. */
+extern unsigned char g_master_dirs[];       /* 0x00798624  MasterDir* */
+extern unsigned char g_master_vols[];       /* 0x00798628  MasterVol* */
+
+/* movie3.c's ParseKeywordFile (0x004781f0) copies the script's name here and
+ * ONLY on the arm where RES_OpenFile succeeded, so this string is the exact
+ * witness for "did the level script open". `g_level_number` is what
+ * LevelKw_CURRENCY and the other level-1-only keywords gate on. */
+extern unsigned char g_keyword_file_name[]; /* 0x00668fd0 */
+extern unsigned char g_level_number[];
+
+/* A7-1's root cause, for the page to read and to PATCH (see index.html's
+ * llFixKeywordTable). `movie.c:239` declares the 93-pair level keyword table
+ *
+ *     extern const void* g_level_db_sections;   / * 0x004bb6f8 93 pairs * /
+ *
+ * as a SINGLE `const void*` -- pointer depth 1, one declared pointer word --
+ * so PORT-A7's "a word is a pointer slot when some declaration's type puts a
+ * pointer FIELD at that address" rule is never asked about words 1..188. The
+ * handler halves are re-pointed anyway (an exact function address goes through
+ * the symbol path), but all 92 KEYWORD STRING halves keep their raw x86 VAs.
+ * 89 of them are interior to `g_str_purge` and one (MAP's, 0x004bc028) to
+ * `g_str_none`; exposing those two bases lets the page translate and prove it. */
+extern unsigned char g_level_db_sections[]; /* 0x004bb6f8, 756 bytes */
+extern unsigned char g_str_purge[];         /* 0x004bb9ec, 992 bytes */
+extern unsigned char g_str_none[];          /* 0x004bbdcc, 696 bytes */
+
+/* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
+ * the same line so none of the three can drift from the others. */
+#define LL_DBG_TABLE(X)                 \
+    X( 0, g_key_state)                  \
+    X( 1, g_key_prev)                   \
+    X( 2, g_key_map)                    \
+    X( 3, g_temp_name)                  \
+    X( 4, g_cert_message)               \
+    X( 5, g_profile_name_len)           \
+    X( 6, g_newprof_popup_up)           \
+    X( 7, g_map)                        \
+    X( 8, g_map_rows)                   \
+    X( 9, g_scroll_x)                   \
+    X(10, g_scroll_y)                   \
+    X(11, g_default_tile)               \
+    X(12, g_tile_sprites)               \
+    X(13, g_bg_full_update)             \
+    X(14, g_view_dirty)                 \
+    X(15, g_ground_last_x)              \
+    X(16, g_ground_last_y)              \
+    X(17, g_render_clip)                \
+    X(18, g_clip_rect)                  \
+    X(19, g_ddsd_bits)                  \
+    X(20, g_ddsd_pitch)                 \
+    X(21, g_video_locked)               \
+    X(22, g_present)                    \
+    X(23, g_primary)                    \
+    X(24, g_draw_surface)               \
+    X(25, g_surface_78)                 \
+    X(26, g_target)                     \
+    X(27, g_game_mode)                  \
+    X(28, g_screen_mode)                \
+    X(29, g_cur_screen)                 \
+    X(30, g_edit_state)                 \
+    X(31, g_show_cursor)                \
+    X(32, g_odf_head)                   \
+    X(33, g_zb_base)                    \
+    X(34, g_park_start_pending)         \
+    X(35, g_sim_frame)                  \
+    X(36, g_ci_interface_bg)            \
+    X(37, g_map_loaded)                 \
+    X(38, g_map_ready)                  \
+    X(39, g_map_elem)                   \
+    X(40, g_tsm_mapping_elem)           \
+    X(41, g_terrain_elem)               \
+    X(42, g_terrain_elem_data)          \
+    X(43, g_terrain_objects)            \
+    X(44, g_perim_count)                \
+    X(45, g_perim_aux)                  \
+    X(46, g_array_A)                    \
+    X(47, g_array_B)                    \
+    X(48, g_env_class)                  \
+    X(49, g_level_db_active)            \
+    X(50, g_freeplay_db)                \
+    X(51, g_build_in_progress)          \
+    X(52, g_map_loading)                \
+    X(53, g_master_dirs)                \
+    X(54, g_master_vols)                \
+    X(55, g_keyword_file_name)          \
+    X(56, g_level_number)               \
+    X(57, g_level_db_sections)          \
+    X(58, g_str_purge)                  \
+    X(59, g_str_none)
+
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
     switch (which) {
-    case 0: return (unsigned int)(size_t)g_key_state;
-    case 1: return (unsigned int)(size_t)g_key_prev;
-    case 2: return (unsigned int)(size_t)g_key_map;
-    case 3: return (unsigned int)(size_t)g_temp_name;
-    case 4: return (unsigned int)(size_t)g_cert_message;
-    case 5: return (unsigned int)(size_t)g_profile_name_len;
-    case 6: return (unsigned int)(size_t)g_newprof_popup_up;
+#define LL_DBG_ADDR(n, sym) case n: return (unsigned int)(size_t)sym;
+    LL_DBG_TABLE(LL_DBG_ADDR)
+#undef LL_DBG_ADDR
     default: return 0;
     }
+}
+
+/* The name of index `which`, as a NUL-terminated string in linear memory, or
+ * 0 past the end of the table -- the page walks until it gets 0. */
+EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_name(int which)
+{
+    switch (which) {
+#define LL_DBG_NAME(n, sym) case n: return (unsigned int)(size_t)#sym;
+    LL_DBG_TABLE(LL_DBG_NAME)
+#undef LL_DBG_NAME
+    default: return 0;
+    }
+}
+
+/* ---- PORT-B9/B5: profiles across a page reload ---------------------------
+ *
+ * PORT-A7 §8 wrote this patch and could not afford the link; this is it,
+ * applied. MEMFS is rebuilt from the .data package on every load, so a profile
+ * written this session is gone on the next one. IDBFS is MEMFS plus an
+ * IndexedDB image of it that `syncfs` moves in each direction; mounting it over
+ * the profile directory ALONE keeps the rest of /gamedata read-only and cheap.
+ *
+ * The read has to finish BEFORE WinMain, because ScanForProfiles runs in the
+ * first front-end frame. ASYNCIFY makes that expressible: spin on a flag the
+ * callback clears, yielding through emscripten_sleep -- the same yield every
+ * blocking construct in this port already uses. */
+static volatile int g_syncfs_pending;
+
+EM_JS(void, ll_mount_profiles, (int* flag), {
+    try {
+        FS.mkdirTree('/gamedata/profiles');
+        FS.mount(IDBFS, {}, '/gamedata/profiles');
+    } catch (e) {
+        console.warn('[browser] IDBFS mount failed:', e);
+        HEAP32[flag >> 2] = 0;                 /* carry on with MEMFS */
+        return;
+    }
+    FS.syncfs(true, function (err) {           /* IndexedDB -> MEMFS */
+        if (err) console.warn('[browser] profile restore failed:', err);
+        HEAP32[flag >> 2] = 0;
+    });
+});
+
+EM_JS(void, ll_flush_profiles, (void), {
+    FS.syncfs(false, function (err) {          /* MEMFS -> IndexedDB */
+        if (err) console.warn('[browser] profile save failed:', err);
+    });
+});
+
+/* The write-back. The honest hook is SaveProfileToDisk finishing, which the
+ * host cannot see, so this is a dumb timer: a flush with nothing dirty is an
+ * IndexedDB transaction over a 272-byte file, and five seconds is far below
+ * the cost of one frame's ~22,000 timeGetTime calls. NOT per frame. */
+static void ll_flush_profiles_cb(void* arg)
+{
+    (void)arg;
+    ll_flush_profiles();
 }
 
 /* winmain.c 0x00453d10. __stdcall is ignored off x86. */
@@ -116,19 +340,17 @@ int main(int argc, char** argv)
      * what the host owes the game either way, because MEMFS starts empty and
      * every profile the player makes is written into it (UpDateCurrentProfile,
      * profiles.c 0x00491680). It does mean the page does not hit the bug.
-     * MEMFS is per-tab and vanishes on reload: persisting profiles wants IDBFS
-     * mounted here instead, which is noted in scope-port-b4.md §6.
-     *
-     * EEXIST is the normal answer on a reload-free rebuild; only a real failure
-     * is worth a line. */
-    if (mkdir(LL_GAMEDATA "/profiles", 0777) != 0) {
-        /* errno is not checked against EEXIST because MEMFS has no persistence
-         * across page loads: a second run always starts with the directory
-         * absent, so a failure here is always real. */
-        fprintf(stderr, "[browser] mkdir(%s/profiles) failed; "
-                        "the front end's profile screens will not load\n",
-                LL_GAMEDATA);
-    }
+     * MEMFS is per-tab and vanished on reload, which is B5; PORT-B9 replaced
+     * the bare mkdir with the IDBFS mount above, so the directory is made by
+     * FS.mkdirTree and then BACKED by IndexedDB. The mkdir is gone rather than
+     * kept as a fallback because ll_mount_profiles makes the directory on both
+     * paths -- the mount and the caught-exception path -- and a second mkdir
+     * over a mounted filesystem is only a way to get a confusing EEXIST line. */
+    g_syncfs_pending = 1;
+    ll_mount_profiles((int*)&g_syncfs_pending);
+    while (g_syncfs_pending)
+        emscripten_sleep(10);
+    emscripten_set_interval(ll_flush_profiles_cb, 5000, NULL);
 
     printf("[browser] LEGOLAND portable: WinMain(\"%s\")\n", cmdline);
     fflush(stdout);
