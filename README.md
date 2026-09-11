@@ -1147,6 +1147,66 @@ absent slots in READ mode; and PORT-B7's second wedge (the advert screen's Go
 Back) does not reproduce on an honest build. MEMFS still loses the profile on a
 reload -- IDBFS is the next PORT-B job.
 
+## A pointer FIELD is a pointer word: the park's doors open (scope PORT-A7)
+
+PORT-B8 handed this one over measured: 1211 words of the generated closure still
+hold RAW x86 addresses, thirty of them the progress screens' sprite names, and
+the game hangs on both of them.
+
+**The rule that was missing.** `gen_link.py` decides which words are pointers
+from the game's own declarations -- never from the value, because a
+three-character string at the end of a word is an in-image number and a
+value-only rule gets 1,209 of 1,650 wrong. But it only ever read the TOP-LEVEL
+declaration's pointer depth, so
+
+```c
+extern LevelMarker g_low_markers[5];      /* 0x004beca0 */
+```
+
+contributed no pointer slots at all, and the ten `const char*` MEMBERS of those
+five records kept the original binary's addresses. PORT-A2 knew ("pointer
+members of struct arrays are still raw") and PORT-A6 built the machine that
+answers it -- `cdecl.py` lays these structs out -- but was only ever asked for
+their `sizeof`.
+
+`cdecl.pointer_offsets(ty)` walks the laid-out type, through nested aggregates
+and every element of every array, and the rule becomes: **a word is a pointer
+slot when some declaration's type puts a pointer FIELD at that ADDRESS.** By
+address, not by an offset into whichever block is emitted -- `g_level_markers`
+is declared at 0x004beb80 by `screens3.c` and, eight bytes in with its fields
+rotated to match, at 0x004beb88 by `bigscreens.c`; the block lands on the second,
+so its pointers sit at +0x14/+0x18 of each record and record 0's two names live
+in the tail of `g_mode_wplus`'s block.
+
+The value keeps one vote, and only ever a veto: a declaration that claims a
+pointer where the image holds something that cannot be an address
+(`void* g_music_sys` holding 1) is rejected for that array ELEMENT and reported.
+
+```
+interior re-points  441 -> 693        (+252: g_fp_table 130, g_build_followups 46,
+                                       g_level_markers 18, g_low_markers 10, ...)
+every other cell    0 of 21,368 differ, 2042 objects and 3,705,868 bytes unchanged
+B8's value census   1211 -> 959       (the residue is string TEXT, by construction)
+```
+
+**`gen/pointers.md`** is the new artifact and **`raw pointer words` is the new
+gate**: a declared pointer word, inside the image, that nothing re-pointed and
+nothing can explain. It must be 0, and the ctest **`pointer_words`** (asset-free,
+both toolchains) fails the build if it is not. Words left raw on purpose are
+listed with a reason -- a pointer into `.text` is a function-table index on wasm,
+and a word whose value is not an address is a declaration to fix (there are 12,
+all a `void*` over a count or a flag; the list is in
+`docs/lanes/scope-port-a7.md` §6).
+
+**In a tab:** the tutorial screen now draws the tick beside Lesson 1 (that
+sprite IS `Appraisal_Yes.lls`), and the click that wedged the page for two lanes
+-- `Accept_On_Report` at (577, 419) -- returns in **827 ms** into the in-game
+screen, money bar and park toolbar drawn, 34 fps, no trap. The other door
+(577, 300) answers in 824 ms. What does NOT happen yet is the park RENDERING:
+the map area keeps the previous screen's backdrop and the frame makes two blits
+where the front end made twenty-five. That is the next blocker and it is not in
+the closure.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
