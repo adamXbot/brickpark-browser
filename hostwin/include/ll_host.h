@@ -409,7 +409,11 @@ typedef struct LLFontMetrics {
     int weight;     /* the LOGFONT's lfWeight */
     int bold;       /* weight >= 600 */
     int gw, gh;     /* the ink box one glyph is scaled into */
-    int advance;    /* pen movement per character (this face is monospaced) */
+    int advance;    /* NOMINAL pen movement: the widest glyph. The face is
+                     * proportional -- every glyph advances by its own ink
+                     * width -- so nothing lays text out with this; it is the
+                     * one number a caller with no character in hand can use.
+                     * ll_font_text_width is the real measure. (PORT-B10) */
     int line_h;     /* baseline-to-baseline, == cell_h */
     int ascent;
 } LLFontMetrics;

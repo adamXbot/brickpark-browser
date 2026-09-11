@@ -165,6 +165,24 @@ extern unsigned char g_level_db_sections[]; /* 0x004bb6f8, 756 bytes */
 extern unsigned char g_str_purge[];         /* 0x004bb9ec, 992 bytes */
 extern unsigned char g_str_none[];          /* 0x004bbdcc, 696 bytes */
 
+/* PORT-B10 -- the PLAY state. Walking the tutorial means asserting things a
+ * screenshot cannot settle: how much money the park has (the money readout is a
+ * bitmap number, and a bitmap number is exactly what a frame hash cannot read),
+ * how many visitors are inside, whether anything is alive at all. Each is one
+ * recovered global:
+ *   g_bricks         sweep1.c:51            the money -- what RenderMoneyBar
+ *                                           (money.c:154) sprintf("%5d")s
+ *   g_bricks_full    money.c:67             the bar's denominator, set at load
+ *   g_num_visitors   appraisalscreen.c:149  the appraisal's visitor count
+ *   g_people_head    blokeai.c:164          the live Bloke chain: visitors,
+ *                                           workers, gardeners, mechanics
+ *   g_visitor_limit  blitmisc.c:127         how many the park is allowed */
+extern unsigned char g_bricks[];            /* 0x004b90f8  int */
+extern unsigned char g_bricks_full[];       /* 0x00832974  int */
+extern unsigned char g_num_visitors[];      /* 0x00832bd0  int */
+extern unsigned char g_people_head[];       /* 0x0066b574  Bloke* */
+extern unsigned char g_visitor_limit[];     /* 0x0083291c  int */
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -227,7 +245,12 @@ extern unsigned char g_str_none[];          /* 0x004bbdcc, 696 bytes */
     X(56, g_level_number)               \
     X(57, g_level_db_sections)          \
     X(58, g_str_purge)                  \
-    X(59, g_str_none)
+    X(59, g_str_none)                   \
+    X(60, g_bricks)                     \
+    X(61, g_bricks_full)                \
+    X(62, g_num_visitors)               \
+    X(63, g_people_head)                \
+    X(64, g_visitor_limit)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
