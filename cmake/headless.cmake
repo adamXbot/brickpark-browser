@@ -314,9 +314,35 @@ if(EMSCRIPTEN)
       PASS_REGULAR_EXPRESSION "INPUT OK"
       FAIL_REGULAR_EXPRESSION "FAIL|TRAP|unreachable|RuntimeError|cannot chdir"
       TIMEOUT 300)
+    # ---- how many sound buffers does the park load? (PORT-A9) -------------
+    # PORT-B11 made the port audible and then measured that
+    # IDirectSound::CreateSoundBuffer is called ONCE in a whole session where
+    # 23 sound effects should load before the front end draws -- not a shim
+    # defect but a data one: `extern FXEntry g_game_fx[];` has no bound, the
+    # closure never re-points the table's `.name` words, and Load_FXList's
+    # failure branch is a silent DBPrintf (docs/lanes/scope-port-b11.md §3).
+    # Counting the buffers in a tab needs a human and a trace filter; this runs
+    # the game's own audio init and FX loads under node and prints a number.
+    #
+    # LL_AUDIO_BUFFERS IS A FLOOR AND A RATCHET. 4 is what A9's complete-element
+    # extent rule recovered on its own: g_game_fx entries 0 and 1 (Flowers.wav,
+    # RabOld\Drill.wav) and both money effects. The other 21 names are still raw
+    # and are bounds the game sources owe (PORT-M11, and the rows in
+    # portable/tests/rawwords_baseline.txt); when they land this number should
+    # reach 25 and the probe prints a line asking for the floor to be raised.
+    set(LL_AUDIO_BUFFERS 4)
+    add_test(NAME probe_audio
+             COMMAND node "$<TARGET_FILE_DIR:legoland_headless>/legoland_headless.js"
+                     --probe-audio ${LL_AUDIO_BUFFERS})
+    set_tests_properties(probe_audio PROPERTIES
+      ENVIRONMENT "LL_CD_DIR=${LL_ROOT}/gamedata/disc;LL_DATA_DIR=${LL_ROOT}/gamedata/main"
+      PASS_REGULAR_EXPRESSION "AUDIO [0-9]+ sound buffer"
+      FAIL_REGULAR_EXPRESSION "FAIL|TRAP|unreachable|RuntimeError|cannot chdir"
+      TIMEOUT 300)
   else()
     message(STATUS "PORT-A headless: gamedata/ not present, "
-                   "headless_spine and probe_input not registered (they need "
+                   "headless_spine, probe_input and probe_audio not registered "
+                   "(they need "
                    "the title artwork and the volumes out of Graphics1.res)")
   endif()
 

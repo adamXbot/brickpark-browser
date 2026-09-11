@@ -466,6 +466,195 @@ static void ll_probe_show(const char* when)
             g_gfx_point.x, g_gfx_point.y, (unsigned)g_mouse_buttons);
 }
 
+/* ---- --probe-audio: how many sound buffers does a park load? --------------
+ *
+ * PORT-B11 made the port audible and then measured what it actually plays on a
+ * whole walk to the park with `?trace=1&tracegrep=DSOUND`:
+ * `IDirectSound::CreateSoundBuffer` is called ONCE in a session -- 69,228
+ * bytes, which decodes to `Space Tower01.wav` -- and zero times on a slightly
+ * different route. 23 sound effects should load before the front end draws.
+ * The cause is not the shim, the ACM or the archive: `extern FXEntry
+ * g_game_fx[];` has no bound, so the closure generator never re-points the
+ * table's `.name` words and `sprintf(".\\sfx\\%s", <a raw x86 address>)` builds
+ * a member name nothing matches -- and `Load_FXList`'s failure branch is a
+ * `DBPrintf` that is silent in this port (docs/lanes/scope-port-b11.md §3).
+ *
+ * Counting the buffers in a browser tab needs a human with a trace filter. This
+ * mode does it under node, in a second, and prints a number a test can assert:
+ *
+ *   * `InitSoundSampleSystem(0)` -- the game's own audio init (audio4.c:163),
+ *     which is what creates `g_dsound`;
+ *   * the harness then wraps that object's vtable with a COUNTING copy. The
+ *     shim is PORT-B's and the game is the matching lanes'; a test-side vtable
+ *     thunk needs neither to change, and it counts the real calls rather than
+ *     inferring them from what loaded;
+ *   * `Load_FXList(g_game_fx, 0x17)` and `LoadMoneySFX()` -- exactly the calls
+ *     `InitGameMap` (mapinit.c:41) and the money HUD make on the B10 walk, and
+ *     the ones whose samples never arrived;
+ *   * per entry: the `.name` word, whether it is a readable string at all, and
+ *     whether `.sample` came back.
+ *
+ * `--probe-audio [N]` fails when fewer than N buffers were created, so the
+ * ctest holds today's number as a floor and a bound landing in the game sources
+ * raises it. */
+typedef struct LLProbeDSBufferVtbl { void* slot[16]; } LLProbeDSBufferVtbl;
+
+/* data2.c:544-556 / audio3.c:88-100: the IDirectSound vtable, by slot. Only
+ * CreateSoundBuffer (+0x0c) is named; the rest are carried as void* so the copy
+ * is exact whatever the shim put there. */
+typedef struct LLProbeDSoundVtbl {
+    void* QueryInterface;                                         /* +0x00 */
+    void* AddRef;                                                 /* +0x04 */
+    void* Release;                                                /* +0x08 */
+    long  (*CreateSoundBuffer)(void*, const void*, void**, void*); /* +0x0c */
+    void* GetCaps;                                                /* +0x10 */
+    void* DuplicateSoundBuffer;                                   /* +0x14 */
+    void* SetCooperativeLevel;                                    /* +0x18 */
+    void* rest[9];
+} LLProbeDSoundVtbl;
+
+typedef struct LLProbeDSound { LLProbeDSoundVtbl* lpVtbl; } LLProbeDSound;
+
+/* The FX table entry as audiomisc.c:96-100 declares it -- the file that DEFINES
+ * `Load_FXList` and writes the slot, so its view is the one that matters:
+ * stride 0xc with the sample at +0x08. (joust.c:620 names the same shape
+ * `{name, sample, flags}` with the sample at +0x04; for ITS table that may be
+ * right, but reading g_game_fx that way shows every entry as unloaded.) */
+typedef struct LLProbeFX {
+    char* name;      /* +0x00 the .wav member name */
+    int   pad4;      /* +0x04 */
+    void* sample;    /* +0x08 filled in by Load_FXList */
+} LLProbeFX;
+
+extern int   InitSoundSampleSystem(void* hwnd);       /* 0x00492130 */
+extern LLProbeDSound* g_dsound;                       /* 0x007cad40 */
+extern void  Load_FXList(void* list, int count);      /* 0x00496dd0 */
+extern void  LoadMoneySFX(void);                      /* 0x00453900 */
+extern int   g_samples_ready;                         /* 0x007988c0 */
+extern LLProbeFX g_game_fx[];                         /* 0x004b9228 */
+extern LLProbeFX g_money_fx[];                        /* 0x004b87a8 */
+
+static LLProbeDSoundVtbl  ll_ds_vtbl_copy;
+static LLProbeDSoundVtbl* ll_ds_vtbl_real;
+static int                ll_ds_buffers;
+static unsigned int       ll_ds_bytes;
+
+static long ll_count_create_sound_buffer(void* ds, const void* desc,
+                                         void** out, void* outer)
+{
+    long hr = ll_ds_vtbl_real->CreateSoundBuffer(ds, desc, out, outer);
+    if (hr == 0) {
+        ll_ds_buffers++;
+        /* DSBUFFERDESC: dwSize, dwFlags, dwBufferBytes at +0x08 (data2.c:530). */
+        ll_ds_bytes += ((const unsigned int*)desc)[2];
+    }
+    return hr;
+}
+
+/* Is `p` a readable C string and not a raw image address? The whole point of
+ * the probe is that a `.name` may be an integer, and in a wasm heap every
+ * integer is "readable" -- so the test is what the NAME looks like, with a
+ * length cap. */
+static int ll_probe_is_name(const char* p)
+{
+    int i;
+    if (!p)
+        return 0;
+    for (i = 0; i < 64; i++) {
+        unsigned char c = (unsigned char)p[i];
+        if (c == 0)
+            return i >= 4;          /* "a.wav" is the shortest real member */
+        if (c < 0x20 || c >= 0x7f)
+            return 0;
+    }
+    return 0;
+}
+
+static void ll_probe_fx_table(const char* what, LLProbeFX* t, int n)
+{
+    int i, loaded = 0, unreadable = 0;
+
+    for (i = 0; i < n; i++) {
+        const char* nm = t[i].name;
+        int ok = ll_probe_is_name(nm);
+        if (t[i].sample)
+            loaded++;
+        if (!ok)
+            unreadable++;
+        fprintf(stderr, "legoland_headless:   %s[%2d] name=%p %-42s sample=%s\n",
+                what, i, (void*)nm,
+                ok ? nm : "<not a string -- a RAW image address>",
+                t[i].sample ? "loaded" : "NULL");
+    }
+    fprintf(stderr, "legoland_headless: %s: %d/%d loaded, %d name(s) still raw\n",
+            what, loaded, n, unreadable);
+}
+
+static int ll_probe_audio(int want)
+{
+    int before;
+
+    if (ll_resmount_ex(1))
+        return 1;
+    fprintf(stderr, "legoland_headless: --- InitSoundSampleSystem(0)\n");
+    if (!InitSoundSampleSystem(0) || !g_samples_ready) {
+        fprintf(stderr, "legoland_headless: FAIL InitSoundSampleSystem:"
+                        " DirectSoundCreate or SetCooperativeLevel refused,"
+                        " so no sample can ever load\n");
+        return 1;
+    }
+    {
+        LLProbeDSound* ds = g_dsound;
+        if (!ds || !ds->lpVtbl) {
+            fprintf(stderr, "legoland_headless: FAIL g_dsound is NULL after a"
+                            " successful init\n");
+            return 1;
+        }
+        ll_ds_vtbl_real = ds->lpVtbl;
+        ll_ds_vtbl_copy = *ds->lpVtbl;
+        ll_ds_vtbl_copy.CreateSoundBuffer = ll_count_create_sound_buffer;
+        ds->lpVtbl = &ll_ds_vtbl_copy;
+        fprintf(stderr, "legoland_headless: counting CreateSoundBuffer through a"
+                        " wrapped vtable (real %p, copy %p)\n",
+                (void*)ll_ds_vtbl_real, (void*)&ll_ds_vtbl_copy);
+    }
+
+    fprintf(stderr, "legoland_headless: --- Load_FXList(g_game_fx, 0x17)"
+                    " (InitGameMap's own call, mapinit.c:41)\n");
+    before = ll_ds_buffers;
+    Load_FXList(g_game_fx, 0x17);
+    ll_probe_fx_table("g_game_fx", g_game_fx, 0x17);
+    fprintf(stderr, "legoland_headless:   %d buffer(s) from this table\n",
+            ll_ds_buffers - before);
+
+    fprintf(stderr, "legoland_headless: --- LoadMoneySFX()"
+                    " (audiomisc.c:184, the money HUD's two effects)\n");
+    before = ll_ds_buffers;
+    LoadMoneySFX();
+    ll_probe_fx_table("g_money_fx", g_money_fx, 2);
+    fprintf(stderr, "legoland_headless:   %d buffer(s) from this table\n",
+            ll_ds_buffers - before);
+
+    fprintf(stderr, "legoland_headless: AUDIO %d sound buffer(s) created,"
+                    " %u byte(s) of PCM\n", ll_ds_buffers, ll_ds_bytes);
+    if (ll_ds_buffers < want) {
+        fprintf(stderr, "legoland_headless: FAIL expected at least %d sound"
+                        " buffer(s), got %d. Every miss is an FX table whose"
+                        " `.name` word is still a raw x86 address, which is a"
+                        " missing bound on its declaration"
+                        " (docs/lanes/scope-port-b11.md §3, and the row in"
+                        " portable/tests/rawwords_baseline.txt)\n",
+                want, ll_ds_buffers);
+        return 1;
+    }
+    if (ll_ds_buffers > want && want > 0)
+        fprintf(stderr, "legoland_headless: the floor is %d and %d loaded --"
+                        " raise LL_AUDIO_BUFFERS in portable/cmake/"
+                        "headless.cmake in the commit that fixed it\n",
+                want, ll_ds_buffers);
+    return 0;
+}
+
 static int ll_probe_input(void)
 {
     int bad = ll_probe_layout();
@@ -618,6 +807,10 @@ int main(int argc, char** argv)
      * layout checked first. See ll_probe_input. */
     if (argc > 1 && strcmp(argv[1], "--probe-input") == 0)
         return ll_probe_input();
+    /* --probe-audio [N]: count IDirectSound::CreateSoundBuffer calls over the
+     * FX loads the park makes, and fail below N. See ll_probe_audio. */
+    if (argc > 1 && strcmp(argv[1], "--probe-audio") == 0)
+        return ll_probe_audio(argc > 2 ? (int)strtol(argv[2], 0, 0) : 0);
     /* --stages: mount the volumes, then walk InitSession's own sequence one
      * named step at a time. */
     if (argc > 1 && strcmp(argv[1], "--stages") == 0) {
