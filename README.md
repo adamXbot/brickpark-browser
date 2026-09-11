@@ -1313,6 +1313,176 @@ each new scroll position), a map-area click answering. Nothing animates, because
 there is nothing in the park. Full notes and the blocker table with owners:
 `docs/lanes/scope-port-b9.md`.
 
+## Declarators, attributed manifests, and two sweeps promoted (scope PORT-A8)
+
+The generator-and-tools lane. Nothing here is game code; the theme is that a
+tool which is *almost* right is worse than one that is obviously wrong, because
+its output gets believed.
+
+### 1. `cdecl.py` reads declarators, not a flat shape
+
+A C declarator is recursive and `cdecl.py`'s was not: it returned
+`(pointer depth, name, array count)`, which cannot express `int (*pairs)[2]` at
+all. It read that as `int *pairs[2]` — an array of two pointers instead of one
+pointer to an array of two ints — so `MeshDesc` came out **0x28 instead of
+0x1c**, every field past `pairs` moved, and three pointer words were invented
+out of the floats past the end of the record (PORT-M8's M8-3).
+
+The parser now builds a declarator tree and evaluates it by the language's own
+outside-in rule (`* D` → pointer to T, `D[N]` → array N of T, `D(...)` →
+function, `(D)` → D), so the identifier's type is whatever is left when the walk
+reaches it. That single distinction — which derivation is applied *last* — is
+the whole bug: in `int (*p)[2]` it is the pointer, in `int *p[2]` it is the
+array. On ILP32 "pointer to T" collapses to four bytes, so the tree only has to
+get the order right, never the target type.
+
+`--selftest` covers all of it, sizes **and pointer offsets**: `T (*p)[N]`,
+`T (*p)(args)`, `T (*p[N])(args)`, `T *p[N]`, `T (*p)[N][M]`, `T (**p)[N]`,
+`T (*p[N])[M]`, `T *(*p)[N]`, each as a struct member and as an object's own
+declarator, plus `T *f(void)` and `T (*f(int))(void)`, which are FUNCTIONS and
+must not be mistaken for objects. Pointer offsets are tested as well as sizes
+because an invented pointer word is the worse half: `gen_link.py` would re-point
+a word the image holds a float in.
+
+It changed exactly one thing. Over all 4,816 object declarations in the tree,
+one line differs (`g_track_mesh` 0x28 → 0x1c, six pointer offsets → three);
+`gen/extents.md` changes in that row and its counters, `gen/aliases.c` is
+byte-identical, and `globals.c` — compared as {absolute address → initialiser}
+rather than as text, because re-splitting a block moves words without changing
+them — is **identical on both builds**, 22,498 elements on wasm and 86,596 on
+native. The 496-byte `g_4b5f60` becomes 32 bytes and
+`g_support_shadow_templates` becomes its own 464-byte object at 0x004b5f80
+instead of an interior alias at +0x20, which is correct: +0x20 was never inside
+`MeshDesc`.
+
+It also recovered three real pointers. Claims are corroborated per array
+element, so the two invented words holding `0x3f800000` condemned the whole
+group and the three genuine pointers at +0x10/+0x14/+0x18 went with them.
+`declared pointer words` therefore goes **up** (7538 → 7541) and
+`pointer claims the image rejects` falls from 7 words in 2 declarations to 1 in 1.
+
+### 2. The manifest attributes its own findings
+
+Two lists used to be counts and bare names, which told a reader that something
+was wrong and nothing about what:
+
+* **The 11 conflicting wasm signatures** are now a table: the body's signature,
+  the file that defines it, the disagreeing spelling with the file that emitted
+  it, and the declaring `file:line`. Every one is DEFINED in the objects, so the
+  body settles it, and every one is a game-side declaration — two clusters, not
+  eleven problems. `screen.c` declares seven ObjDef callbacks with an empty
+  parameter list where the body takes two or three arguments (:588, :598, :662,
+  :663, :865, :877, :884), and four icon-input callbacks are spelled
+  two-argument where the body is four (`bigscreens.c:904`,
+  `bighelp.c:525/526/528` — PORT-M8's M8-4 class, at four sites M8-4 did not
+  name). All eleven are address-taken only, so nothing traps today.
+  `linkreport.wasm_sig_conflict_detail` reports the vote and
+  `linkreport.extern_decl_sites` finds every declaration of a name with its line
+  (the opposite of `scan_sources`, which keeps one address per name).
+* **Words left raw** get a verdict column from `PTR_VERDICTS` in `gen_link.py`:
+  an address, the lane that read the code, and what it concluded. The one
+  surviving row is `g_vwin32`, which PORT-M8 §4g proved is not a defect — a
+  Win32 HANDLE holding `INVALID_HANDLE_VALUE`. The manifest line now reads
+  `rows still waiting for a verdict: 0 raw + 0 rejected`, and a future row with
+  no verdict says `OPEN` in its own table instead of hiding inside a count.
+
+### 3. `portable/tools/extern_sweep.py` — a class no byte gate can see
+
+PORT-M6 §1f. One `extern` statement, several declarators, several addresses in
+its one trailing comment:
+
+```c
+extern void *g_route_open, *g_route_closed;   /* 0x00668fc0, 0x00668fc4 */
+```
+
+Every scanner in the tree takes the FIRST address and gives it to every name in
+the statement, so both objects were emitted at 0x00668fc0 and in the portable
+build **`g_route_open` WAS `g_route_closed`**. The C compiles to identical bytes
+either way — on x86 the declaration only has to say a pointer lives somewhere
+and the linker supplies the address — so `audit.py`, `relocs.py` and
+`verify.py` are all silent while two live globals alias each other.
+
+PORT-M6 and PORT-M8 each re-ran this from a scratch script. It is now a tool
+with a `--selftest` (four positive shapes, five negative — one address with two
+names is the ordinary case, two addresses with one name is prose, and a function
+declaration may legitimately cite a sibling's address) and **a ctest**, because
+the only way to keep the class closed is to sweep for the shape:
+
+```
+python3 portable/tools/extern_sweep.py            # 0 statements -- closed
+python3 portable/tools/extern_sweep.py --selftest
+```
+
+Exit status is the gate: 0 closed, 1 on any hit. Sources only — no gamedata, no
+image, no build products — so it runs in CI beside `cdecl_extents`. Currently
+**0 tree-wide**.
+
+### 4. `portable/tools/slot_sweep.py` — who CALLS a vtable slot
+
+PORT-M8's two scratch sweeps, promoted and merged into one pass. A slot's real
+type is whatever its call site pushes, and the call site may be in a file that
+never declares the callee; reading declarations cannot settle it, and reading
+the image can. **Two forms are needed**, because VC6 emits an indirect slot call
+two ways depending on register pressure:
+
+```
+call dword ptr [ecx + 0xb0]              <- direct
+mov  eax, [edi + 0xa0]  ...  call eax    <- load-then-call
+```
+
+Each form is invisible to a sweep for the other, which is how a slot that is
+called can look uncalled. Two things were needed to make the load form work at
+all on the real image, and both are in `--selftest` as regressions:
+
+* **Resynchronise the disassembly.** One `md.disasm` over `.text` dies at the
+  first jump table or COMDAT padding — on this image at 0x00437ee3, 80,686 of
+  roughly 200,000 instructions, short of every site PORT-M8 found. The sweep
+  restarts a byte along and drops its tracked registers at each resync.
+* **A tracked register lives until it is called or redefined, not until the next
+  branch.** Every load-then-call site in the image is written
+  `mov eax,[edi+0xa0]; test eax,eax; je skip; push…; call eax`, so ending the
+  register's life at the `je` loses the site — and at the `test` too, since
+  `test`/`cmp` set flags and redefine nothing. Getting this wrong returned
+  "no call site" for +0xa0, +0xac, +0xb8 and +0xbc, which is precisely the false
+  negative that makes a slot look untypable.
+
+Validated against PORT-M8's whole known set, reproducing its addresses:
+
+| slot | sites found | where |
+| --- | --- | --- |
+| `+0xa0` | 2, load | `RenderFullMap` call 0x004571a3, `RenderView` call 0x0045b95a (2 pushes each) |
+| `+0xac` | 1, load | `LLIDB_UnLoadLLSData` call 0x0047c6c2 |
+| `+0xb0` | 2, direct | `DrawAndClearPrintList` 0x00485ac3 and 0x00485b70 (6 pushes each) |
+| `+0xb8` | 1, load | `LoadGame` call 0x0047f517 |
+| `+0xbc` | 1, load | `SaveGame` call 0x0047e63d |
+| `+0x8c` | **0** | no caller in the shipped binary — M8-5 confirmed independently |
+
+```
+python3 portable/tools/slot_sweep.py 0xb0            # both forms
+python3 portable/tools/slot_sweep.py 0xa0 --form load
+python3 portable/tools/slot_sweep.py --selftest      # no image needed
+```
+
+Hits are grouped under the `// FUNCTION:` marker that owns them, with
+`file:line`. The push count is a **hint**, not proof — it counts pushes since
+the previous call, so spills inflate it; confirm the arity in the C at the
+marker. The sweep needs `original/legoland.exe` and capstone and is therefore
+not in the asset-free set, but its matcher is tested on hand-assembled bytes and
+`--selftest` skips visibly if capstone is missing.
+
+### 5. `name_trap.py` knows two more trap kinds
+
+`RuntimeError: table index is out of bounds` and `memory access out of bounds`
+are first-class kinds now, alongside the signature mismatch. For the table case
+the wasm is decoded at the trapping offset to find the `call_indirect`'s index
+operand, and when that index is a **raw x86 VA** the tool says so and prints the
+`// FUNCTION:` marker that owns the address. That is PORT-B9's B9-4 class —
+function addresses written as integer literals in code (sweep3.c, loaders.c,
+coaster10.c) — and it is what the first park load dies on. See §5 of
+`docs/lanes/scope-port-a8.md` and `name_trap.py --help`.
+
+Full notes: `docs/lanes/scope-port-a8.md`.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
