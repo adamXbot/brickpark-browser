@@ -179,6 +179,15 @@ void ll_host_key_set(int dik, int down)
 {
     if (dik <= 0 || dik >= 256)
         return;
+    /* PORT-B7: the DELIVERY half of PORT-B6's poll line. The poll line says a
+     * key was reported; this one says a key arrived from the browser at all, so
+     * "the game ignored my keystroke" splits into three answerable states --
+     * no key_set line (the DOM event never reached ll_canvas.js's handler, or
+     * dikOf returned 0), a key_set line with no poll line (the game is not
+     * calling ScanKeyboard), or both (the game has it and is ignoring it).
+     * Two lines per keystroke, nothing while nothing is pressed. */
+    ll_host_trace("DINPUT key_set DIK 0x%02x %s", (unsigned)dik,
+                  down ? "down" : "up");
     if (down)
         latch_press(&g_key_latch[dik]);
     else
@@ -291,6 +300,21 @@ static long dev_GetDeviceState(LLDIDevice* d, unsigned long size, void* data)
 
     if (d->kind == LL_DEV_KEYBOARD) {
         int i;
+        /* PORT-B7: once, the first time ScanKeyboard polls -- the size it asks
+         * for and the ADDRESS it asks for it at. The address is the cheap test
+         * for the split-record class of defect that has stopped this port three
+         * times already (PORT-A5's GameInput, PORT-B6's BlitCtx and CurProfile):
+         * `g_key_state` is a 256-byte array the game hands to DirectInput, and
+         * if the closure ever emits it as two objects the writer's base and the
+         * reader's base differ. Compare it against the page's
+         * `Module._ll_dbg_addr(0)` (main.c) -- equal means one object, and the
+         * keyboard is not where a "the game ignores keys" report should look. */
+        static int first_poll;
+        if (!first_poll) {
+            first_poll = 1;
+            ll_host_trace("DINPUT keyboard poll #1: %lu bytes into 0x%08x",
+                          (unsigned long)size, (unsigned)(size_t)data);
+        }
         if (size > sizeof(g_keys))
             size = sizeof(g_keys);
         memcpy(data, g_keys, (size_t)size);

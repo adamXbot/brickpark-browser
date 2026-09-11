@@ -270,7 +270,145 @@
       traps: traps.slice(),
       traceLines: traceLog.length,
       modal: modalEl.textContent,
-      args: argsEl.textContent
+      args: argsEl.textContent,
+      dead: deadError                     /* PORT-B7: the loop died, and why */
+    };
+  };
+
+  // ---- PORT-B7: the input driver, and the error the page used to swallow ----
+  //
+  // Everything below exists because walking this game from a tool is the only
+  // way anyone sees a screen past the first one, and PORT-B6's hooks answered
+  // "did the frame change" but nothing else. Three things were missing and each
+  // one cost this lane real time:
+  //
+  //  1. A WAY TO CLICK A GAME PIXEL. The game's pointer is RELATIVE
+  //     (DIMOUSESTATE lX/lY) and ll_canvas.js differences the absolute position,
+  //     so a caller has to know that the first move must be the canvas centre
+  //     (where the game's own cursor starts) before any coordinate means
+  //     anything. llMove/llClick take GAME pixels and do that arithmetic --
+  //     including the CSS scale -- so a walk is a list of (x, y) pairs read out
+  //     of the recovered sources rather than a screenshot-measuring exercise.
+  //  2. A WAY TO TYPE. The browser-automation "type" verb delivers no key
+  //     events to this page at all (PORT-B6 §6 B6), and a `computer key` press
+  //     proved just as unreliable in PORT-B7's session -- so the honest way to
+  //     drive the keyboard is one dispatched KeyboardEvent per character, with
+  //     `code` filled in, HELD long enough for a poll to see it. The game reads
+  //     DirectInput state, not WM_CHAR (input2.c's GetInputChar), so a key that
+  //     is not down across a frame types nothing.
+  //  3. THE PAGE HAD TO SAY WHEN THE GAME DIED. Under ASYNCIFY the game's loop
+  //     is resumed from a promise callback, so a RuntimeError inside it -- an
+  //     indirect call whose target's type is not the call site's, the class of
+  //     defect name_trap.py exists for -- surfaces as an *unhandled promise
+  //     rejection* and NOTHING else: the canvas keeps its last frame, the fps
+  //     figure keeps its last value, and the page looks alive. PORT-B7 lost an
+  //     hour to "the keyboard stopped working" that was really "the module died
+  //     0.4 s ago". Now it shows in the trap banner, and llStats().dead says so.
+  var deadError = null;
+  function noteDeath(stack) {
+    if (deadError) return;
+    deadError = stack;
+    noteTrap('TRAP RUNTIME ' + String(stack).split('\n')[0] +
+             '  -- the game loop is dead; see window.llStats().dead');
+  }
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    if (r && /RuntimeError/.test(String(r && r.message ? r.message : r) + String(r)))
+      noteDeath(r.stack || String(r));
+  });
+  window.addEventListener('error', function (e) {
+    if (e.error && /RuntimeError/.test(String(e.error)))
+      noteDeath(e.error.stack || String(e.error));
+  });
+  window.llDead = function () { return deadError; };
+
+  function llSleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  // GAME pixel -> client coordinate, through the canvas's own rect. This is
+  // EXACTLY the arithmetic ll_canvas.js inverts (`x = (clientX - r.left) * LL.w
+  // / r.width`), so the deltas the game receives are the ones intended at any
+  // CSS scale.
+  function llPoint(gx, gy) {
+    var c = Module.canvas, r = c.getBoundingClientRect();
+    return { c: c, x: r.left + gx * r.width / 640, y: r.top + gy * r.height / 480 };
+  }
+  function llMouse(type, p, button) {
+    p.c.dispatchEvent(new MouseEvent(type, {
+      clientX: p.x, clientY: p.y, button: button || 0,
+      bubbles: true, cancelable: true }));
+  }
+  // Move the pointer to a game pixel. The FIRST call of a session should be
+  // llMove(320, 240): the game's cursor starts there and ll_canvas.js sets its
+  // origin on the first move without emitting one, so that is what puts the two
+  // in step. 150 ms is five presented frames at the game's 33 fps floor.
+  window.llMove = async function (gx, gy, waitMs) {
+    llMouse('mousemove', llPoint(gx, gy));
+    await llSleep(waitMs === undefined ? 150 : waitMs);
+    return window.llFrameHash();
+  };
+  window.llClick = async function (gx, gy, button) {
+    var p = llPoint(gx, gy);
+    llMouse('mousemove', p); await llSleep(150);
+    llMouse('mousedown', p, button); await llSleep(150);
+    llMouse('mouseup', p, button); await llSleep(500);
+    return window.llFrameHash();
+  };
+  // One key, held. `code` is what ll_canvas.js reads first (it is the PHYSICAL
+  // key, and DIK codes ARE PS/2 set-1 scan codes); `key` is the fallback.
+  window.llKey = async function (code, key, holdMs) {
+    window.dispatchEvent(new KeyboardEvent('keydown',
+      { code: code, key: key || '', bubbles: true, cancelable: true }));
+    await llSleep(holdMs === undefined ? 150 : holdMs);
+    window.dispatchEvent(new KeyboardEvent('keyup',
+      { code: code, key: key || '', bubbles: true, cancelable: true }));
+    await llSleep(120);
+    return window.llFrameHash();
+  };
+  // Type a string into whatever editor is up (screens2.c's EnterNewProfile and
+  // EnterSaveGameDetails). Letters, digits and space, which is what those
+  // fields accept; backspace is llKey('Backspace').
+  window.llType = async function (text) {
+    var h = null;
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i], code;
+      if (/[a-zA-Z]/.test(ch)) code = 'Key' + ch.toUpperCase();
+      else if (/[0-9]/.test(ch)) code = 'Digit' + ch;
+      else if (ch === ' ') code = 'Space';
+      else continue;
+      h = await window.llKey(code, ch);
+    }
+    return h;
+  };
+  // Frames presented in half a second. 0 means the game is not running -- a
+  // different fact from "the screen did not change", and the one a walk needs
+  // to establish first. ~17 is the game's own 33 fps floor.
+  window.llAlive = async function () {
+    var a = framesPresented; await llSleep(500); return framesPresented - a;
+  };
+  // A few of the game's own globals, live, through main.c's ll_dbg_addr export.
+  // "Did the character reach the editor" is not a question a screenshot can
+  // answer; this reads g_temp_profile out of the game's memory.
+  window.llPeek = function () {
+    if (typeof Module._ll_dbg_addr !== 'function') return null;
+    var H = HEAPU8, I = HEAP32, a = [], i;
+    for (i = 0; i < 7; i++) a.push(Module._ll_dbg_addr(i));
+    function str(p, n) {
+      var s = '';
+      for (var j = 0; j < n; j++) {
+        var c = H[p + j];
+        if (!c) break;
+        s += String.fromCharCode(c);
+      }
+      return s;
+    }
+    var down = 0;
+    for (i = 1; i < 256; i++) if (H[a[0] + i]) down++;
+    return {
+      keysDown: down,                      /* g_key_state, DIK bytes set */
+      profileName: str(a[3], 30),          /* g_temp_profile.name */
+      profileLen: H[a[3] + 0x1e],
+      curProfileSlot: H[a[4] + 0x43],      /* g_cur_profile.profile_slot */
+      nameWidth: I[a[5] >> 2],             /* g_profile_name_len, pixels */
+      newProfilePopup: I[a[6] >> 2]        /* g_newprof_popup_up */
     };
   };
 

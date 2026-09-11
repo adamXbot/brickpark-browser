@@ -1039,6 +1039,67 @@ in `docs/lanes/scope-port-a6.md` §7.
 
 Notes: `docs/lanes/scope-port-a6.md`.
 
+
+
+## Typing a player name, and the one call that kills the front end (scope PORT-B7)
+
+**The name editor works.** With PORT-B6's two split records merged, a click on
+slot 1 of PLAYER DETAILS opens the NEW PROFILE popup, `EnterNewProfile`
+(screens2.c 0x00491bd0) runs every frame, and real key events become characters:
+`GetInputChar` decodes the DirectInput key array through the 59-entry DIK map at
+0x004bad58, the letters land in `g_temp_profile.name` — read back live out of
+the game's memory — and are drawn in the blue field with the blinking cursor
+after them. Backspace removes one. **Nothing in the shim had to change**: the
+DIK table, the press latch and the keydown/keyup pairing were already right, and
+the game wants scan codes rather than `WM_CHAR` (the one `WM_CHAR` it reads is
+backspace, which `user32.c` already synthesises).
+
+### Driving the page
+
+The page now carries the driver, in GAME pixels, because the browser-automation
+pointer and key verbs do not reliably reach this canvas (measured: a batch of
+correctly-mapped clicks produced zero canvas events):
+
+```js
+await llMove(320, 240);   // REQUIRED FIRST -- the pointer is relative and the
+                          // game's cursor starts at the canvas centre
+await llClick(260, 188);  // open the NEW PROFILE popup on slot 1
+await llType('adam');     // one held KeyboardEvent per character
+await llClick(505, 345);  // the Accept icon
+```
+
+plus `llAlive()` (frames presented in half a second — 0 means the game is not
+running, which is a different fact from "the screen did not change"),
+`llPeek()` (seven of the game's own globals, through `main.c`'s `ll_dbg_addr`
+export) and `llStats().dead`. **An unhandled `RuntimeError` in the
+ASYNCIFY-resumed loop now reaches the TRAP banner**: it used to be swallowed, so
+a dead module looked exactly like a live one that ignored input — and that
+misreading has now cost three lanes an hour each.
+
+`legoland_browser_named` (`ninja -C portable/build-wasm legoland_browser_named`)
+is the same optimised link plus `-g2`, so the module carries a name section and
+`name_trap.py` can name the CALLERS of an indirect-call type mismatch.
+`legoland_headless_debug` cannot stand in for it: these are only reachable by a
+click.
+
+### The blocker: one vtable slot declared two ways
+
+About 0.4 s after that click the module dies with `function signature mismatch`
+in `UnreferenceSprite` ← `FreeCachedTextEntry` ← `ExpireCachedText` ←
+`RenderingComplete` ← `GameFrame`. `spritemisc.c:23-26` declares the sprite
+owner's vtable slot +0x08 as `void __stdcall Destroy(Owner*)`; the owner is an
+`IDirectDrawSurface` and that slot is its COM `Release`, which `sprite2.c:50`,
+`printlist.c:100` and `gpu.c:118` all declare `long`. x86 ignores the result;
+wasm checks the type at the call. **A matching lane's one-line fix**, with the
+recipe and both citations in `docs/lanes/scope-port-b7.md` §4.
+
+With that slot corrected in a throwaway build, the walk goes four screens
+further: the front-end **main menu** (the LEGOLAND gates, seven bubbles), the
+**"Select tutorial level"** notepad, and the **park-advert screen** (CALIFORNIA
+/ WINDSOR / BILLUND, whose movies do nothing because the AVI shim refuses them,
+exactly as designed). Every one of them runs at the 33 fps flip floor. The park
+itself was not reached.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
