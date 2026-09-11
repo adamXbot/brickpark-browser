@@ -192,6 +192,50 @@ extern unsigned char g_visitor_count[];     /* 0x006661bc  int */
 extern unsigned char g_people_head[];       /* 0x0066b574  Bloke* */
 extern unsigned char g_visitor_limit[];     /* 0x0083291c  int */
 
+/* PORT-M13 -- the LINK goal and the path network, which is the ONE question a
+ * player-reported "the game keeps asking me to link the ride" cannot answer
+ * from the canvas. EventTick_Link (eventtick.c:939) tests exactly one square
+ * per instance -- the class's ENTRANCE offset added to the instance's base --
+ * and asks TileJoinsPathNetwork (pathmisc2.c:179) whether a PathSquare covers
+ * it AND carries flag 2, the "reachable from the park entrance" bit that
+ * ResolveEntrancePathSquare (pathmask.c:128) re-floods. PORT-M10 had to find
+ * all five of these by SCANNING the heap because portable/** was read-only for
+ * it; naming them costs nothing and makes every measurement in this lane a
+ * read instead of a search.
+ *   g_path_squares    pathsq.c:19       the PathSquare list, 0x24 bytes each
+ *   g_goal_list       eventgoalprim.c   the pending ScriptEvent list: the LINK
+ *                                       goal event and its flags live here
+ *   g_entrance_tile   objdoor.c:170     the park entrance's cached walk-to
+ *                                       tile -- the flood fill's ROOT
+ *   g_path_gfx_batch  pathmisc2.c       the force flag TileJoinsPathNetwork
+ *                                       passes to RefreshEntranceTile
+ *   g_entrance_tile_time  tinystubs.c   the refresh's 4000 ms clock
+ *   g_entrance_elem   objdoor.c:171     the ENTRANCE 1 element, looked up lazily
+ *   g_cursor_mapref   objmap.c:338      ScreenToMapRef's output for the live
+ *                                       cursor -- the square a click lands on
+ *   g_edit_object     fpui2.c           the class the edit cursor is placing */
+extern unsigned char g_path_squares[];      /* 0x0066b44c  PathSquare* */
+extern unsigned char g_goal_list[];         /* 0x00668728  ScriptEvent* */
+extern unsigned char g_entrance_tile[];     /* 0x0066b460  Pos */
+extern unsigned char g_path_gfx_batch[];    /* 0x0066b46c  int */
+extern unsigned char g_entrance_tile_time[];
+extern unsigned char g_entrance_elem[];     /* 0x006661c4  LLElem* */
+extern unsigned char g_cursor_mapref[];
+extern unsigned char g_edit_object[];
+/* fpui3.c:646's UpdateHelpTick walks g_script_event -- the LIVE event list, the
+ * one that holds the LINK goal itself; g_goal_list is the notepad's list of
+ * unmet objectives that the GoalCheck_* primitives feed. Both are needed: the
+ * first says whether the goal passes, the second says what the player is being
+ * TOLD. g_map_dirty bit 0x10 is what forces the entrance flood fill (fpui3.c:662). */
+extern unsigned char g_script_event[];      /* 0x00668784  ScriptEvent* */
+extern unsigned char g_map_dirty[];
+/* bighelp.c:35's GameInput. `point` (+0x04) is the cursor pixel the SHIM
+ * delivered and `map_x/map_y` (+0x24/+0x28) is the cell ScreenToMapRef made of
+ * it -- the two halves of "did the click land on the square the player aimed
+ * at", which is the only way to separate a shim mouse-mapping defect from a
+ * game-side one. */
+extern unsigned char g_input[];             /* 0x00813a40  GameInput */
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -259,7 +303,18 @@ extern unsigned char g_visitor_limit[];     /* 0x0083291c  int */
     X(61, g_bricks_full)                \
     X(62, g_visitor_count)              \
     X(63, g_people_head)                \
-    X(64, g_visitor_limit)
+    X(64, g_visitor_limit)              \
+    X(65, g_path_squares)               \
+    X(66, g_goal_list)                  \
+    X(67, g_entrance_tile)              \
+    X(68, g_path_gfx_batch)             \
+    X(69, g_entrance_tile_time)         \
+    X(70, g_entrance_elem)              \
+    X(71, g_cursor_mapref)              \
+    X(72, g_edit_object)                \
+    X(73, g_script_event)               \
+    X(74, g_map_dirty)                  \
+    X(75, g_input)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {

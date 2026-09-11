@@ -250,6 +250,35 @@ var LibraryLLCanvas = {
       // acceleration from whatever SPI_GETMOUSE reported -- user32.c reports
       // acceleration OFF, so these deltas reach the game cursor 1:1 and the
       // drift PORT-B recorded in its §7 is gone.
+      //
+      // PORT-M13: lastX/lastY track the position the GAME's cursor has been
+      // moved to, NOT the position of the real pointer.  The delta is an
+      // integer (DIMOUSESTATE is a LONG count of mouse units) while `x` is a
+      // fraction whenever the canvas is not displayed at exactly 640x480 --
+      // `max-width: 100%` shrinks it on any narrow window, and a page zoom or
+      // a device pixel ratio does the same.  Remembering the real position and
+      // rounding each delta INDEPENDENTLY throws the remainder away on every
+      // event, and the two failures that follows are both real:
+      //
+      //   * the error is a RANDOM WALK.  Each event contributes up to half a
+      //     game pixel and nothing ever corrects it, so the game's cursor
+      //     drifts away from the pointer without bound -- measured here at
+      //     ~2 px after the tutorial's opening clicks and ~6 px a few hundred
+      //     mouse moves later, which on a 32x16 isometric tile is most of the
+      //     way to the NEXT SQUARE.  A player who aims at the square in front
+      //     of the ride's entrance arrow lays the path one square off, and the
+      //     LINK goal -- which tests exactly one square (eventtick.c:939) --
+      //     never satisfies however much path is laid.
+      //   * a move SMALLER than half a game pixel is lost outright, because
+      //     `lastX = x` swallows it.  At a canvas scaled to 3x, one client
+      //     pixel is a third of a game pixel and the cursor never moves at all.
+      //
+      // Accumulating into lastX instead fixes both: the remainder survives to
+      // the next event, so a slow drag is delivered a pixel at a time and the
+      // error against the real pointer never exceeds half a pixel.  When the
+      // game clamps its own cursor at a screen edge this model over-runs it
+      // exactly as a physical relative mouse does, which is the behaviour the
+      // game was written against.
       c.addEventListener('mousemove', function (e) {
         var r = c.getBoundingClientRect();
         var sx = LL.w / r.width, sy = LL.h / r.height;
@@ -257,8 +286,10 @@ var LibraryLLCanvas = {
         if (LL.lastX !== null) {
           var dx = Math.round(x - LL.lastX), dy = Math.round(y - LL.lastY);
           if (dx || dy) LL.push(LL.EV_MOUSEMOVE, dx, dy, 0);
+          LL.lastX += dx; LL.lastY += dy;
+        } else {
+          LL.lastX = x; LL.lastY = y;
         }
-        LL.lastX = x; LL.lastY = y;
       }, false);
 
       // DIMOUSESTATE.rgbButtons[0] is left, [1] is right, [2] is middle
