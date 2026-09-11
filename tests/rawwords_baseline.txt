@@ -1,0 +1,46 @@
+# The accepted raw-word residue -- the baseline for the `raw_words` ctest.
+#
+# `gen/rawwords.md` is the census that does NOT ask the declarations: every
+# 4-byte word of every emitted object whose value lands in the original image's
+# .rdata/.data, with the inline-text vetoes applied (see `textish_word` in
+# gen_link.py). A word in it is a word the game will dereference as a number.
+# The older gate, `pointer_words`, cannot see these: a declaration that cannot
+# be sized (`extern FXEntry g_game_fx[];`) makes its object invisible to it, and
+# that is how 23 sound-effect names stayed raw under a gate reporting
+# `raw pointer words: 0` (docs/lanes/scope-port-b11.md §3).
+#
+# The residue is not zero yet, so the gate is this list:
+#
+#   * a row NOT here, or a row whose word count GREW  -> the test FAILS;
+#   * a row that shrank or vanished                   -> the test passes and
+#     prints SHRUNK; tighten this file in the same commit as the fix.
+#
+# Most rows are owed a BOUND in the declaring game source (PORT-M11). The rest
+# are false positives of a value-based census and say so; each one has a reason,
+# in the spirit of `PTR_VERDICTS`. A row with no reason is open work.
+#
+# Format: <addr> <words> <object> str=N,sym=N,data=N   # reason
+# Measured on 2026-09-12, PORT-A9, wasm32 --ilp32 closure of 68fab1d3 + A9.
+# 27 objects, 107 words.
+# ---- the sound effects: 23 words, every one a sample NAME (B11 §3) ----------
+# `Load_FXList(g_game_fx, 0x17)` reads `.name` out of each FXEntry and builds
+# `.\sfx\%s`; with the word raw the member name is garbage, RES_OpenFile fails
+# and the failure branch is a silent DBPrintf. PORT-M11 owes each table a bound;
+# A9's complete-element rule closed g_joust_fx, g_money_fx and two of
+# g_game_fx's three, and cannot reach the rest (a tile that ends mid-element, or
+# a `void`/`int` spelling of the pointer field).
+# ---- other string pointers still raw ---------------------------------------
+# ---- pointers at a rebuilt symbol, or into a model table -------------------
+# ---- false positives: the VALUE is not an address --------------------------
+0x004ab3d8 1 g_two str=0,sym=0,data=1
+0x004acfd0 8 GUID_NULL str=0,sym=0,data=8
+0x004b59f8 2 g_seat_name_man str=0,sym=0,data=2
+0x004b7618 4 g_spacetower_fx str=0,sym=0,data=4
+0x004b76b8 5 g_anim_tower_b str=0,sym=0,data=5
+0x004b7750 1 g_anim_tower_a str=1,sym=0,data=0
+0x004b775c 1 g_bloke_anim_ref str=0,sym=1,data=0
+0x004b9558 1 g_path_3x3_masks str=0,sym=0,data=1
+0x004b95cc 1 g_cursor_col_a str=0,sym=1,data=0
+0x004b95d4 1 g_cursor_col_c str=0,sym=1,data=0
+0x004b95dc 1 g_cursor_col_d str=0,sym=0,data=1
+0x004bff28 59 g_near_offsets str=30,sym=0,data=29

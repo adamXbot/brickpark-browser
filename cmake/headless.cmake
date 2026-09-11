@@ -95,6 +95,78 @@ set_tests_properties(slot_sweep_selftest PROPERTIES
   FAIL_REGULAR_EXPRESSION "FAIL"
   TIMEOUT 300)
 
+# ---- the by-value-struct ABI gate (PORT-M10's sweep, promoted by PORT-A9) ----
+# A parameter one TU spells as a by-value aggregate of 4 bytes or fewer and
+# another spells as a scalar is one dword on x86 cdecl and is NOT the same thing
+# on wasm32: the aggregate is passed INDIRECTLY, so the callee reads a
+# shadow-stack pointer. Both lower to one i32, so wasm-ld warns about nothing,
+# linkreport.py's conflict vote sees no conflict and test_callback_types.c
+# type-checks slots rather than parameters. Nothing in the tree could see this
+# class until PORT-M10 found it by hand: AddObjectToBuildList filed the Space
+# Tower's map tile as (114, 10), so LINK never satisfied and the tower drew as a
+# squat block (PARK-1 and PARK-3 in one defect).
+#
+# The gate is the accepted list: `portable/tests/bvstruct_accepted.txt` holds the
+# 15 addresses a lane has ruled on, each with its reason, and any OTHER silent
+# site fails. Sources only -- no gamedata/, no image, no build products -- so it
+# runs in CI on both toolchains, like extern_sweep.
+add_test(NAME bvstruct_sweep
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/bvstruct_sweep.py"
+                 "${LL_ROOT}/LEGOLAND"
+                 --baseline "${CMAKE_CURRENT_SOURCE_DIR}/tests/bvstruct_accepted.txt")
+set_tests_properties(bvstruct_sweep PROPERTIES
+  PASS_REGULAR_EXPRESSION "0 unaccepted silent site"
+  FAIL_REGULAR_EXPRESSION "FIX "
+  TIMEOUT 300)
+
+# The sweep's own shapes AND the ABI claim itself. The classifier half is the
+# usual positive/negative control (a 2-byte BPos is reported, a single-element
+# struct is not, an 8-byte Pos is noisy not silent, and a FIXED site -- the
+# scalar in the LEGOLAND_PORTABLE arm -- is not reported, which is what makes a
+# gate possible at all). The other half compiles PORT-M10 §1b's three-file repro
+# with the real emcc and the real clang and checks that they still disagree:
+# native packs (63,35) as 0x233f, wasm32 hands over a shadow-stack pointer. If a
+# future emsdk changed that, this sweep would be reporting phantoms, and the
+# control says so instead of passing quietly. It SKIPS that half (with a printed
+# line) when emcc or node is not on PATH, so the native build still runs the
+# classifier checks.
+add_test(NAME bvstruct_sweep_selftest
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/bvstruct_sweep.py" --selftest)
+set_tests_properties(bvstruct_sweep_selftest PROPERTIES
+  PASS_REGULAR_EXPRESSION "bvstruct_sweep selftest: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 600)
+
+# ---- PORT-A9: the census that does NOT ask the declarations ------------------
+# `pointer_words` (tests.cmake) is honest about the words the DECLARATION scan
+# visited, and that is the hole PORT-B11 §3 fell into: `extern FXEntry
+# g_game_fx[];` has no bound, so cdecl.py computes no extent, so gen_link never
+# visits the object, so its three raw x86 string addresses are not raw POINTER
+# words -- 23 sound effects lost under a gate reporting zero.
+#
+# `gen/rawwords.md` asks the image instead: every 4-byte word of every emitted
+# object whose value lands in the original .rdata/.data, with the inline-text
+# vetoes A2 measured. The residue is not zero yet (most of it is bounds PORT-M11
+# owes), so the gate is a BASELINE -- `portable/tests/rawwords_baseline.txt`
+# lists the accepted rows with a reason each. A NEW row or a row that GREW
+# fails; a row that shrinks prints SHRUNK and passes, so a game-side fix tightens
+# the file instead of fighting it.
+#
+# Asset-free and toolchain-independent: it reads the censuses this build wrote,
+# and in the 64-bit build the census is vacuous by construction (re-pointing is
+# off), exactly like the pointer gate.
+add_test(NAME raw_words
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_link.py"
+                 "${CMAKE_BINARY_DIR}" --check-rawwords
+                 --baseline "${CMAKE_CURRENT_SOURCE_DIR}/tests/rawwords_baseline.txt")
+set_tests_properties(raw_words PROPERTIES
+  PASS_REGULAR_EXPRESSION "raw-word gate: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
+
 if(EMSCRIPTEN)
   # Two harnesses from the same sources: `legoland_headless` is the one to run,
   # and `legoland_headless_debug` is the one that NAMES a trap. See
@@ -242,9 +314,35 @@ if(EMSCRIPTEN)
       PASS_REGULAR_EXPRESSION "INPUT OK"
       FAIL_REGULAR_EXPRESSION "FAIL|TRAP|unreachable|RuntimeError|cannot chdir"
       TIMEOUT 300)
+    # ---- how many sound buffers does the park load? (PORT-A9) -------------
+    # PORT-B11 made the port audible and then measured that
+    # IDirectSound::CreateSoundBuffer is called ONCE in a whole session where
+    # 23 sound effects should load before the front end draws -- not a shim
+    # defect but a data one: `extern FXEntry g_game_fx[];` has no bound, the
+    # closure never re-points the table's `.name` words, and Load_FXList's
+    # failure branch is a silent DBPrintf (docs/lanes/scope-port-b11.md §3).
+    # Counting the buffers in a tab needs a human and a trace filter; this runs
+    # the game's own audio init and FX loads under node and prints a number.
+    #
+    # LL_AUDIO_BUFFERS IS A FLOOR AND A RATCHET. 4 was A9's complete-element rule alone; 24 is what M11's array bounds give (integrator, at merge) --
+    # extent rule recovered on its own: g_game_fx entries 0 and 1 (Flowers.wav,
+    # RabOld\Drill.wav) and both money effects. The other 21 names are still raw
+    # and are bounds the game sources owe (PORT-M11, and the rows in
+    # portable/tests/rawwords_baseline.txt); when they land this number should
+    # reach 25 and the probe prints a line asking for the floor to be raised.
+    set(LL_AUDIO_BUFFERS 24)
+    add_test(NAME probe_audio
+             COMMAND node "$<TARGET_FILE_DIR:legoland_headless>/legoland_headless.js"
+                     --probe-audio ${LL_AUDIO_BUFFERS})
+    set_tests_properties(probe_audio PROPERTIES
+      ENVIRONMENT "LL_CD_DIR=${LL_ROOT}/gamedata/disc;LL_DATA_DIR=${LL_ROOT}/gamedata/main"
+      PASS_REGULAR_EXPRESSION "AUDIO [0-9]+ sound buffer"
+      FAIL_REGULAR_EXPRESSION "FAIL|TRAP|unreachable|RuntimeError|cannot chdir"
+      TIMEOUT 300)
   else()
     message(STATUS "PORT-A headless: gamedata/ not present, "
-                   "headless_spine and probe_input not registered (they need "
+                   "headless_spine, probe_input and probe_audio not registered "
+                   "(they need "
                    "the title artwork and the volumes out of Graphics1.res)")
   endif()
 
