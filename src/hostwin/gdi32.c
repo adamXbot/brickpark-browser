@@ -266,16 +266,37 @@ unsigned long ll_host_brush_colour(void* brush)
 
 /* ---- fonts -------------------------------------------------------------- */
 /* InitHostSystemGPU adds "Lego.ttf" and KillHostSystemGPU removes it; neither
- * checks the result. Reporting one font added keeps both honest. */
-int AddFontResourceA(const char* file) { (void)file; return 1; }
+ * checks the result. Reporting one font added keeps both honest.
+ *
+ * PORT-B11: this is also where the real face gets loaded, because it is the
+ * game TELLING us which file its text is in. The name is tried as given and
+ * then through ll_ttf_available()'s search list, which is what finds the
+ * browser build's preloaded /gamedata/Lego.TTF -- gpu.c passes a bare
+ * "Lego.ttf" relative to an install directory that does not exist in MEMFS.
+ * Either way the load is idempotent and a failure is not fatal: ll_font.c falls
+ * back to the bitmap face. */
+int AddFontResourceA(const char* file)
+{
+    if (file && !ll_ttf_available())
+        ll_ttf_load_file(file);
+    ll_host_trace("AddFontResourceA \"%s\" -> TrueType face %s",
+                  file ? file : "", ll_ttf_available() ? "LOADED" : "absent");
+    return 1;
+}
+
+/* The face is NOT unloaded: KillHostSystemGPU runs on the way out of a screen
+ * mode as well as on the way out of the program (gpu.c), and dropping the
+ * parsed face there would re-read and re-parse 77 KB every time the game
+ * changed mode. Windows reference-counts the resource; here it simply stays. */
 int RemoveFontResourceA(const char* file) { (void)file; return 1; }
 
 /* LOGFONTA as the game declares it (screen.c:1183): lfHeight +0x00,
  * lfWeight +0x10, lfItalic +0x14, lfFaceName +0x1c. InitScreen builds four of
  * these in face "Lego" -- 24/700, 28/400, 20/700, 18/600 -- and keeps the
  * handles at 0x0066808c..0x00668098, which text.c's SelectFont picks between.
- * Only the height and the weight reach the face; "Lego" itself is a TrueType
- * file this port cannot rasterise (see ll_font.c). */
+ * Only the height and the weight reach the face, which is all that is needed:
+ * "Lego" is gamedata/main/Lego.TTF and ll_ttf.c reads it (PORT-B11), so the
+ * height and weight are now mapped through the real font's own metrics. */
 typedef struct LLLogFont {
     long          lfHeight;
     long          lfWidth;
@@ -297,9 +318,13 @@ void* CreateFontIndirectA(const void* logfont)
             ll_font_metrics((int)lf->lfHeight, (int)lf->lfWeight, &o->font);
         else
             ll_font_default_metrics(&o->font);
-        ll_host_trace("CreateFontIndirectA h=%ld w=%ld \"%s\" -> advance %d",
+        ll_host_trace("CreateFontIndirectA h=%ld w=%ld \"%s\" -> %s"
+                      " cell %d ascent %d ppem %d%s",
                       lf ? lf->lfHeight : 0, lf ? lf->lfWeight : 0,
-                      lf ? lf->lfFaceName : "", o->font.advance);
+                      lf ? lf->lfFaceName : "",
+                      o->font.ttf.ready ? "TrueType" : "bitmap",
+                      o->font.line_h, o->font.ascent, o->font.ttf.ppem,
+                      o->font.ttf.embolden ? " (synthetic bold)" : "");
     }
     return h;
 }

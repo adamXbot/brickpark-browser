@@ -38,13 +38,21 @@
  * matters -- the report screen's body text is font 2, so it is the EIGHTEEN
  * pixel face, not the twenty.)
  *
- * "Lego" is a proportional TrueType face that is not in this tree and could
- * not be rasterised here anyway. The faithful thing is therefore impossible;
- * the useful thing is a face whose METRICS are in the same ballpark, so the
- * game's own layout lands where it landed on Windows. A 6x7 ink box in an
- * 8-row cell is scaled to the requested lfHeight, and each glyph advances by
- * its own ink width (PORT-B10; see ll_font_metrics for why the game's shipped
- * data requires that and what it costs to get wrong).
+ * "Lego" IS IN THIS TREE: gamedata/main/Lego.TTF, 77,012 bytes, and the
+ * browser build preloads it. PORT-B11 added portable/src/hostwin/ll_ttf.c,
+ * which reads it, so `ll_font_metrics` now fills an `LLTtfMetrics` alongside
+ * the bitmap metrics and every routine below takes the TrueType branch when
+ * `m->ttf.ready`. The bitmap face is the FALLBACK, for a build with no mounted
+ * gamedata (the native `legoland_tests`, the node headless runs) -- and it is
+ * still the face that everything below the "one glyph" heading draws. Read
+ * ll_ttf.c's header for the lfHeight-to-pixels mapping and the evidence that
+ * it is the mapping GDI used.
+ *
+ * THE FALLBACK FACE. "Lego" is proportional, so the ballpark answer is a face
+ * whose METRICS are in the same ballpark: a 6x7 ink box in an 8-row cell scaled
+ * to the requested lfHeight, each glyph advancing by its own ink width
+ * (PORT-B10; see ll_font_metrics for why the game's shipped data requires that
+ * and what it costs to get wrong).
  *
  * The glyphs are drawn here as ASCII art, one line per character, eight quoted
  * six-column rows each. They are this lane's own drawing, not a copy of any
@@ -300,6 +308,18 @@ void ll_font_metrics(int cell_h, int weight, LLFontMetrics* m)
     m->advance = m->gw + 1;         /* nominal: the widest glyph */
     m->line_h  = h;
     m->ascent  = m->gh;
+
+    /* PORT-B11: if the game's own Lego.TTF is there, everything above is
+     * superseded. The cell height stays what the LOGFONT asked for -- that is
+     * lfHeight's definition and the thing the game's boxes are sized against --
+     * but the ascent (where the baseline goes) and every advance now come from
+     * the face. See ll_ttf.c's header. */
+    ll_ttf_metrics(cell_h, weight, &m->ttf);
+    if (m->ttf.ready) {
+        m->line_h = m->ttf.cell_h;
+        m->ascent = m->ttf.ascent;
+        m->bold   = m->ttf.embolden;
+    }
 }
 
 void ll_font_default_metrics(LLFontMetrics* m) { ll_font_metrics(20, 400, m); }
@@ -333,7 +353,8 @@ int ll_font_text_width(const LLFontMetrics* m, const char* s, int n)
     for (i = 0; i < n; i++) {
         if (s[i] == '\n' || s[i] == '\r')
             break;
-        w += glyph_advance(m, (unsigned char)s[i]);
+        w += m->ttf.ready ? ll_ttf_char_advance(&m->ttf, (unsigned char)s[i])
+                          : glyph_advance(m, (unsigned char)s[i]);
     }
     return w;
 }
@@ -384,6 +405,62 @@ static void draw_glyph(const LLFontTarget* t, const LLFontMetrics* m,
     }
 }
 
+/* ---- one TrueType glyph ------------------------------------------------- */
+/* PORT-B11. `x` is the pen, `base_y` the BASELINE row. The coverage ll_ttf.c
+ * returns is blended into the RGB565 surface so an unhinted glyph at 14 pixels
+ * per em keeps its thin stems; ll_ttf_set_antialias(0) thresholds instead, for
+ * the bilevel look GDI would have produced on a 16-bit surface in 1999.
+ *
+ * Blending in 565 is done in the three channels separately, which is exact for
+ * the endpoints (a == 0 and a == 255 reproduce dst and fg bit for bit) and is
+ * what keeps text over the game's own art from developing a halo. */
+static void draw_ttf_glyph(const LLFontTarget* t, const LLFontMetrics* m,
+                           int x, int base_y, unsigned char ch, unsigned short fg)
+{
+    int gw, gh, bx, by, ty, tx;
+    const unsigned char* cov = ll_ttf_glyph(&m->ttf, ch, &gw, &gh, &bx, &by);
+    int aa = ll_ttf_antialias();
+    unsigned int fr = (unsigned int)((fg >> 11) & 0x1f);
+    unsigned int fgr = (unsigned int)((fg >> 5) & 0x3f);
+    unsigned int fb = (unsigned int)(fg & 0x1f);
+
+    if (!cov)
+        return;
+    for (ty = 0; ty < gh; ty++) {
+        int py = base_y + by + ty;
+        unsigned short* row;
+        if (py < t->clip.top || py >= t->clip.bottom)
+            continue;
+        row = (unsigned short*)((char*)t->bits + (long)py * t->pitch);
+        for (tx = 0; tx < gw; tx++) {
+            unsigned int a = cov[ty * gw + tx];
+            int px = x + bx + tx;
+            if (!a)
+                continue;
+            if (px < t->clip.left || px >= t->clip.right)
+                continue;
+            if (!aa) {
+                if (a >= 128)
+                    row[px] = fg;
+                continue;
+            }
+            if (a >= 250) {
+                row[px] = fg;
+            } else {
+                unsigned short d = row[px];
+                unsigned int dr = (unsigned int)((d >> 11) & 0x1f);
+                unsigned int dg = (unsigned int)((d >> 5) & 0x3f);
+                unsigned int db = (unsigned int)(d & 0x1f);
+                unsigned int ia = 255u - a;
+                unsigned int r = (fr * a + dr * ia + 127u) / 255u;
+                unsigned int g = (fgr * a + dg * ia + 127u) / 255u;
+                unsigned int b = (fb * a + db * ia + 127u) / 255u;
+                row[px] = (unsigned short)((r << 11) | (g << 5) | b);
+            }
+        }
+    }
+}
+
 /* Fill the cells behind a run of text (SetBkMode(OPAQUE), which Print and
  * PrintCentOpaque both ask for). Win32 fills the character cells, not the ink
  * boxes, so the fill is the run's width x line_h. */
@@ -423,6 +500,17 @@ void ll_font_text_out(const LLFontTarget* t, const LLFontMetrics* m,
         lead = 0;
     if (opaque)
         fill_cells(t, m, x, y, ll_font_text_width(m, s, n), bg);
+    /* With the real face the cell's internal leading is not a fudge factor: the
+     * baseline is exactly tmAscent below the top of the cell, which is where
+     * GDI puts it and where the game's sprite-sized boxes expect it. */
+    if (m->ttf.ready) {
+        int base_y = y + m->ttf.ascent;
+        for (i = 0; i < n; i++) {
+            draw_ttf_glyph(t, m, x, base_y, (unsigned char)s[i], fg);
+            x += ll_ttf_char_advance(&m->ttf, (unsigned char)s[i]);
+        }
+        return;
+    }
     for (i = 0; i < n; i++) {
         draw_glyph(t, m, x, y + lead, (unsigned char)s[i], fg);
         x += glyph_advance(m, (unsigned char)s[i]);
@@ -463,7 +551,8 @@ static int break_lines(const LLFontMetrics* m, const char* s, int n,
         if (i == n && count > 0)
             break;                  /* trailing empty line only if the text is */
         while (i < n && s[i] != '\n' && s[i] != '\r') {
-            int a = glyph_advance(m, (unsigned char)s[i]);
+            int a = m->ttf.ready ? ll_ttf_char_advance(&m->ttf, (unsigned char)s[i])
+                                 : glyph_advance(m, (unsigned char)s[i]);
             if ((format & DT_WORDBREAK) && width > 0 &&
                 run + a > width && i > start) {
                 break;

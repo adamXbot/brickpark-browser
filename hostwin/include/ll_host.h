@@ -398,6 +398,86 @@ int   FillRect(void* hdc, const LLRect* rc, void* brush);
 int   DrawTextA(void* hdc, const char* text, int len, LLRect* rc,
                 unsigned int format);
 
+/* ---- Web Audio (portable/src/hostwin/ll_audio.c, PORT-B11) -------------- */
+/* The back end behind PORT-B4's silent IDirectSound. dsound.c keeps every
+ * DirectSound semantic; this layer knows only PCM blocks, gains and time, and
+ * on a non-Emscripten toolchain it is a set of counters so the shim still
+ * builds and links natively. See ll_audio.c's header for the two playback
+ * modes and the autoplay policy. */
+
+/* 1 once an AudioContext exists. The first call creates it. */
+int  ll_audio_enabled(void);
+/* 0 none, 1 suspended (waiting for a user gesture), 2 running. */
+int  ll_audio_state(void);
+
+/* One voice per IDirectSoundBuffer: a gain and a panner that outlive the source
+ * nodes started on them. 0 means "no audio", and every call below tolerates it. */
+int  ll_audio_voice_new(void);
+void ll_audio_voice_free(int voice);
+
+/* DirectSound units straight through: volume and pan in hundredths of a dB,
+ * `rate_mul` the ratio of SetFrequency's rate to the format's own. */
+void ll_audio_set_levels(int voice, int volume_cb, int pan_cb);
+void ll_audio_set_rate(int voice, double rate_mul);
+void ll_audio_stop(int voice);
+
+/* A buffer written in full before it is played (every sound effect). */
+int  ll_audio_play_static(int voice, const void* pcm, unsigned int bytes,
+                          unsigned int rate, int channels, int bits,
+                          unsigned int offset, int looping,
+                          int volume_cb, int pan_cb, double rate_mul);
+
+/* A buffer rewritten while it plays (the narration ring, the AVI audio track).
+ * `cursor` is the play position the game is filling against, so everything
+ * behind it is safe to read; returns the number of chunks scheduled. */
+int  ll_audio_feed_stream(int voice, const void* pcm, unsigned int bytes,
+                          unsigned int cursor, unsigned int chunk,
+                          unsigned int rate, int channels, int bits,
+                          double rate_mul);
+
+/* ---- the TrueType face (portable/src/hostwin/ll_ttf.c, PORT-B11) -------- */
+/* The game SHIPS its typeface: gamedata/main/Lego.TTF, handed to
+ * AddFontResourceA by gpu.c's InitHostSystemGPU before anything draws. With the
+ * face loaded, ll_font.c measures and draws through these entry points and the
+ * game's own layout lands where it landed on Windows; without it (the native
+ * and node builds have no mounted gamedata) ll_ttf_available() is 0 and
+ * PORT-B10's bitmap face is used unchanged. See ll_ttf.c's header for the
+ * lfHeight -> pixel mapping and the evidence that it is right. */
+typedef struct LLTtfMetrics {
+    int    ready;        /* 0 when there is no face: use the bitmap one */
+    double scale;        /* device pixels per font design unit */
+    int    cell_h;       /* tmHeight: what the LOGFONT's lfHeight asked for */
+    int    ascent;       /* tmAscent: the baseline, measured from the cell top */
+    int    descent;      /* tmDescent */
+    int    ppem;         /* the em in pixels, for the trace */
+    int    embolden;     /* GDI's synthetic bold: 1 extra column of ink and advance */
+} LLTtfMetrics;
+
+/* 1 once a face is loaded. The first call searches for the file; later calls are
+ * free, and a failed search is not retried. */
+int  ll_ttf_available(void);
+/* Load an explicit file or an in-memory sfnt. ll_ttf_load_memory TAKES OWNERSHIP
+ * of the block (it is freed when another face replaces it). */
+int  ll_ttf_load_file(const char* path);
+int  ll_ttf_load_memory(void* data, unsigned long size);
+
+void ll_ttf_metrics(int lf_height, int weight, LLTtfMetrics* m);
+int  ll_ttf_char_advance(const LLTtfMetrics* m, unsigned char ch);
+/* The glyph's 8-bit coverage, `*w` by `*h`, with `*bx` pixels from the pen to
+ * its left column and `*by` pixels from the BASELINE to its top row (negative
+ * above the baseline). NULL for a blank glyph. The pointer is into a cache and
+ * is valid until the next ll_ttf_glyph call. */
+const unsigned char* ll_ttf_glyph(const LLTtfMetrics* m, unsigned char ch,
+                                  int* w, int* h, int* bx, int* by);
+/* Coverage is BLENDED by default. 0 thresholds it at 50% for the bilevel look
+ * GDI would have had; the metrics are identical either way. */
+void ll_ttf_set_antialias(int on);
+int  ll_ttf_antialias(void);
+/* upem / glyph count / usWinAscent / usWinDescent / usWeightClass, for llFont().
+ * Returns 0 when no face is loaded. */
+int  ll_ttf_face_info(int* upem, int* glyphs, int* win_asc, int* win_desc,
+                      int* weight);
+
 /* ---- the bitmap font (portable/src/hostwin/ll_font.c, PORT-B2) ---------- */
 /* GDI text is the game's only text: text.c's Print* routines borrow a DC from
  * the DirectDraw draw surface and let GDI draw into it, and eleven DrawTextA
@@ -416,6 +496,10 @@ typedef struct LLFontMetrics {
                      * ll_font_text_width is the real measure. (PORT-B10) */
     int line_h;     /* baseline-to-baseline, == cell_h */
     int ascent;
+    /* PORT-B11: when `ttf.ready` the measuring and drawing come from the game's
+     * own Lego.TTF through ll_ttf.c and the fields above are the TrueType
+     * face's; `gw`/`gh`/`advance` are then only the trace's nominal figures. */
+    LLTtfMetrics ttf;
 } LLFontMetrics;
 
 /* Where text goes: a 16-bpp surface plus the clip box already intersected from
@@ -445,6 +529,7 @@ int  ll_font_draw_text(const LLFontTarget* t, const LLFontMetrics* m,
                        unsigned short fg, int opaque, unsigned short bg);
 
 unsigned short ll_font_colorref_to_565(unsigned long colorref);
+
 
 /* ---- GDI32 (portable/src/hostwin/gdi32.c) ------------------------------- */
 /* Handle factories hand back distinct non-null cookies; the drawing calls are

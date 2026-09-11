@@ -30,9 +30,18 @@ set(LL_HOSTWIN_SOURCES
   # TextOutA and user32.c's DrawTextA draw and MEASURE with. Not optional --
   # eleven DT_CALCRECT call sites lay the front end out around its answers.
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/ll_font.c"
+  # PORT-B11: the game's OWN typeface. gamedata/main/Lego.TTF is shipped and
+  # gpu.c hands it to AddFontResourceA, so ll_ttf.c reads it and ll_font.c
+  # measures and draws with the real metrics; without the file (the native and
+  # node builds have no mounted gamedata) it falls back to the bitmap face.
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/ll_ttf.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/dinput.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/winmm.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/dsound.c"
+  # PORT-B11: the Web Audio back end behind PORT-B4's silent IDirectSound. EM_JS
+  # rather than a --js-library entry, so it links into the node targets too
+  # (where it is a set of counters); see ll_audio.c's header.
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/ll_audio.c"
   # PORT-B6: the last two DLLs the import table names that were still generated
   # traps. avifil32.c reports "this file will not open" through all sixteen
   # AVIFile entry points, which is the path movie.c/advisor.c are written for;
