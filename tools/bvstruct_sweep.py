@@ -66,6 +66,16 @@ DECL = re.compile(
     r'(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?P<args>[^;]*)\)\s*;'
     r'.*?/\*\s*(?P<addr>0x[0-9a-fA-F]{6,8})')
 MARKER = re.compile(r'^//\s*(?:WIP-)?FUNCTION:\s*LEGOLAND\s+(0x[0-9a-fA-F]{8})')
+# PORT-M3's rename, the shape every fix of this class takes:
+#     #define Foo Foo_vc6_body      <- VC6 compiles the matched text unchanged
+#     <the matched body>
+#     #undef Foo
+#     Ret Foo(Elem* e, BPos sq) { return Foo_vc6_body(e, sq.key); }
+# The portable link sees the WRAPPER, so the wrapper's signature is the one a
+# declaration has to agree with.  PORT-M10's scratch sweep learned this
+# (tools/port_m10_bvstruct_sweep.py:218); this one had not, so it reported a
+# repaired body's VC6 spelling as a live disagreement -- PORT-M12.
+RENAME = re.compile(r'^\s*#\s*define\s+([A-Za-z_]\w*)\s+(\1_vc6_body)\s*$')
 PORTABLE = 'LEGOLAND_PORTABLE'
 
 
@@ -247,8 +257,16 @@ def sweep(root, portable_only=True):
     for f in files:
         lines = text[f].split('\n')
         live = portable_lines(text[f]) if portable_only else None
+        renamed, offs, acc = set(), [], 0
+        for ln in lines:
+            offs.append(acc)
+            acc += len(ln) + 1
         for i, ln in enumerate(lines, 1):
             if live is not None and i not in live:
+                continue
+            r = RENAME.match(ln)
+            if r:
+                renamed.add(r.group(1))
                 continue
             m = DECL.match(ln)
             if m:
@@ -268,9 +286,21 @@ def sweep(root, portable_only=True):
                 m2 = re.search(r'(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*'
                                r'\((?P<args>[^)]*)\)', sig)
                 if m2:
-                    args = [classify(a) for a in split_args(m2.group('args'))]
+                    name, raw = m2.group('name'), m2.group('args')
+                    sig = sig.strip()
+                    if name in renamed:
+                        w = re.search(r'#\s*undef\s+' + re.escape(name)
+                                      + r'\s*\n(?:[^\n]*\n){0,6}?[^\n]*?\b'
+                                      + re.escape(name)
+                                      + r'\s*\((?P<args>[^)]*)\)',
+                                      text[f][offs[i - 1]:])
+                        if w:
+                            raw = w.group('args')
+                            sig = (name + '(' + raw + ')'
+                                   + '   [portable wrapper]')
+                    args = [classify(a) for a in split_args(raw)]
                     key = mk.group(1).lower().replace('0x00', '0x')
-                    defs[key] = (f, i + 1, m2.group('name'), args, sig.strip())
+                    defs[key] = (f, i + 1, name, args, sig)
     aggs = collect_aggregates(text)
     silent, noisy = [], []
     for addr, rows in sites.items():
