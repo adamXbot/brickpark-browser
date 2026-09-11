@@ -1723,6 +1723,135 @@ bubble was raised from a panel pixel at all (icon ownership is established by th
 blit, and `BltAdvisor` never runs). So PARK-2 re-files as a PORT-B item, a
 sibling of PARK-4, with the cost written up in `docs/lanes/scope-port-b11.md` §4.
 
+## Gates for the two classes no gate could see (scope PORT-A9)
+
+Both of the previous two lanes closed with the same complaint: **a gate that
+reports zero is only as good as the set it walks.** PORT-B11 §3 found 23 sound
+effects missing under `raw pointer words: 0`; PORT-M10 §1f found a whole ABI
+class that `wasm-ld`, `linkreport.py` and `test_callback_types.c` are all blind
+to, and left its sweep in `tools/`, outside every gate. This lane makes both
+measurable from a clean build, and measuring them found more of each.
+
+### `gen/rawwords.md` — the census that does not ask the declarations
+
+`pointers.md` counts the words the game's own declarations call pointers, and
+`raw pointer words: 0` is true of exactly those. `extern FXEntry g_game_fx[];`
+(mapinit.c:18) has no bound, so `cdecl.py` can compute no extent, so
+`gen_link.py` never visits the object, so its three raw x86 string addresses were
+never raw *pointer* words at all.
+
+The new census asks the image instead: every 4-byte word of every emitted
+object, declaration or no declaration, whose value lands in the original
+`.rdata`/`.data`. Nothing is re-pointed on that evidence — PORT-A2 measured what
+value-chosen re-pointing does (1,650 words moved, 1,209 of them string TEXT, the
+loader broken) — but it is reported, because in the rebuilt layout nothing is at
+0x004b9b94. Two vetoes, both A2's measurement read backwards:
+
+* three printable bytes and a zero high byte is a string literal (`"tan\0"` =
+  0x006e6174);
+* `'w' 0 'm' 0` is UTF-16 — `kThemeSame`'s 98 words are a wide string table.
+
+Overridden by exactly one thing: a value pointing at the **first** byte of a C
+string. Pointing *into* one is no evidence at all in a section that is mostly
+string pool — `"ACK\0"`, the tail of "LOG FLUME TRACK", reads as a pointer five
+bytes into "mcop_b2s.lls" — while pointing at a string's start is the claim every
+defect of this class has made, `g_entrance_fx`'s one word ("turnstyles.wav")
+included.
+
+| | wasm32 closure |
+| --- | --- |
+| words in the image range, text vetoes applied | 989 |
+| visited by the declaration scan | 882 |
+| **objects with words it never visited** | **27 (107 words)** |
+| of those, pointing at a C string | 55 |
+| at a symbol's own address | 3 |
+| at unidentified data | 49 |
+
+23 of the 107 are sound-effect sample names, 30 are the CRT's own `_matherr`
+table swallowed by an unbounded `NearOffset[]`, and 6 are false positives with a
+reason (a BGR cursor colour that happens to equal `g_front`'s address; UTF-16 at
+an odd byte phase inside the interface-name pool). Every row names the
+declaration that would fix it. The ctest `raw_words` gates the list against
+`portable/tests/rawwords_baseline.txt`: a new row or a row that grew fails, a row
+that shrinks prints `SHRUNK` and passes, so a bound landing in the game sources
+tightens the baseline instead of fighting it.
+
+### An unbounded array of a struct with pointer fields is no longer a silent skip
+
+The generator supplies the count the declaration is missing, from the gap-tiled
+block: the object is at least the **complete** elements that fit in it. The bytes
+past the last whole element are never scanned, and a guessed extent pays a price
+a declared one does not — any element whose claimed pointer word is inline text
+is dropped. Without that rule, the first run re-pointed **55 words of the credits
+roll** ("ton\0" of "Anton") into `g_zbuf_pixels`: A2's catastrophe arriving by a
+different door.
+
+Proved with PORT-A8's address-keyed bytes proof over `globals.c`: 21,397 elements
+both sides, 0 addresses added or removed, **72 values changed**, every one a raw
+image literal becoming a re-pointed interior and every one read by eye —
+`g_power_table`'s 63 element names (B11's suspected second live defect),
+`g_money_fx` 2, `g_joust_fx` 1, two of `g_game_fx`'s three, `g_spacetower_fx` 2,
+`g_support_model_a` 2. The native 64-bit closure is untouched (85,495 elements, 0
+changes). It is not a substitute for a bound: `g_game_fx`'s third name lives in
+the 8 bytes past the second element of a 32-byte tile, and only a real bound
+reaches it.
+
+### `--probe-audio`: the sound-effect blocker as a number
+
+`legoland_headless --probe-audio [N]` runs the game's own `InitSoundSampleSystem`,
+wraps the resulting `IDirectSound`'s vtable with a counting copy (so neither the
+shim nor the game has to change), then makes the FX calls the park makes —
+`Load_FXList(g_game_fx, 0x17)` and `LoadMoneySFX()` — and prints each entry's
+`.name`, whether it is a readable string at all, and whether the sample loaded:
+
+```
+g_game_fx[ 0] name=0x19f54 Flowers.wav        sample=loaded
+g_game_fx[ 2] name=0x4b9b6c <not a string -- a RAW image address>  sample=NULL
+g_game_fx: 2/23 loaded, 21 name(s) still raw
+g_money_fx: 2/2 loaded, 0 name(s) still raw
+AUDIO 4 sound buffer(s) created, 122290 byte(s) of PCM
+```
+
+Four, where B11 measured one `CreateSoundBuffer` call in a whole session — all
+four from words the extent rule above recovered. `probe_audio` is a local
+(asset-needing) ctest with 4 as a **floor**: the other 21 names are bounds the
+game sources owe, and when they land the probe asks for the floor to be raised.
+
+### `portable/tools/bvstruct_sweep.py`: M10's sweep as a gate, and 13 more sites
+
+Promoted with `--selftest` and two ctests. Two changes to the sweep itself, both
+of which change its answers:
+
+* it reads the sources the way the **portable build** does, skipping the arms of
+  `#ifndef LEGOLAND_PORTABLE` that only VC6 compiles. M10's fix shape is a
+  portable arm next to the VC6 one, so the old sweep reported all three of its
+  own repairs as hits;
+* it sizes a typedef **tree-wide**. The old sweep looked a type up only in the
+  file that mentioned it, so `union BPosW { unsigned short w; BPos b; }` — a
+  2-byte 2-member union, the very shape M10 §1b measured as indirect — came out
+  "size unknown" and was filed under the heading that says wasm-ld already warns.
+  It does not, and that mis-filing hid **thirteen** more live sites: the driving
+  school's two manoeuvre routines, four boating-school/mermaid removal handlers
+  registered through the `+0x9c` slot as integers, the restaurant's start/stop
+  sound pair (newly audible since B11), the jungle cruise's route rebuild, the
+  media shop's removal and the mechanics hut's eviction.
+
+`--selftest` is 23 classifier checks plus the ABI claim itself, compiled by the
+real emcc and clang:
+
+```
+struct{u8,u8}    native slot=0x233f   wasm32 slot=0x0aec
+union{u16;BPos}  native slot=0x233f   wasm32 slot=0x0aec
+one member       identical on both -- passed direct, safe
+```
+
+so a toolchain that stopped disagreeing fails the test instead of turning every
+row into a phantom. All 15 ruled-on addresses are in
+`portable/tests/bvstruct_accepted.txt` with their direction, citations and M10's
+recipe; any other silent site fails the build. Notes:
+`docs/lanes/scope-port-a9.md`.
+
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
