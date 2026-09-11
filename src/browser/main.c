@@ -236,6 +236,26 @@ extern unsigned char g_map_dirty[];
  * game-side one. */
 extern unsigned char g_input[];             /* 0x00813a40  GameInput */
 
+/* PORT-M14: the SELECTION/DESTROY-CURSOR block, which is what decides what an
+ * eraser click takes. `HandleMapClick` (gameframe.c:955) classifies the cell
+ * under the pointer into `g_hit_info` (+0x00 type, +0x04 obj, +0x08 cell) and
+ * publishes the owning class in `g_sel_def` with its BASE cell in
+ * `g_sel_bpos`; the class's +0x90 cursor hook (usually
+ * `BasicObjectDCalcCursor`, objmap2.c:506) then stamps `g_destroy_cursor`.
+ * Note `g_query_cursor` and `g_destroy_cursor` are THE SAME OBJECT --
+ * gameframe.c and objmap2.c give 0x00810160 two names -- so one read covers
+ * both. Reading type + sel_def->name + sel_def->rect + sel_bpos + the cursor's
+ * own rect/origin/validity is the whole answer to "what is this click about to
+ * remove, and is that the cell the player pointed at". */
+extern unsigned char g_hit_info[];          /* 0x004bdd00  HitInfo */
+extern unsigned char g_sel_def[];           /* 0x00667c58  ObjDef* under the cursor */
+extern unsigned char g_sel_bpos[];          /* 0x00667c54  its base cell, BPosW */
+extern unsigned char g_destroy_cursor[];    /* 0x00810160  == g_query_cursor */
+extern unsigned char g_drag_class[];        /* 0x0080ff6c */
+extern unsigned char g_query_extra[];       /* 0x00810144 */
+extern unsigned char g_edit_cursor[];       /* 0x007febc0 */
+extern unsigned char g_tile_info[];         /* 0x00801f40  TileInfo[] */
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -314,7 +334,15 @@ extern unsigned char g_input[];             /* 0x00813a40  GameInput */
     X(72, g_edit_object)                \
     X(73, g_script_event)               \
     X(74, g_map_dirty)                  \
-    X(75, g_input)
+    X(75, g_input)                      \
+    X(76, g_hit_info)                   \
+    X(77, g_sel_def)                    \
+    X(78, g_sel_bpos)                   \
+    X(79, g_destroy_cursor)             \
+    X(80, g_drag_class)                 \
+    X(81, g_query_extra)                \
+    X(82, g_edit_cursor)                \
+    X(83, g_tile_info)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
