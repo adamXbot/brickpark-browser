@@ -48,6 +48,20 @@
        window.llStats()      everything the panel shows, as an object: frames,
                  fps, hash, nonBlack, traps, trace length, the last modal.
        window.llTrace(n)     the last n trace lines as an array.
+
+     PORT-B10 added what PLAYING needs, which is more than clicking:
+       window.llDrag(x0,y0,x1,y1)  press, move, release in game pixels. The
+                 path tool builds a RUN of squares on a drag and a single
+                 square on a click, so the tutorial's "link the ride to the
+                 main path" cannot be done with llClick at all.
+       window.llPark()       the park's own state -- money, people, visitor
+                 count, sim frame -- read out of the game's globals. The money
+                 readout is a bitmap number; no frame hash can tell you it says
+                 1030 rather than 1090.
+       window.llAscii(x,y,w,h,thr,light)  a rectangle of the canvas as ASCII
+                 ink. The game draws all of its own text; this is how you read
+                 it back and catch a glyph that renders wrong.
+       window.llCrop(x,y,w,h,scale)  one rectangle, magnified, as a data URL.
 -->
 
 <html lang="en">
@@ -385,6 +399,75 @@
     llMouse('mouseup', p, button); await llSleep(500);
     return window.llFrameHash();
   };
+  // PORT-B10: llDrag(x0, y0, x1, y1) -- press, move, release, in game pixels.
+  //
+  // THE PATH TOOL CANNOT BE DRIVEN WITH CLICKS. mapscreen4.c's in-game click
+  // handling latches a drag (g_input.flags bit 0x1000) on the press and walks
+  // the map squares between the press square and the cursor square until the
+  // release, so one path square is a click but a RUN of path is a drag -- and
+  // "link the ride to the main path", the tutorial's second objective, is a run
+  // of eight or ten. A tool that can only click can build one square at a time
+  // and cannot see that the run logic works at all.
+  //
+  // The intermediate moves are real mousemoves at ~90 ms, which is three frames
+  // at the game's 33 fps floor: the game samples DirectInput once a frame, so a
+  // drag delivered as two events (down, up) is a drag it never saw move.
+  window.llDrag = async function (x0, y0, x1, y1, steps) {
+    var i, p0 = llPoint(x0, y0), p1 = llPoint(x1, y1);
+    steps = steps || 8;
+    llMouse('mousemove', p0); await llSleep(200);
+    llMouse('mousedown', p0); await llSleep(200);
+    for (i = 1; i <= steps; i++) {
+      llMouse('mousemove', llPoint(x0 + (x1 - x0) * i / steps,
+                                   y0 + (y1 - y0) * i / steps));
+      await llSleep(90);
+    }
+    llMouse('mouseup', p1); await llSleep(600);
+    return window.llFrameHash();
+  };
+
+  // PORT-B10: read a rectangle of the canvas AS TEXT. The game's own readouts
+  // are bitmap numbers and bitmap words -- the money bar, every caption, every
+  // line of the Duty Manager's briefing -- and a driver that can only compare
+  // frame hashes can prove that the frame changed but never that it is RIGHT.
+  // `light` says whether ink is lighter than the paper (the HUD) or darker
+  // (the notepad screens). Twenty rows of this is how the money readout was
+  // caught printing its zeroes as something that reads as an A.
+  window.llAscii = function (x, y, w, h, thr, light) {
+    var c = Module.canvas;
+    if (!c) return null;
+    var d, out = [], i, j, o, lum, s;
+    try { d = c.getContext('2d').getImageData(x, y, w, h).data; }
+    catch (e) { return null; }
+    if (thr === undefined) thr = 128;
+    for (j = 0; j < h; j++) {
+      s = '';
+      for (i = 0; i < w; i++) {
+        o = (j * w + i) * 4;
+        lum = (d[o] * 299 + d[o + 1] * 587 + d[o + 2] * 114) / 1000;
+        s += ((light === false ? lum < thr : lum > thr) ? '#' : '.');
+      }
+      out.push(s);
+    }
+    return out.join('\n');
+  };
+
+  // PORT-B10: one rectangle of the canvas, magnified, as a PNG data URL --
+  // llSnapshot for a detail. Nearest-neighbour, so a 6-pixel glyph stays a
+  // 6-pixel glyph and the scaling adds nothing that was not drawn.
+  window.llCrop = function (x, y, w, h, scale) {
+    var src = Module.canvas, c;
+    if (!src) return null;
+    scale = scale || 4;
+    c = document.createElement('canvas');
+    c.width = w * scale; c.height = h * scale;
+    var g = c.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    try { g.drawImage(src, x, y, w, h, 0, 0, w * scale, h * scale); }
+    catch (e) { return null; }
+    return c.toDataURL('image/png');
+  };
+
   // One key, held. `code` is what ll_canvas.js reads first (it is the PHYSICAL
   // key, and DIK codes ARE PS/2 set-1 scan codes); `key` is the fallback.
   window.llKey = async function (code, key, holdMs) {
@@ -530,6 +613,46 @@
                                     s += String.fromCharCode(c);
                                   return s; })(),
       levelNumber: i32(a.g_level_number)
+    };
+  };
+
+  // PORT-B10: the PLAY state -- what the park actually contains, read out of
+  // the game's own memory rather than off the canvas.
+  //
+  // Three of the five questions a tutorial walk has to answer cannot be
+  // answered by a frame hash. "Did the money go down when I built the ride" is
+  // a BITMAP NUMBER on the money bar (money.c:154 sprintf("%5d")s g_bricks and
+  // hands it to the cached-text blitter), so the pixels say "the frame changed"
+  // and nothing more. "Did visitors arrive" is a handful of 8-pixel sprites on
+  // a 640x480 isometric map. "Is the simulation ticking" is invisible whenever
+  // the camera is pointed at empty grass.
+  //
+  // people: the live Bloke chain (blokeai.c:125, `next` at +0x00) walked to its
+  // end, capped so a corrupt link reports instead of hanging the page.
+  window.llPark = function () {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32;
+    function i32(p) { return I[p >> 2]; }
+    var n = 0, p = i32(a.g_people_head), seen = {}, truncated = false;
+    while (p && n < 4096) {
+      if (seen[p]) { truncated = true; break; }   /* a cycle: say so */
+      seen[p] = 1;
+      n++;
+      p = i32(p);                                  /* Bloke.next, +0x00 */
+    }
+    if (p) truncated = true;
+    return {
+      money:        i32(a.g_bricks),
+      moneyFull:    i32(a.g_bricks_full),
+      people:       n,
+      peopleTruncated: truncated,
+      numVisitors:  i32(a.g_num_visitors),
+      visitorLimit: i32(a.g_visitor_limit),
+      simFrame:     i32(a.g_sim_frame),
+      gameMode:     i32(a.g_game_mode),
+      screenMode:   i32(a.g_screen_mode),
+      editState:    i32(a.g_edit_state)
     };
   };
 
