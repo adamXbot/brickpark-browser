@@ -1325,17 +1325,20 @@ so `name_trap.py` had nothing to name.** A7-2 (the MAP button) is gone.
 
 ```js
 // the whole walk, in GAME pixels, on ?args=-nointro+WINDEBUG&beat=1000
-await llMove(320,240); await llClick(260,188); await llClick(505,345);
-await llClick(252,362); await llClick(577,419);   // -> the briefing
-await llClick(455,445); await llClick(577,419);   // -> THE PARK
+// (from a virgin IDBFS -- once a save exists the front end routes via the
+//  title screen instead; see the lane notes)
+await llMove(320,240); await llClick(260,188); await llType('adam');
+await llClick(505,345); await llClick(252,362); await llClick(577,419);
+await llClick(455,445); await llClick(577,419);   // -> THE PARK      money 1000
 await llClick(558,243); await llClick( 53,394);   // -> the LEGOLAND menu
 await llClick(558,243); await llClick( 27,156);
-await llClick(330,200);                           // -> "Your First Ride!"
+await llClick(330,200);                           // -> "Your First Ride!"  990
 await llClick(577,419); await llClick( 40,443);   // -> the park, PATH armed
 await llDrag(292,296, 266,232, 10);               // a RUN of path
 ```
 
-Per-screen hashes are in `docs/lanes/scope-port-b10.md` §1.
+Per-screen hashes, and what they are and are not reproducible against, are in
+`docs/lanes/scope-port-b10.md` §1.
 
 **The money is the proof it is playing and not just drawing**: `llPark().money`
 reads `g_bricks`, the same value `RenderMoneyBar` prints — 1000 on arrival, 1030
