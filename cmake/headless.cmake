@@ -95,6 +95,34 @@ set_tests_properties(slot_sweep_selftest PROPERTIES
   FAIL_REGULAR_EXPRESSION "FAIL"
   TIMEOUT 300)
 
+# ---- PORT-A9: the census that does NOT ask the declarations ------------------
+# `pointer_words` (tests.cmake) is honest about the words the DECLARATION scan
+# visited, and that is the hole PORT-B11 §3 fell into: `extern FXEntry
+# g_game_fx[];` has no bound, so cdecl.py computes no extent, so gen_link never
+# visits the object, so its three raw x86 string addresses are not raw POINTER
+# words -- 23 sound effects lost under a gate reporting zero.
+#
+# `gen/rawwords.md` asks the image instead: every 4-byte word of every emitted
+# object whose value lands in the original .rdata/.data, with the inline-text
+# vetoes A2 measured. The residue is not zero yet (most of it is bounds PORT-M11
+# owes), so the gate is a BASELINE -- `portable/tests/rawwords_baseline.txt`
+# lists the accepted rows with a reason each. A NEW row or a row that GREW
+# fails; a row that shrinks prints SHRUNK and passes, so a game-side fix tightens
+# the file instead of fighting it.
+#
+# Asset-free and toolchain-independent: it reads the censuses this build wrote,
+# and in the 64-bit build the census is vacuous by construction (re-pointing is
+# off), exactly like the pointer gate.
+add_test(NAME raw_words
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_link.py"
+                 "${CMAKE_BINARY_DIR}" --check-rawwords
+                 --baseline "${CMAKE_CURRENT_SOURCE_DIR}/tests/rawwords_baseline.txt")
+set_tests_properties(raw_words PROPERTIES
+  PASS_REGULAR_EXPRESSION "raw-word gate: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
+
 if(EMSCRIPTEN)
   # Two harnesses from the same sources: `legoland_headless` is the one to run,
   # and `legoland_headless_debug` is the one that NAMES a trap. See

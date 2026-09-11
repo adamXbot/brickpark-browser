@@ -212,6 +212,34 @@ STRUCT_EXTENTS = {
 # exact-match path with a real function declaration.
 DATA_LO, DATA_HI = 0x4ab000, 0x836000
 
+
+def textish_word(w):
+    """Is this word INLINE TEXT being misread as an address?
+
+    PORT-A2's measurement is the whole reason the generator does not choose
+    pointers by value: of 1,650 words whose value lands in the image, 1,209 are
+    string TEXT, because a three-character string with its terminator
+    (`"tan\\0"` = 0x006e6174) is a number in `.data`'s range. This is that
+    measurement as a predicate, and it is used in exactly two places -- both of
+    them to say NO:
+
+    * the declaration-independent census (`gen/rawwords.md`) does not report a
+      word it vetoes, or half of `.rdata` would be a row;
+    * the one extent the generator GUESSES -- an unbounded array tiled by its
+      block -- drops any element whose claimed pointer is text-shaped. Without
+      it, 55 words of the credits roll ("ton\\0" of "Anton") were re-pointed
+      into `g_zbuf_pixels`: precisely the catastrophe A2 named, arriving by a
+      different door.
+
+    The wide form is the same thing in UTF-16: `0x006d0077` is `'w' 0 'm' 0`,
+    and `kThemeSame`'s 98 words are a wide string table. Tab, newline and
+    carriage return count as text (`"\\n%s"` is 0x0073250a).
+    """
+    b = [(w >> s) & 0xff for s in (0, 8, 16, 24)]
+    pr = [0x20 <= c < 0x7f or c in (0x09, 0x0a, 0x0d) for c in b]
+    return (pr[0] and pr[1] and pr[2]) or \
+           (pr[0] and b[1] == 0 and pr[2] and b[3] == 0)
+
 # Words a lane has already RULED ON. The pointer census can say "this word's
 # value is not an address" mechanically, but it cannot say whether that is a
 # defect; a lane that read the code can, and the verdict belongs next to the row
@@ -760,6 +788,88 @@ def check_pointers(build_dir):
     return 1 if bad else 0
 
 
+RAWWORD_RE = re.compile(r'^(0x[0-9a-f]{8}) (\d+) (\S+)(?: (\S+))?\s*$')
+DEFAULT_RAWWORD_BASELINE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', 'tests',
+    'rawwords_baseline.txt')
+
+
+def read_rawword_rows(path):
+    """The machine-readable rows of a rawwords.md or of the baseline:
+    `addr -> (count, name, breakdown, note)`."""
+    rows, inside = {}, False
+    for line in open(path, encoding='utf-8', errors='replace'):
+        if line.startswith('```'):
+            inside = not inside
+            continue
+        line, _, note = line.partition('#')
+        if not line.strip():
+            continue
+        m = RAWWORD_RE.match(line.rstrip())
+        if m and (inside or path.endswith('.txt')):
+            rows[int(m.group(1), 16)] = (int(m.group(2)), m.group(3),
+                                         m.group(4) or '', note.strip())
+    return rows
+
+
+def check_rawwords(build_dir, baseline=None):
+    """The ctest (`raw_words`): the declaration-INDEPENDENT census may shrink,
+    never grow.
+
+    `pointer_words` asks the declarations and so cannot see an object no
+    declaration can size; this one asks the image. Its residue is not zero
+    today -- 35 objects, most of them sound-effect tables whose bounds PORT-M11
+    owes (docs/lanes/scope-port-b11.md §3) -- so the gate is a BASELINE: a row
+    that is not in `portable/tests/rawwords_baseline.txt`, or a row whose word
+    count grew, fails. A game-side bound makes the row shrink or vanish, which
+    passes, and the baseline can then be tightened in the same commit.
+
+    Asset-free: it reads the rawwords.md files the build already wrote.
+    """
+    baseline = baseline or DEFAULT_RAWWORD_BASELINE
+    if not os.path.exists(baseline):
+        print(f'FAIL no baseline at {baseline}')
+        return 1
+    base = read_rawword_rows(baseline)
+    found, bad, shrunk = [], [], []
+    for root, _dirs, files in os.walk(build_dir):
+        if 'rawwords.md' not in files:
+            continue
+        path = os.path.join(root, 'rawwords.md')
+        rel = os.path.relpath(path, build_dir)
+        rows = read_rawword_rows(path)
+        found.append((rel, rows))
+        for addr, (n, nm, brk, _note) in sorted(rows.items()):
+            if addr not in base:
+                bad.append((rel, f'NEW row `{nm}` 0x{addr:08x}: {n} image-range '
+                            f'word(s) ({brk}) that no declaration offered to the '
+                            f'pointer scan. Read {os.path.dirname(rel)}/'
+                            f'rawwords.md: the `fix` column names the '
+                            f'declaration. If the row is a false positive, add '
+                            f'it to {os.path.basename(baseline)} WITH A REASON'))
+            elif n > base[addr][0]:
+                bad.append((rel, f'`{nm}` 0x{addr:08x} GREW: {base[addr][0]} '
+                            f'-> {n} words ({brk})'))
+            elif n < base[addr][0]:
+                shrunk.append((rel, nm, addr, base[addr][0], n))
+    for rel, rows in found:
+        tot = sum(r[0] for r in rows.values())
+        print(f'  {rel}: {len(rows)} object(s), {tot} unvisited image-range '
+              f'word(s) (baseline {len(base)} objects, '
+              f'{sum(r[0] for r in base.values())} words)')
+    if not found:
+        print('FAIL no rawwords.md under ' + build_dir +
+              ': build the closure before running this test')
+        return 1
+    for rel, nm, addr, was, now in shrunk:
+        print(f'  SHRUNK {rel}: `{nm}` 0x{addr:08x} {was} -> {now} words -- '
+              f'tighten the baseline in the commit that fixed it')
+    for rel, why in bad:
+        print(f'FAIL {rel}: {why}')
+    print(f'raw-word gate: {len(bad)} failure(s) in {len(found)} census(es)')
+    return 1 if bad else 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('build_dir')
@@ -769,9 +879,16 @@ def main():
     ap.add_argument('--check-pointers', action='store_true',
                     help='the ctest: every manifest.md under build_dir must '
                          'report `raw pointer words: 0`')
+    ap.add_argument('--check-rawwords', action='store_true',
+                    help='the ctest: every rawwords.md under build_dir must '
+                         'match the accepted baseline or be smaller')
+    ap.add_argument('--baseline', help='the accepted raw-word residue '
+                    '(default portable/tests/rawwords_baseline.txt)')
     args = ap.parse_args()
     if args.check_pointers:
         sys.exit(check_pointers(args.build_dir))
+    if args.check_rawwords:
+        sys.exit(check_rawwords(args.build_dir, args.baseline))
     if not args.out:
         ap.error('--out is required')
     os.makedirs(args.out, exist_ok=True)
@@ -1157,6 +1274,116 @@ def main():
             if addr + 4 * k in ptr_va:
                 slots.add(k)
         return slots
+
+    # ---- an UNBOUNDED array of a struct with pointer fields -----------------
+    #
+    # `extern FXEntry g_game_fx[];` (mapinit.c:18) is the declaration that cost
+    # the port its sound effects. It is not wrong about anything -- the element
+    # type is laid out, the pointer field is the first word of it -- it simply
+    # does not say how many. `cdecl.py` answers `full_type` None for that (no
+    # count, no size), so the scan above skips the object entirely and its
+    # `.name` words keep the original image's addresses. The gate above could
+    # not see it either, because a word nothing calls a pointer is not a raw
+    # pointer word (docs/lanes/scope-port-b11.md §3).
+    #
+    # So the generator supplies the one number the declaration is missing, from
+    # something it already knows: the object's block is `size` bytes of gap-
+    # tiled storage and the element is `esz` bytes, so the object is at least
+    # the `size // esz` COMPLETE elements that fit. Conservative in three ways
+    # that were all measured, not assumed:
+    #
+    # * only complete elements, never the remainder. A tile is an element count
+    #   plus 4, 8 or 20 bytes of alignment or swallowed neighbour far more often
+    #   than it is a whole multiple (14 of this tree's 23 unbounded struct
+    #   tables), and the bytes past the last whole element are the ones most
+    #   likely not to belong to the array at all.
+    # * the image vetoes per ELEMENT, and more strictly than for a declared
+    #   bound: a value that cannot be an address OR that is inline text
+    #   (`textish_word`) drops its element. Without that, 55 words of the
+    #   credits roll were re-pointed into `g_zbuf_pixels` -- see the comment at
+    #   the rejection.
+    # * nothing here changes a BLOCK. `declared_extent` is untouched, the
+    #   tiling is untouched, every byte of globals.c stays where it was; the
+    #   only difference is which words the resolver is offered. Proved by an
+    #   address-keyed diff of globals.c against the previous generator (PORT-A9:
+    #   21,397 elements both sides, 0 addresses added or removed, 72 values
+    #   changed, every one a raw image literal becoming a re-pointed one, and
+    #   every one read by eye).
+    #
+    # An unbounded declaration is therefore a warning ROW with a count, instead
+    # of a silent skip; `gen/pointers.md` lists every one either way. It is not
+    # a substitute for the bound: `g_game_fx`'s third sample name lives in the
+    # incomplete element at the end of its 32-byte tile and only a real bound
+    # reaches it (docs/lanes/scope-port-b11.md §3, PORT-M11's row).
+    plan_size = {p[0]: p[2] for p in plan}
+    plan_data = {p[0]: p[3] for p in plan}
+    unbounded_elems = []      # (addr, name, typename, esz, size, n, cite, state)
+    for obj in sorted(src_objs, key=lambda o: (o.addr, o.name)):
+        if obj.count is not None or not obj.type.size:
+            continue          # bounded (the main pass has it), or unsizeable
+        if not cdecl.has_pointer(obj.type):
+            continue          # no pointer field: nothing to re-point either way
+        esz, size = obj.type.size, plan_size.get(obj.addr)
+        cite = f'{obj.file}:{obj.line}'
+        row = [obj.addr, obj.name, obj.typename, esz, size or 0, 0, cite]
+        if not size:
+            unbounded_elems.append(tuple(row) +
+                                   ('no block is emitted at this address -- the '
+                                    'game defines the object, or nothing '
+                                    'references it',))
+            continue
+        n, rem = divmod(size, esz)
+        if n < 1:
+            unbounded_elems.append(tuple(row) + (
+                f'NOT SCANNED: the gap-tiled block is {size} bytes, smaller '
+                f'than one {esz}-byte element -- the tiling cut the object '
+                f'short; bound the declaration',))
+            continue
+        row[5] = n
+        ty = cdecl.array_of(obj.type, n)
+        offs, amb = cdecl.pointer_offsets(ty)
+        data = plan_data.get(obj.addr)
+        added = rejected = 0
+        for e in range(n):
+            eofs = [o for o in offs if e * esz <= o < (e + 1) * esz]
+            bad = False
+            for o in eofs:
+                if o % 4:
+                    bad = True
+                    break
+                if data is None:
+                    continue
+                w = struct.unpack_from('<I', data, o)[0]
+                # A GUESSED extent gets a stricter image test than a declared
+                # one: the element is dropped not only when the value cannot be
+                # an address but also when it is INLINE TEXT (`textish_word`).
+                # Measured on the first run of this rule without it: 55 words of
+                # the credits roll -- "ton\0" of "Anton", "nosn\0" of "Johnson"
+                # -- were re-pointed into `g_zbuf_pixels`, because a table of
+                # four-character name fragments satisfies every other test a
+                # pointer field has to pass. A declared bound is a statement
+                # from the sources and is believed; a bound the generator worked
+                # out from a gap is not, and pays for it here.
+                if not plausible_addr(w) or textish_word(w):
+                    bad = True
+                    break
+            if bad:
+                rejected += len(eofs)
+                continue
+            for o in eofs:
+                if obj.addr + o not in ptr_va:
+                    added += 1
+                ptr_va.setdefault(obj.addr + o,
+                                  (obj.name, cdecl.field_name_at(ty, o),
+                                   cite + ' (unbounded, tiled)'))
+        for o in amb:
+            ptr_amb.append((obj.addr + o, obj.name,
+                            cdecl.field_name_at(ty, o), cite))
+        unbounded_elems.append(tuple(row) + (
+            f'scanned as {n} complete x {esz} bytes'
+            + (f' (+{rem} bytes not scanned)' if rem else '')
+            + f': {added} new pointer word(s), {rejected} rejected by the '
+              f'image',))
 
     ptr_bounds = {}           # VA -> name: pointer slots from the ARRAY-BOUNDS
                               # pass (an `extern char* g_x[8]`), so that a word
@@ -1736,6 +1963,259 @@ def main():
         ptr_md += ['## Declared types too large to walk', '',
                    f'Over {MAX_PTR_SCAN} bytes.', ''] + \
             [f'- `0x{a:08x}` `{nm}` `{tn}` {sz} bytes' for a, nm, tn, sz in ptr_toobig] + ['']
+    n_ub_scanned = sum(1 for r in unbounded_elems if r[5])
+    if unbounded_elems:
+        ptr_md += ['## Unbounded arrays of a struct with pointer fields', '',
+                   'A declaration with no bound (`extern FXEntry g_game_fx[];`)',
+                   'says everything about the element and nothing about the count, so',
+                   '`cdecl.py` can give it no extent and the scan above used to skip',
+                   'the object in silence -- which is how 23 sound-effect names kept',
+                   'the original image\'s addresses under a gate reporting zero raw',
+                   'pointer words (docs/lanes/scope-port-b11.md §3).',
+                   '',
+                   'The count now comes from the gap-tiled block: the object is at',
+                   'least the COMPLETE elements that fit in it, and their pointer fields',
+                   'are scanned like any other. The bytes past the last whole element',
+                   'are never scanned, and the image vetoes per element more strictly',
+                   'than it does for a declared bound -- a word that is inline text',
+                   'drops its element, because without that the credits roll was',
+                   're-pointed into the z-buffer. Nothing here moves a block or a byte:',
+                   'the extents, the tiling and globals.c are exactly as they were, and',
+                   'only the set of words offered to the resolver grows.',
+                   '',
+                   'It is not a substitute for a bound. A table whose tile ends mid-',
+                   'element keeps that element raw (`g_game_fx`\'s third sample name is',
+                   'in the 8 bytes past its second element), and a tile smaller than one',
+                   'element is reported and skipped outright.',
+                   '',
+                   'The fix for every row is still a bound in the declaring file, which',
+                   'merges the fragments into one object as well.', '',
+                   '| address | object | element | size | tile | elements | declared by | state |',
+                   '| --- | --- | --- | --- | --- | --- | --- | --- |']
+        for a, nm, tn, esz, size, n, cite, state in unbounded_elems:
+            ptr_md.append(f'| `0x{a:08x}` | `{nm}` | `{tn}` | {esz} | {size} | '
+                          f'{n or "-"} | {cite} | {state} |')
+        ptr_md += ['', f'{len(unbounded_elems)} unbounded declarations with a '
+                   f'pointer field, {n_ub_scanned} of them now scanned.', '']
+
+    # ---- gen/rawwords.md: the census that does NOT ask the declarations -----
+    #
+    # The gate above is the DECLARATION's census, and `raw pointer words: 0` is
+    # true of the words it visited. PORT-B11 §3 found the hole that sentence
+    # leaves. `extern FXEntry g_game_fx[];` (mapinit.c:18, loaders.c:284) has no
+    # bound, so `cdecl.py` computes no extent, `full_type` is None, the pointer
+    # scan's very first test (`if ty is None`) skips the object, and its three
+    # words -- the ORIGINAL image's addresses of "Flowers.wav",
+    # "RabOld\Drill.wav" and "RabOld\Punch4.wav" -- are not raw POINTER words
+    # because nothing ever called them pointers. 23 sample names never loaded,
+    # the port had one sound effect in a whole session, and the gate said zero.
+    #
+    # So this census asks the IMAGE. Every 4-byte word of every emitted object,
+    # declaration or no declaration: a word whose value lands in the image's own
+    # .rdata/.data is a row. It is never RE-POINTED on that evidence -- PORT-A2
+    # measured what value-chosen re-pointing does (1,650 words moved, 1,209 of
+    # them string TEXT, the loader broken) and the rule stands -- but it is
+    # REPORTED, because in the rebuilt layout nothing is at 0x004b9b94 and the
+    # only way such a word can be right is by accident.
+    #
+    # The value gets the one veto A2's false-positive analysis earned, read
+    # backwards: a word whose low three bytes are all printable ASCII is inline
+    # TEXT being misread as an address ("tan\0" = 0x006e6174 lands squarely in
+    # .data's range). Every other row is split by what the value points AT -- a
+    # C string, a symbol's own address, or unidentified data -- because a word
+    # pointing at a string is the shape that has now bitten three times
+    # (g_volume_names, g_low_markers, g_game_fx) and a reader can confirm it in
+    # one line.
+    #
+    # `visited` is what keeps the report honest instead of merely alarming: a
+    # word the declaration scan already ruled on is not news here (it was
+    # re-pointed, or it is a row of pointers.md with a reason and a verdict).
+    # The gate is the OTHER set -- the words no declaration ever offered.
+    # `textish_word` (top of the file) is the veto; here it is overridden by
+    # exactly one thing: a value that points at the FIRST byte of a C string
+    # (`target_shape`'s 'str'). "Points somewhere inside a string" is not
+    # corroboration at all -- .rdata is mostly string pool, so an arbitrary
+    # address in it usually lands in one: `"ACK\0"`, the tail of "LOG FLUME
+    # TRACK", reads as 0x004b4341, which is five bytes into "mcop_b2s.lls".
+    # Pointing at a string's FIRST byte is a different claim, and it is the
+    # claim every defect of this class has made -- g_volume_names,
+    # g_low_markers, g_game_fx, and g_entrance_fx, whose only word
+    # (0x004b6674 = "turnstyles.wav") is itself three printable bytes and would
+    # be vetoed without this.
+    #
+    # A blind spot remains, stated so nobody trusts the census further than it
+    # goes: a genuine pointer to something that is NOT a string and whose value
+    # happens to be three printable bytes is vetoed. The per-OBJECT signal
+    # usually survives (a table's other entries are not text-shaped), and the
+    # real closure for that class is the declaration side, which is why an
+    # unbounded array of a struct with pointer fields is tiled into elements for
+    # the pointer scan.
+    def target_shape(w):
+        """('str'|'sym'|'data', detail) -- what the value points at. For the
+        report only; nothing is re-pointed on this.
+
+        'str' is deliberately narrow: the byte BEFORE the target must be a
+        terminator, so the value points at a string's first character and not
+        into the middle of one. That one condition is the difference between a
+        report worth reading and half of .rdata."""
+        if w in symbol_at:
+            return 'sym', symbol_at[w]
+        if read is None:
+            return 'data', ''
+        b = read(w - 1, 65)
+        if b[0] != 0:
+            return 'data', ''
+        n = 1
+        while n < len(b) and 0x20 <= b[n] < 0x7f:
+            n += 1
+        # Three characters and a terminator: the CRT's own `_matherr` name
+        # table ("exp", "pow", "log10") is reached through g_near_offsets, and
+        # a two-character name would not be distinguishable from noise.
+        if 3 < n < len(b) and b[n] == 0:
+            return 'str', b[1:n].decode('ascii', 'replace')
+        return 'data', ''
+
+    src_by_addr = collections.defaultdict(list)
+    for o in src_objs:
+        src_by_addr[o.addr].append(o)
+
+    def fix_for(a, nm, off_in_type):
+        """The declaration change that would put this word inside the
+        declaration scan, in the game's own words. `off_in_type` is the word's
+        offset from `a`, so a declaration that IS sized can still be wrong
+        about this particular word."""
+        rows, objs = [], [o for o in src_by_addr.get(a, ()) if o.name == nm]
+        for o in objs:
+            if o.type.size is None:
+                rows.append(f'`{o.typename}` has no computable size '
+                            f'({o.file}:{o.line}) -- a typedef cdecl.py cannot '
+                            f'lay out, or a bound that is a macro')
+            elif o.count is None:
+                rows.append(f'unbounded `extern {o.typename} {nm}[];` '
+                            f'({o.file}:{o.line}) -- give it the bound')
+            elif not cdecl.has_pointer(o.full_type):
+                rows.append(f'`{o.typename}` ({o.file}:{o.line}) has no pointer '
+                            f'field at +0x{off_in_type:x} -- an int/void '
+                            f'spelling of a pointer')
+            else:
+                rows.append(f'`{o.typename}` ({o.file}:{o.line}) is sized and '
+                            f'has pointer fields, but not at +0x{off_in_type:x}')
+        if not objs:
+            rows.append('nothing declares this address -- unnamed data the gap '
+                        'tiling absorbed into the block (a string pool, a '
+                        'switch table), or a name with no readable address '
+                        'comment')
+        return rows
+
+    visited = {a + 4 * k for a, ks in n_ptr_of.items() for k in ks}
+    # (block addr, name) -> {'str': [...], 'sym': [...], 'data': [...]}, and the
+    # set of fixes the rows in it ask for.
+    rw_rows = {}
+    n_rw_words = n_rw_visited = n_rw_text = 0
+    for addr, primary, size, data, rest, words, inter in plan if args.ilp32 else ():
+        if data is None:
+            continue
+        owners = sorted([(0, primary)] + [(0, n) for n in rest] +
+                        [(o, n) for n, o in inter])
+        for off in range(0, (size // 4) * 4, 4):
+            if (addr + off) % 4:
+                continue
+            w = struct.unpack_from('<I', data, off)[0]
+            if not (DATA_LO <= w < DATA_HI):
+                continue
+            kind, detail = target_shape(w)
+            if kind != 'str' and textish_word(w):
+                n_rw_text += 1
+                continue
+            n_rw_words += 1
+            if addr + off in visited:
+                n_rw_visited += 1
+                continue
+            i = bisect.bisect_right(owners, (off, '\xff')) - 1
+            ooff, onm = owners[i] if i >= 0 else (0, primary)
+            row = rw_rows.setdefault((addr, primary), {'str': [], 'sym': [],
+                                                      'data': [], 'fix': []})
+            row[kind].append((addr + off, w, onm, detail))
+            for f in fix_for(addr + ooff, onm, off - ooff):
+                if f not in row['fix']:
+                    row['fix'].append(f)
+    n_rw_unvisited = sum(len(r['str']) + len(r['sym']) + len(r['data'])
+                         for r in rw_rows.values())
+    n_rw_str = sum(len(r['str']) for r in rw_rows.values())
+    n_rw_sym = sum(len(r['sym']) for r in rw_rows.values())
+
+    rw_md = ['# Image-range words in the rebuilt closure (the census that does',
+             '# not ask the declarations)', '',
+             "`pointers.md` counts the words the game's own declarations call",
+             'pointers. This counts the words the IMAGE says are addresses, in every',
+             'emitted object, whether or not any declaration reaches it -- because a',
+             'declaration that cannot be sized (`extern FXEntry g_game_fx[];`) makes',
+             'its object invisible to that gate, and 23 sound effects were lost under',
+             'a gate reporting zero (docs/lanes/scope-port-b11.md §3).', '',
+             'Nothing here is re-pointed on the strength of its value: a value-only',
+             'rule moves string TEXT and breaks the loader (PORT-A2). These are rows',
+             'to READ. The fix is always a declaration, in the file that owns it.', '',
+             f'- re-pointing (--ilp32): {"on" if args.ilp32 else "OFF -- the 64-bit build keeps every pointer raw by construction, so the census is vacuous there"}',
+             f'- words in the image range, ASCII-text vetoes removed: {n_rw_words}',
+             f'- of those, words the declaration scan visited (re-pointed, or a row '
+             f'of pointers.md): {n_rw_visited}',
+             f'- **words the declaration scan never visited: {n_rw_unvisited}** in '
+             f'{len(rw_rows)} objects ({n_rw_str} point at a C string, {n_rw_sym} at '
+             f"a symbol's own address, "
+             f'{n_rw_unvisited - n_rw_str - n_rw_sym} at unidentified data)',
+             f'- words vetoed as inline ASCII text (A2\'s false positive): {n_rw_text}',
+             '']
+    if rw_rows:
+        rw_md += ['## Objects with words no declaration offered', '',
+                  'The `fix` column is the declaration that would bring the object',
+                  'inside `pointers.md`\'s gate -- a bound on an unbounded array, a',
+                  'typedef cdecl.py can lay out, a real pointer type where a file says',
+                  '`int`. A row whose words all point at unidentified DATA may be a',
+                  'coincidence (a large integer, a packed pair of shorts); a row whose',
+                  'words point at C STRINGS is a defect until somebody proves',
+                  'otherwise.', '',
+                  '| object | addr | str | sym | data | e.g. | fix |',
+                  '| --- | --- | --- | --- | --- | --- | --- |']
+        for (addr, nm), r in sorted(rw_rows.items(),
+                                    key=lambda kv: (-len(kv[1]['str']),
+                                                    -len(kv[1]['data']), kv[0])):
+            eg = (r['str'] or r['sym'] or r['data'])[:2]
+            egs = ', '.join(f'`0x{va:08x}`=`0x{w:08x}`' +
+                            (f' "{d[:40]}"' if d else '')
+                            for va, w, _o, d in eg)
+            rw_md.append(f'| `{nm}` | `0x{addr:08x}` | {len(r["str"])} | '
+                         f'{len(r["sym"])} | {len(r["data"])} | {egs} | '
+                         + '; '.join(r['fix'][:3]) + ' |')
+        rw_md += ['', f'{len(rw_rows)} objects, {n_rw_unvisited} words.', '',
+                  '## The rows, machine-readable', '',
+                  'The baseline `portable/tests/rawwords_baseline.txt` is this list as',
+                  'it was accepted; `gen_link.py <build> --check-rawwords` fails on an',
+                  'object that is not in it or a count that GREW, so a fix in the game',
+                  'sources shrinks the baseline and a regression cannot be merged.', '',
+                  '```']
+        for (addr, nm), r in sorted(rw_rows.items()):
+            n = len(r['str']) + len(r['sym']) + len(r['data'])
+            rw_md.append(f'0x{addr:08x} {n} {nm} '
+                         f'str={len(r["str"])},sym={len(r["sym"])},'
+                         f'data={len(r["data"])}')
+        rw_md += ['```', '']
+
+    manifest += ['', '## Image-range words, declaration-independent '
+                 '(gen/rawwords.md)', '',
+                 f'- words in the image range, ASCII-text vetoes removed: '
+                 f'{n_rw_words}' + ('' if args.ilp32 else
+                                    ' (census off: --ilp32 not given)'),
+                 f'- of those, visited by the declaration scan: {n_rw_visited}',
+                 f'- **unvisited objects with image-range words: {len(rw_rows)}**'
+                 f' ({n_rw_unvisited} words: {n_rw_str} at a C string, {n_rw_sym} '
+                 f"at a symbol's own address, "
+                 f'{n_rw_unvisited - n_rw_str - n_rw_sym} at unidentified data)',
+                 '  -- every row and the declaration that would fix it is in '
+                 'gen/rawwords.md']
+    if rw_rows:
+        print(f'gen_link: NOTE {n_rw_unvisited} image-range word(s) in '
+              f'{len(rw_rows)} object(s) that no declaration offered to the '
+              f'pointer scan -- see gen/rawwords.md', file=sys.stderr)
 
     manifest += ['', '## Pointer words (gen/pointers.md)', '',
                  f'- declared pointer words: {len(ptr_va)}'
@@ -1749,6 +2229,9 @@ def main():
                  f'{sum(r[4] for r in ptr_reject)} words in {len(ptr_reject)} '
                  f'declarations',
                  f'- words a union makes undecidable (left alone): {len(ptr_amb)}',
+                 f'- unbounded arrays of a struct with pointer fields: '
+                 f'{len(unbounded_elems)}, {n_ub_scanned} scanned as whole '
+                 f'elements of the gap-tiled block',
                  f'- **rows still waiting for a verdict: '
                  f'{sum(1 for va, _w, _y in raw_words if va not in PTR_VERDICTS)}'
                  f' raw + '
@@ -1772,7 +2255,7 @@ def main():
     for fname, text in (('globals.c', globals_c), ('aliases.c', aliases_c),
                         ('stubs.c', stubs_c), ('host_stubs.c', host_c),
                         ('manifest.md', manifest), ('extents.md', ext_md),
-                        ('pointers.md', ptr_md)):
+                        ('pointers.md', ptr_md), ('rawwords.md', rw_md)):
         with open(os.path.join(args.out, fname), 'w') as f:
             f.write('\n'.join(text) + '\n')
     with open(os.path.join(args.out, 'll_gen.h'), 'w') as f:

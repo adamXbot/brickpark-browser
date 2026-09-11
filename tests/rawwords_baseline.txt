@@ -1,0 +1,65 @@
+# The accepted raw-word residue -- the baseline for the `raw_words` ctest.
+#
+# `gen/rawwords.md` is the census that does NOT ask the declarations: every
+# 4-byte word of every emitted object whose value lands in the original image's
+# .rdata/.data, with the inline-text vetoes applied (see `textish_word` in
+# gen_link.py). A word in it is a word the game will dereference as a number.
+# The older gate, `pointer_words`, cannot see these: a declaration that cannot
+# be sized (`extern FXEntry g_game_fx[];`) makes its object invisible to it, and
+# that is how 23 sound-effect names stayed raw under a gate reporting
+# `raw pointer words: 0` (docs/lanes/scope-port-b11.md §3).
+#
+# The residue is not zero yet, so the gate is this list:
+#
+#   * a row NOT here, or a row whose word count GREW  -> the test FAILS;
+#   * a row that shrank or vanished                   -> the test passes and
+#     prints SHRUNK; tighten this file in the same commit as the fix.
+#
+# Most rows are owed a BOUND in the declaring game source (PORT-M11). The rest
+# are false positives of a value-based census and say so; each one has a reason,
+# in the spirit of `PTR_VERDICTS`. A row with no reason is open work.
+#
+# Format: <addr> <words> <object> str=N,sym=N,data=N   # reason
+# Measured on 2026-09-12, PORT-A9, wasm32 --ilp32 closure of 68fab1d3 + A9.
+# 27 objects, 107 words.
+
+# ---- the sound effects: 23 words, every one a sample NAME (B11 §3) ----------
+# `Load_FXList(g_game_fx, 0x17)` reads `.name` out of each FXEntry and builds
+# `.\sfx\%s`; with the word raw the member name is garbage, RES_OpenFile fails
+# and the failure branch is a silent DBPrintf. PORT-M11 owes each table a bound;
+# A9's complete-element rule closed g_joust_fx, g_money_fx and two of
+# g_game_fx's three, and cannot reach the rest (a tile that ends mid-element, or
+# a `void`/`int` spelling of the pointer field).
+0x004b9228 1 g_game_fx str=1,sym=0,data=0            # the 3rd name, in the 8 bytes past the 2nd element of a 32-byte tile: needs the [0x17] bound (mapinit.c:18, loaders.c:284, lifecycle.c:33)
+0x004b9248 7 g_place_sample str=7,sym=0,data=0       # "Building 01.wav" ... declared `int` at objmap2.c:201: the FXEntry typedef, then the bound
+0x004b929c 3 g_snd_close str=3,sym=0,data=0          # "Click02.wav" ...: declared `void` (fpui3.c:345, screens3.c:236)
+0x004b92c0 1 g_snd_click str=1,sym=0,data=0          # "Button14.wav": declared `void` (appraisal.c:140, mapscreen4.c:142, screens3.c:210)
+0x004b92cc 1 g_snd_fp_remove str=1,sym=0,data=0      # "Rasp1.wav": declared `void` (fpui3.c:347)
+0x004b92d8 1 g_snd_denied str=1,sym=0,data=0         # "gardener lift up3.wav": declared `void` (fpui3.c:346)
+0x004b92e4 2 g_sample_hire str=2,sym=0,data=0        # "inventory slide away.wav" ...: declared `void` (fpui2.c:1444)
+0x004b92fc 1 g_clear_sfx str=1,sym=0,data=0          # "mechanic lift2.wav": declared `void` (eventtick.c:151)
+0x004b9308 1 g_sample_fire str=1,sym=0,data=0        # "theme button click3.wav": declared `void` (fpui2.c:1445)
+0x004b9314 1 g_snd_theme str=1,sym=0,data=0          # "alroight then gardener put down.wav": declared `void` (screens3.c:211)
+0x004b9320 1 g_sample_gardener str=1,sym=0,data=0    # "tut tut for mechanic put down.wav": declared `void` (workorder2.c:314)
+0x004b932c 1 g_sample_mechanic str=1,sym=0,data=0    # "warning01.wav": declared `void` (workorder2.c:315)
+0x004b6668 1 g_entrance_fx str=1,sym=0,data=0        # "turnstyles.wav": an 8-byte tile for a 12-byte FXEntry (screencb5.c:424)
+0x004b79d8 1 g_zoomer_loop_sample str=1,sym=0,data=0 # "airplanes breaking down.wav": declared `void` (ridesave.c:789)
+
+# ---- other string pointers still raw ---------------------------------------
+0x004b81c0 1 g_gfx_dirs str=1,sym=0,data=0           # ".\graphics\textures\" at +0x1c of a `char` declaration (rin.c:244): the texture directory, read by the loaders
+0x004b7750 1 g_anim_tower_a str=1,sym=0,data=0       # declared `int` (mechrides.c:2306); the "string" is a 3-char sprite tag, worth a reader before any fix
+0x004bff28 59 g_near_offsets str=30,sym=0,data=29    # the CRT's own _matherr name table ("exp", "pow", "log10") and float-format pool, swallowed by an unbounded `NearOffset[]` (workorder2.c:298). B11 §3 called it probably dead; a bound on the declaration stops the object absorbing .rdata either way
+
+# ---- pointers at a rebuilt symbol, or into a model table -------------------
+0x004b7618 2 g_spacetower_fx str=0,sym=0,data=2      # anim pointers past the last complete element of a 160-byte tile (ridemachine.c:55 / mechrides.c:673)
+0x004b76b8 5 g_anim_tower_b str=0,sym=0,data=5       # a real pointer table (0x004b76a8 -> 0x004b7688 ...) declared `int` (mechrides.c:2307)
+0x004b775c 1 g_bloke_anim_ref str=0,sym=1,data=0     # points at g_anim_tower_b; `AnimRef[]` unbounded in three files (bswater2.c:553, mechrides.c:2305, ridemisc2.c:373), tile 60 for an 8-byte element
+0x004b59f8 2 g_seat_name_man str=0,sym=0,data=2      # two words in the swallowed tail point at the 1.0f identity matrices at 0x004b5a10/0x004b5a88 -- plausibly a model record; `char[]` unbounded (coaster5.c:236, coaster6.c:407)
+
+# ---- false positives: the VALUE is not an address --------------------------
+0x004ab3d8 1 g_two str=0,sym=0,data=1                # 0x00800000 at +0x38 of a float pool (coastershade2.c:71): a float/colour constant, not an address
+0x004acfd0 8 GUID_NULL str=0,sym=0,data=8            # the interface-name pool: UTF-16 text at an odd byte phase (0x00590000 is 0 0 'Y' 0), which the wide veto cannot see
+0x004b9558 1 g_path_3x3_masks str=0,sym=0,data=1     # 0x00739c00 is a path bit mask (workorder4.c:50)
+0x004b95cc 1 g_cursor_col_a str=0,sym=1,data=0       # 0x0080ff80 is a BGR cursor colour; it EQUALS g_front's address by coincidence (bigrender.c:389)
+0x004b95d4 1 g_cursor_col_c str=0,sym=1,data=0       # same colour, same coincidence (bigrender.c:391)
+0x004b95dc 1 g_cursor_col_d str=0,sym=0,data=1       # 0x008080ff, the third cursor colour (bigrender.c:392)
