@@ -1473,13 +1473,49 @@ not in the asset-free set, but its matcher is tested on hand-assembled bytes and
 ### 5. `name_trap.py` knows two more trap kinds
 
 `RuntimeError: table index is out of bounds` and `memory access out of bounds`
-are first-class kinds now, alongside the signature mismatch. For the table case
-the wasm is decoded at the trapping offset to find the `call_indirect`'s index
-operand, and when that index is a **raw x86 VA** the tool says so and prints the
-`// FUNCTION:` marker that owns the address. That is PORT-B9's B9-4 class —
-function addresses written as integer literals in code (sweep3.c, loaders.c,
-coaster10.c) — and it is what the first park load dies on. See §5 of
-`docs/lanes/scope-port-a8.md` and `name_trap.py --help`.
+are first-class kinds now; before this both fell into the "a real body faulted,
+good luck" arm. For the table case the wasm is decoded at the trapping offset to
+find the `call_indirect`, its type, the table size, and **where its index operand
+came from** — a constant, a memory load, or a parameter, each reported
+differently. When the index is a raw x86 VA the tool says so and prints the
+`// FUNCTION:` marker that owns the address.
+
+That is PORT-B9's **B9-4** class: function addresses written as integer literals
+in the recovered C, because the original is `mov dword ptr [ecx+0x98], 0x45efe0`
+and the recovery spelled the immediate instead of the symbol. It matched the
+original bytes perfectly and cannot work on wasm, where a function "pointer" is a
+table index. The literal is usually stored by a *different* function from the one
+that traps, so the index at the call site is an `i32.load`; `--va-literals`
+therefore sweeps the whole module for the class and names every one:
+
+```
+python3 portable/tools/name_trap.py --va-literals
+python3 portable/tools/name_trap.py --at 0x929af --kind table
+```
+
+Two things make that sweep sharp rather than useless, and both cost a wrong
+answer first:
+
+* **`.text` only, not the whole image.** Linear memory overlaps the image's DATA
+  range, so a perfectly ordinary pointer to a rebuilt global is an `i32.const` in
+  0x004ab000..0x00836000 — **2,585** of them in this module. Narrowed to
+  0x00401000..0x004ab000 the same sweep returns **9**, and the verdict is
+  exactness: a value that is *exactly* a `// FUNCTION:` marker address is a
+  recovered function address and nothing else. Five are; the other four are
+  ordinary integers (a mask, an `open` flag) and are listed separately rather
+  than dressed up as findings.
+* **Both halves of an `i64.const`.** The optimiser merges two adjacent 4-byte
+  stores of constants into one 8-byte store, so `sweep3.c`'s five literals reach
+  the module as one `i32.const` and two `i64.const`s. An i32-only sweep finds
+  **one of the five**.
+
+On this tree it names all five of `SetStandardCallbacks`' literals, including the
+two PORT-B9 left unnamed — `0x00480b70` is `SetEditObjectFromElem`
+(pathobj2.c:243) and `0x0045f220` is `StandardRemoveObject` (objmap2.c:982).
+`loaders.c`'s 21 sites are absent from both linked modules: `GetInterface` is
+dead-code-eliminated, so they are latent rather than live. `coaster10.c`'s three
+are `.data` addresses and out of this window by design — the `.data` half of the
+class is `gen/pointers.md`'s gate.
 
 Full notes: `docs/lanes/scope-port-a8.md`.
 
