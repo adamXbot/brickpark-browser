@@ -318,6 +318,104 @@ extern unsigned char g_clear_pixel[];       /* 0x007cb5e4 */
 extern unsigned char g_xverts[];            /* 0x00643ee8  3 ints per vertex */
 extern unsigned char g_vert_key[];          /* 0x00641004  one key per vertex */
 
+/* PORT-P4 -- the SCRIPT's own progress, which is the only honest answer to
+ * "did the objective drain".  Money and frame hashes say a thing happened;
+ * the step list says WHICH objective the level is on.  eventmake.c:44 is the
+ * layout: a ScriptStep is {next, id, text, goals, events} and every objective
+ * is one step, sorted on `id`.  levelkw.c's section closer inserts them and
+ * eventtick.c advances g_script_cur as each step's goal list empties, so
+ * `g_script_cur->id` IS the objective number on the notepad and
+ * `g_script_cur->goals` is what is still unmet in it.  g_script_root is the
+ * root goal of the step being built.  g_script_bytes is the ten THEMEICON /
+ * level flags SetThemeIcon and AddLevelFlag keep (eventgoalprim.c:73).
+ *   g_script_steps  0x00668798  ScriptStep*  head of the whole level's steps
+ *   g_script_cur    0x0066879c  ScriptStep*  the step in progress
+ *   g_script_root   0x007fdca4  ScriptEvent*
+ *   g_script_bytes  0x007fe930  signed char[10]
+ *   g_goal_kind_count 0x0066872c int[]  QueuePendingEvent's per-kind tally */
+extern unsigned char g_script_steps[];
+extern unsigned char g_script_cur[];
+extern unsigned char g_script_root[];
+extern unsigned char g_script_bytes[];
+extern unsigned char g_goal_kind_count[];
+
+/* PORT-P4 -- the cheat ring and the two things cheats are observable through.
+ * input.c:337's `g_type_buf[20]` is the ring every printable key is pushed
+ * into, and every cheat is a strnicmp of its TAIL at a FIXED offset, so the
+ * only way to tell "the cheat did not fire" from "the ring is wrong" is to
+ * read the 20 bytes.  PORT-B12 proved the ring was being corrupted by an
+ * overlapping memcpy; this is the readback that confirms the memmove fix.
+ * `:PRAISEME` sets g_instant_appraisal (eventgoalprim.c:37) and the theme
+ * cheats post to the interactive-music mailbox (sysmisc2.c:134 SetTheme:
+ * g_imt_cmd = 4, g_imt_cmd_arg = theme % 5, SetEvent) -- with MIDI stubbed the
+ * mailbox IS the effect, so it is what gets measured.
+ *   g_type_buf          0x00668d94  char[20]
+ *   g_instant_appraisal 0x00666098  int
+ *   g_appraisal_minutes 0x00832978  int
+ *   g_imt_state/cmd/cmd_arg/theme  0x004bf778 / 0x0079a6a4 / a8 / ac */
+extern unsigned char g_type_buf[];
+extern unsigned char g_instant_appraisal[];
+extern unsigned char g_appraisal_minutes[];
+extern unsigned char g_imt_state[];
+extern unsigned char g_imt_cmd[];
+extern unsigned char g_imt_cmd_arg[];
+extern unsigned char g_imt_theme[];
+
+/* PORT-P4 -- the four theme Icon pointers.  PORT-M16 closed P2-2 by proving
+ * the LEGOLAND button's own Icon* was being parked in g_info_icon_d by the
+ * g_popup shear; the replay that confirms it needs to read the array, not the
+ * canvas.  screens3.c:219 -- Icon* g_theme_icon[4], 0x007fdd70. */
+extern unsigned char g_theme_icon[];
+
+/* PORT-P4 -- the WORKERS, which are three of the five tutorial lessons.
+ * `NEEDGARDENERS n` and `NEEDMECHANICS n` (eventtick2.c:398/417) test nothing
+ * but `GetGardenerCount()` / `GetMechanicCount()` (tinystubs.c:113 -- plain
+ * reads of g_gardener_count / g_mechanic_count), and planting a flower is a
+ * gardener WORK ORDER (misc3.c:395) rather than a build, so "the objective did
+ * not drain" has exactly three possible causes and these globals separate
+ * them: nobody was hired, nobody took the order, or the order was never made.
+ * `g_worker_on_mouse` (GetSelectedBloke, tinystubs.c:120) is the pick-up
+ * latch -- lesson 2 opens by asking the player to carry four Gardeners out of
+ * a hedge pen, and it is the only way to tell a missed click from a refused
+ * pick-up.
+ *   g_gardener_count       0x0079a8bc  int
+ *   g_mechanic_count       0x0079a8cc  int
+ *   g_gardener_list        0x0079a8a8  Bloke*
+ *   g_mechanic_list        0x0079a8ac  Bloke*
+ *   g_gardener_orders      0x0079a8b0  WorkOrder*
+ *   g_gardener_order_count 0x0079a8b8  int
+ *   g_mechanic_orders      0x0079a8c0  WorkOrder*
+ *   g_worker_on_mouse      0x007fdff0  Bloke* -- the bloke being carried */
+extern unsigned char g_gardener_count[];
+extern unsigned char g_mechanic_count[];
+extern unsigned char g_gardener_list[];
+extern unsigned char g_mechanic_list[];
+extern unsigned char g_gardener_orders[];
+extern unsigned char g_gardener_order_count[];
+extern unsigned char g_mechanic_orders[];
+extern unsigned char g_worker_on_mouse[];
+extern unsigned char g_worker_on_mouse_type[];
+
+/* PORT-P4 -- the RASTER HIT, which is how the game decides a click landed on a
+ * person.  rin.c:534 `Render3DPerson` is the whole mechanism: it rasterises the
+ * model, and ONLY if `g_raster_hit` came back set (tri3d.c:305 -- the
+ * rasteriser ORs it when it paints the pixel under the mouse, and
+ * SetRasterOrigin clears it) does it publish `g_hit_info.type` as
+ * 0x306/0x307/0x308 and `g_hit_info.bloke`.  So a bloke that is not DRAWN
+ * cannot be clicked, queried or picked up -- there is no second hit path for
+ * people, the way there is a cell lookup for objects.  That makes
+ * `g_raster_hit` the decisive reading for PORT-B12's P1-6: it separates "the
+ * model is drawn and the click missed" from "the model never painted".
+ *   g_raster_hit      0x007feb14  int
+ *   g_mouse_pixel     0x007fe9a8  char*  the surface address under the cursor
+ *   g_selection_lock  0x00668954  int    (== g_drag_lock)
+ *   g_drag_lock       0x00668954  int    raised while a worker is in hand
+ *   g_popup_info      0x007fdec0  PopUpInfo -- PORT-M15's rename of the
+ *                                 0x1c-sheared `g_popup` that blocked hiring */
+extern unsigned char g_selection_lock[];
+extern unsigned char g_drag_lock[];
+extern unsigned char g_popup_info[];
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -428,7 +526,32 @@ extern unsigned char g_vert_key[];          /* 0x00641004  one key per vertex */
     X(104, g_green_bits)                \
     X(105, g_clear_pixel)               \
     X(106, g_xverts)                    \
-    X(107, g_vert_key)
+    X(107, g_vert_key)                  \
+    X(108, g_script_steps)               \
+    X(109, g_script_cur)                 \
+    X(110, g_script_root)                \
+    X(111, g_script_bytes)               \
+    X(112, g_goal_kind_count)            \
+    X(113, g_type_buf)                   \
+    X(114, g_instant_appraisal)          \
+    X(115, g_appraisal_minutes)          \
+    X(116, g_imt_state)                  \
+    X(117, g_imt_cmd)                    \
+    X(118, g_imt_cmd_arg)                \
+    X(119, g_imt_theme)                  \
+    X(120, g_theme_icon)                 \
+    X(121, g_gardener_count)             \
+    X(122, g_mechanic_count)             \
+    X(123, g_gardener_list)              \
+    X(124, g_mechanic_list)             \
+    X(125, g_gardener_orders)           \
+    X(126, g_gardener_order_count)      \
+    X(127, g_mechanic_orders)           \
+    X(128, g_worker_on_mouse)           \
+    X(129, g_worker_on_mouse_type)      \
+    X(130, g_selection_lock)            \
+    X(131, g_drag_lock)                 \
+    X(132, g_popup_info)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {

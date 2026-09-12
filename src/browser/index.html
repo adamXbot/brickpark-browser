@@ -881,6 +881,194 @@
     };
   };
 
+  // ---- PORT-P4: the SCRIPT's own progress ---------------------------------
+  //
+  // Three earlier play lanes reported an objective as "done" or "stuck" from
+  // the canvas and from `money`.  That is a reading of the SYMPTOM.  The level
+  // script keeps the answer itself: every objective is one `ScriptStep`
+  // (eventmake.c:44 -- {next, id, text, goals, events}), the whole level is a
+  // list sorted on `id` at `g_script_steps`, and `g_script_cur` is the step in
+  // progress.  A step is finished when its `goals` list empties, so
+  //
+  //   llGoals().cur.id         == the objective number the notepad is showing
+  //   llGoals().cur.goals[]    == what is still UNMET inside it
+  //   llGoals().steps[].done   == whether that step is behind g_script_cur
+  //
+  // is the drain, measured rather than inferred.  `kind` is named from
+  // eventmake.c's constructors (33..69 are the goal kinds; 2..32 step events).
+  var LL_KIND = {
+    2: 'GIVE', 3: 'KIND3', 4: 'TAKE', 5: 'ADDBRICKS', 6: 'CURRENCY', 7: 'PLACE',
+    8: 'CLEAR', 9: 'UNGLUE', 10: 'GLUE', 11: 'EXTENDPARK', 12: 'FMV',
+    13: 'INTERVAL', 14: 'MESSAGE', 15: 'FEATURE', 16: 'GARDENER/MECHANIC',
+    17: 'WORKERS', 18: 'DEGRADE', 19: 'CAPACITY', 20: 'CAPACITYSCALE',
+    21: 'CAPACITYCAP', 22: 'ENTRANCEFEE', 23: 'LOOKAT', 24: 'REPORT',
+    25: 'THEMEICON', 26: 'ADDFLAG', 27: 'BRIDGES', 28: 'BRIEFINGFILE',
+    29: 'HINTSFILE', 30: 'FLASHBUTTON', 31: 'PURGE', 32: 'ENDLEVEL',
+    33: 'NEED', 34: 'NEEDAT', 35: 'NEEDIN', 36: 'CONNECT', 37: 'LINK',
+    38: 'RANGE', 39: 'CLEARAREA', 40: 'REMOVE', 41: 'REMOVERANGE',
+    42: 'COMPOSITE', 43: 'LOOPCOMPOSITE', 44: 'TECHLEVEL', 45: 'PARKVISITORS',
+    46: 'RIDEVISITORS', 47: 'RIDERS', 48: 'SCENERYCOVERAGE', 49: 'PATHSCENERY',
+    50: 'RIDECOVERAGE', 51: 'SHOPCOVERAGE', 52: 'FOODCOVERAGE',
+    53: 'TOTCOVERAGE', 55: 'STUDAREA', 56: 'SAVE', 57: 'HAPPINESS',
+    58: 'NEEDGARDENERS', 59: 'NEEDMECHANICS', 60: 'HUNGER', 61: 'FIXRIDES',
+    62: 'POWERRIDES', 63: 'ZONING', 64: 'CHECKFLAG', 65: 'SELECTTHEME',
+    66: 'SELECTTAB', 67: 'SELECTMODE', 68: 'KIND68', 69: 'FOREVER'
+  };
+  window.llGoals = function (withEvents) {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32;
+    function i32(p) { return I[p >> 2]; }
+    /* The LLIDB element a goal names is at ScriptEvent +0x04; its own name is
+     * the first field of the element, the way llClasses() reads it. */
+    function ev(p) {
+      var o = { addr: p, kind: i32(p + 0x0c), mode: i32(p + 0x38),
+                flags: HEAPU8[p + 0x10],
+                f14: i32(p + 0x14), f18: i32(p + 0x18), f1c: i32(p + 0x1c) };
+      o.kindName = LL_KIND[o.kind] || ('?' + o.kind);
+      var t = i32(p + 0x08); if (t) o.text = llStrAt(t);
+      var e = i32(p + 0x04); if (e) o.elem = llStrAt(i32(e)) || llStrAt(e);
+      var r = [i32(p + 0x28), i32(p + 0x2c), i32(p + 0x30), i32(p + 0x34)];
+      if (r[0] || r[1] || r[2] || r[3]) o.area = r;
+      return o;
+    }
+    function chain(p, n) {
+      var out = [], g = 0;
+      while (p && g++ < (n || 64)) { out.push(ev(p)); p = i32(p); }
+      return out;
+    }
+    var cur = i32(a.g_script_cur), head = i32(a.g_script_steps), steps = [], s = head, k = 0;
+    var seenCur = false;
+    while (s && k++ < 128) {
+      var row = { addr: s, id: i32(s + 0x04), open: i32(s + 0x0c) ? true : false,
+                  goals: chain(i32(s + 0x0c)).length,
+                  isCur: s === cur };
+      var tx = i32(s + 0x08); if (tx) row.text = llStrAt(tx).slice(0, 70);
+      if (s === cur) seenCur = true;
+      row.done = !seenCur && s !== cur;      /* steps before g_script_cur */
+      steps.push(row);
+      s = i32(s);
+    }
+    var out = { stepCount: steps.length, steps: steps,
+                curAddr: cur, rootAddr: i32(a.g_script_root),
+                flags: Array.from(HEAPU8.subarray(a.g_script_bytes, a.g_script_bytes + 10),
+                                  function (b) { return b > 127 ? b - 256 : b; }) };
+    if (cur) {
+      out.cur = { id: i32(cur + 0x04),
+                  text: i32(cur + 0x08) ? llStrAt(i32(cur + 0x08)) : null,
+                  goals: chain(i32(cur + 0x0c)) };
+      if (withEvents) out.cur.events = chain(i32(cur + 0x10));
+    }
+    return out;
+  };
+
+  // ---- PORT-P4: the cheat ring, read back byte for byte --------------------
+  //
+  // input.c:337.  Every printable key is pushed into a 20-byte ring and every
+  // cheat is a strnicmp of its TAIL at a FIXED offset (`:PRAISEME` at +11,
+  // `:EGYPT` at +14, `:COLDHARDCASH` at +7), so a ring that is off by one
+  // character silently kills every cheat and nothing on screen says so.
+  // PORT-B12 found LLVM duplicating 3 of the 19 bytes of `memcpy(g_type_buf,
+  // g_type_buf + 1, 19)`; this is the readback that says whether the memmove
+  // fix holds.  `effects` is what the cheats actually DO, so one call answers
+  // both halves of "did it fire".
+  window.llRing = function () {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32, b = HEAPU8.subarray(a.g_type_buf, a.g_type_buf + 20), s = '', i;
+    for (i = 0; i < 20; i++) s += b[i] >= 32 && b[i] < 127 ? String.fromCharCode(b[i]) : '.';
+    return {
+      ring: s, bytes: Array.from(b),
+      tail: { at4: s.slice(4), at5: s.slice(5), at7: s.slice(7), at8: s.slice(8),
+              at10: s.slice(10), at11: s.slice(11), at13: s.slice(13),
+              at14: s.slice(14), at15: s.slice(15) },
+      effects: {
+        instantAppraisal: I[a.g_instant_appraisal >> 2],   /* :PRAISEME  */
+        appraisalMinutes: I[a.g_appraisal_minutes >> 2],
+        money:            I[a.g_bricks >> 2],             /* :COLDHARDCASH */
+        imtState:         I[a.g_imt_state >> 2],          /* :THEME/:EGYPT/... */
+        imtCmd:           I[a.g_imt_cmd >> 2],
+        imtCmdArg:        I[a.g_imt_cmd_arg >> 2],
+        imtTheme:         I[a.g_imt_theme >> 2]
+      },
+      themeIcons: [I[a.g_theme_icon >> 2], I[(a.g_theme_icon + 4) >> 2],
+                   I[(a.g_theme_icon + 8) >> 2], I[(a.g_theme_icon + 12) >> 2]]
+    };
+  };
+
+  // ---- PORT-P4: the workers, and the work orders ---------------------------
+  //
+  // Three of the five tutorial lessons are about hiring somebody, and every one
+  // of those objectives is `GetGardenerCount()`/`GetMechanicCount()` and
+  // nothing else (eventtick2.c:398/417 -> tinystubs.c:113, plain reads).
+  // Planting is not a build: `FLOWERS` becomes a gardener WORK ORDER
+  // (misc3.c:395) that a free gardener has to walk to, so an objective that
+  // will not drain has three separable causes -- nobody hired, nobody free, or
+  // no order made -- and this tells them apart in one read.  `carrying` is
+  // GetSelectedBloke: lesson 2 opens by asking the player to pick four
+  // Gardeners up out of a hedge pen and put them down outside it.
+  window.llWorkers = function () {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32;
+    function i32(p) { return I[p >> 2]; }
+    function orders(head) {
+      var out = [], p = i32(head), n = 0;
+      while (p && n++ < 64) {
+        out.push({ addr: p, cell: [i32(p + 0x08), i32(p + 0x0c)],
+                   nrects: i32(p + 0x14), assigned: i32(p + 0x18),
+                   waiting: i32(p + 0x30),
+                   elem: i32(p + 0x04) ? llStrAt(i32(i32(p + 0x04))) : null });
+        p = i32(p);
+      }
+      return out;
+    }
+    return {
+      gardeners: i32(a.g_gardener_count),
+      mechanics: i32(a.g_mechanic_count),
+      gardenerListHead: i32(a.g_gardener_list),
+      mechanicListHead: i32(a.g_mechanic_list),
+      gardenerOrderCount: i32(a.g_gardener_order_count),
+      gardenerOrders: orders(a.g_gardener_orders),
+      mechanicOrders: orders(a.g_mechanic_orders),
+      carrying: i32(a.g_worker_on_mouse)     /* the bloke on the cursor */
+    };
+  };
+
+  // ---- PORT-P4: can this pixel see a PERSON? -------------------------------
+  //
+  // rin.c:534 `Render3DPerson` is the game's ONLY hit path for people.  It
+  // rasterises the model and then, *only if* `g_raster_hit` came back set
+  // (tri3d.c:305 -- the rasteriser ORs it when it paints the pixel under the
+  // mouse; SetRasterOrigin clears it first), publishes
+  // `g_hit_info.type = 0x306 / 0x307 / 0x308` (visitor / gardener / mechanic)
+  // and `g_hit_info.bloke`.  There is no cell lookup for blokes the way there
+  // is for objects, so **a person that is not drawn cannot be clicked** -- not
+  // queried, not picked up, not put down.  That makes this one read the
+  // difference between "the click missed" and "the model never painted",
+  // which is what PORT-B12's P1-6 leaves open.
+  //
+  // Hover the pixel first (llMove); this reads the state that hover left.
+  window.llHit = function () {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32;
+    return {
+      rasterHit:   I[a.g_raster_hit >> 2],
+      mousePixel:  I[a.g_mouse_pixel >> 2],
+      hitType:     '0x' + (I[a.g_hit_info >> 2] >>> 0).toString(16),
+      hitBloke:    I[(a.g_hit_info + 4) >> 2],
+      dragLock:    I[a.g_drag_lock >> 2],
+      carrying:    I[a.g_worker_on_mouse >> 2],
+      carryKind:   '0x' + (I[a.g_worker_on_mouse_type >> 2] >>> 0).toString(16),
+      /* PopUpInfo through PORT-M15's name: +0x1c type, +0x20 obj, +0x24 ref,
+       * +0xd8 kind, +0xdc active (fpui2.c:1454's layout, 0x007fdec0 base). */
+      popup: { type: I[(a.g_popup_info + 0x1c) >> 2],
+               obj:  I[(a.g_popup_info + 0x20) >> 2],
+               active: I[(a.g_popup_info + 0xdc) >> 2] }
+    };
+  };
+
   // ---- P3-4: finding a class, and finding what is PLACED ------------------
   //
   // PORT-P3 §3.4 filed this as a probe limitation and lost ten minutes to it:
