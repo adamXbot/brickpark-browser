@@ -256,6 +256,57 @@ extern unsigned char g_query_extra[];       /* 0x00810144 */
 extern unsigned char g_edit_cursor[];       /* 0x007febc0 */
 extern unsigned char g_tile_info[];         /* 0x00801f40  TileInfo[] */
 
+/* ---- PORT-M17: the 3D-PERSON RASTERISER WITNESSES ------------------------
+ *
+ * P1-6 ("sixty live visitors and not one is drawn") needs to know how far into
+ * `Render3DPerson` (rin.c:535) a person gets, and nothing on the host side can
+ * say: between Lock and Unlock the whole model pass is software.
+ *
+ * These globals are the witness, because of who writes them.  In the WHOLE
+ * tree, `SetRenderTarget` (0x00485f30, tri3d.c:527 -- rin.c declares it
+ * `SetRasterTarget`), `SetMousePixel` (0x00488700, declared `SetRasterOrigin`)
+ * and `Render_SetViewport` (0x00441800, sweep1.c:160) have EXACTLY ONE caller
+ * each, and it is rin.c:556-558 -- the three statements immediately AFTER the
+ * `GetVideoSurface` early-out and immediately BEFORE `Draw3DPersonModel`.  So
+ * `g_surface` / `g_pitch` / `g_width` / `g_rows` / `g_mouse_pixel` /
+ * `g_clip_x0..y1` are zero for as long as no person has ever cleared that
+ * gate, and they hold the last drawn person's window the moment one has.  That
+ * is a yes/no answer to "is the video surface locked while
+ * `DrawAndClearPrintList` walks the list" with no game-side tracing at all.
+ *
+ * `g_clip_x0..y1` (0x0081c8d0..dc) and `g_vp_left/top/right/bottom` are THE
+ * SAME FOUR OBJECTS under two names (tri3d.c vs. sweep1.c); the generated
+ * globals alias them correctly, and one read covers both.
+ *
+ * The rest are the pass's own state: the print list's head and bump cursor,
+ * the lock stack `PushRenderingStatusAndLockVideoSurface`/`PopRenderingStatus`
+ * push and pop, the Z buffer `Draw3DPersonModel` rasterises through, and the
+ * two .bss scratch arrays (`g_xverts`, `g_vert_key`) the model's vertex loops
+ * fill -- per-vertex churn in those is the proof the loops ran. */
+extern unsigned char g_surface[];           /* 0x00797e68  locked 16bpp base */
+extern unsigned char g_pitch[];             /* 0x00701e58 */
+extern unsigned char g_width[];             /* 0x00701e60 */
+extern unsigned char g_rows[];              /* 0x0066be48 */
+extern unsigned char g_clip_x0[];           /* 0x0081c8d0  == g_vp_left */
+extern unsigned char g_clip_y0[];           /* 0x0081c8d4  == g_vp_top */
+extern unsigned char g_clip_x1[];           /* 0x0081c8d8  == g_vp_right */
+extern unsigned char g_clip_y1[];           /* 0x0081c8dc  == g_vp_bottom */
+extern unsigned char g_mouse_pixel[];       /* 0x007fe9a8 */
+extern unsigned char g_raster_hit[];        /* 0x007feb14 */
+extern unsigned char g_printlist[];         /* 0x0066b5a4  PrintNode* head */
+extern unsigned char g_printlist_x[];       /* 0x0066b5a8  bump cursor */
+extern unsigned char g_printlist_drawn[];   /* 0x0066b5ac */
+extern unsigned char g_status_stack[];      /* 0x00668164 */
+extern unsigned char g_status_sp[];         /* 0x006681e4 */
+extern unsigned char g_zbuf[];              /* 0x00701e5c  128*120 dwords */
+extern unsigned char g_zbw[];               /* 0x0066be40 */
+extern unsigned char g_zbh[];               /* 0x0066be44 */
+extern unsigned char g_zbpitch[];           /* 0x0066be4c */
+extern unsigned char g_green_bits[];        /* 0x007cb5e0  6 = 565, 5 = 555 */
+extern unsigned char g_clear_pixel[];       /* 0x007cb5e4 */
+extern unsigned char g_xverts[];            /* 0x00643ee8  3 ints per vertex */
+extern unsigned char g_vert_key[];          /* 0x00641004  one key per vertex */
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -342,7 +393,30 @@ extern unsigned char g_tile_info[];         /* 0x00801f40  TileInfo[] */
     X(80, g_drag_class)                 \
     X(81, g_query_extra)                \
     X(82, g_edit_cursor)                \
-    X(83, g_tile_info)
+    X(83, g_tile_info)                  \
+    X(84, g_surface)                    \
+    X(85, g_pitch)                      \
+    X(86, g_width)                      \
+    X(87, g_rows)                       \
+    X(88, g_clip_x0)                    \
+    X(89, g_clip_y0)                    \
+    X(90, g_clip_x1)                    \
+    X(91, g_clip_y1)                    \
+    X(92, g_mouse_pixel)                \
+    X(93, g_raster_hit)                 \
+    X(94, g_printlist)                  \
+    X(95, g_printlist_x)                \
+    X(96, g_printlist_drawn)            \
+    X(97, g_status_stack)               \
+    X(98, g_status_sp)                  \
+    X(99, g_zbuf)                       \
+    X(100, g_zbw)                       \
+    X(101, g_zbh)                       \
+    X(102, g_zbpitch)                   \
+    X(103, g_green_bits)                \
+    X(104, g_clear_pixel)               \
+    X(105, g_xverts)                    \
+    X(106, g_vert_key)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
