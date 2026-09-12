@@ -2156,6 +2156,76 @@ unclamped it costs nothing (5605 vs 5641 ms). Replay
 `portable/src/browser/replays/b13-01-the-gdi-object-table-leaks-memory-dcs.js`,
 notes `docs/lanes/scope-port-b13.md`.
 
+## A variadic callee declared non-variadic (scope PORT-A11)
+
+clang lowers `...` on wasm32 by writing the variable arguments into a buffer and
+passing **its address** as one extra parameter. So libc's
+
+```c
+int sprintf(char* dst, const char* fmt, ...);      /* (i32, i32, i32) -> i32 */
+```
+
+has **exactly** the wasm signature of a fixed three-parameter declaration of the
+same function
+
+```c
+int sprintf_w(char* dst, const char* fmt, int v);  /* (i32, i32, i32) -> i32 */
+```
+
+and in one the third i32 is a `va_list` pointer while in the other it is a value.
+Nothing in the link can tell them apart: no wasm-ld warning, no
+`signature_mismatch:` stub, no conflict in `linkreport.py`'s signature vote, no
+`call_indirect` for `name_trap.py` to explain, and a module that validates. No
+byte gate can tell them apart either, in either direction — VC6 pushes the same
+dword for the third argument, so `audit.py`, `relocs.py`, `match.py` and
+`verify.py` are silent in the broken state and in the fixed one. PORT-M20 lost the
+Spider Ride's riders to it: `sprintf` read the seat number as the address of a
+`va_list`, so every `"%02d"` came out `00` and every rider asked for path `…00`.
+
+`portable/tools/variadic_sweep.py` is the gate. It reads every prototype in
+`LEGOLAND/*.c` and `*.h` — `extern` statements at any depth, **and** file-scope
+declarations and definitions, because six files spell `int sprintf(char*, const
+char*, ...);` with no `extern` and because the definition is the group's truth —
+groups them by the address the comment cites, and requires every live declaration
+to agree with the callee about being variadic and about where the `...` starts.
+
+```bash
+python3 portable/tools/variadic_sweep.py             # the gate: 0 conflicts
+python3 portable/tools/variadic_sweep.py --census    # all 10 variadic functions
+python3 portable/tools/variadic_sweep.py --markdown  # the manifest section
+python3 portable/tools/variadic_sweep.py --selftest  # 18 shapes, no sources
+```
+
+Four ways to disagree, and the report names which: `VA-SLOT` (a non-variadic
+spelling with more fixed parameters — M20's, and the one whose wasm arity is
+*equal*, hence invisible), `VA-COUNT` (the `...` starts elsewhere), `VA-UNSPEC`
+(`()`, no prototype at all) and `VA-EMPTY` (a non-variadic spelling with exactly
+the variadic's fixed count, which `crt_alias` bridges for a CRT target and which
+becomes a trapping cast forwarder for a game target). The fix is always a
+`#ifndef LEGOLAND_PORTABLE` / `#else` / `#endif` arm in the declaring file, which
+is why the sweep reads only the arm the portable build compiles — and why it
+honours PORT-M3's `#define Foo Foo_vc6_body` rename, without which `sweep1.c`'s
+matched empty `DBPrintf(void)` reads as the callee of all 34 honest declarations.
+
+`gen_link.py` runs the same check before it generates anything and **refuses**
+(exit 3, nothing written) with `file:line` and both spellings, because it cannot
+bridge this class: it types a CRT forwarder from `CRT_PROTOS` and a game alias
+from the body's wasm signature, and on a `VA-SLOT` row both of those agree with
+the wrong spelling. `LL_ALLOW_VARIADIC_CONFLICTS=1` generates anyway, for
+bisecting. `gen/manifest.md` carries the census (`## Variadic declarations`: 10
+functions, 108 declarations, **0 conflicts**), and `variadic_sweep` +
+`variadic_sweep_selftest` are ctests in both toolchains and in CI — asset-free,
+like `extern_sweep`, `bvstruct_sweep` and `addr_sweep`.
+
+Three conflicts existed at lane start and all are fixed in portable arms, with
+every audit row and every relocs line byte-identical before and after:
+`mechrides.c:3135` (M20's `sprintf_w`), `llidb_odf.c:48` (`ODFError(const char*,
+char*)` against `DebugPrintf(const char*, ...)` — the same defect one argument
+shorter, previously unknown, and harmless only because that body is empty) and
+`DebugPrint` in `logflume2.c`/`logflume8.c` (which PORT-A4's forwarder does bridge
+correctly; fixed so the gate needs no exceptions). Notes
+`docs/lanes/scope-port-a11.md`.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
