@@ -276,8 +276,12 @@ def parse_baseline(path):
     return names, addrs, bad
 
 
-def check(name_rows, addr_rows, baseline):
-    """(failures, notes) against a baseline file."""
+def check(name_rows, addr_rows, baseline, halves=('NAME', 'ADDR')):
+    """(failures, notes) against a baseline file.
+
+    `halves` says which checks actually RAN. A `--names-only` run has not looked
+    at the ADDR rows, and reporting them as FIXED because they were not
+    reported would be a lie the next lane acts on."""
     b_names, b_addrs, bad = parse_baseline(baseline)
     fails = list(bad)
     notes = []
@@ -320,11 +324,13 @@ def check(name_rows, addr_rows, baseline):
                     + ' (baseline: '
                     + ', '.join(f'{n}={e}' for n, e in sorted(want.items()))
                     + ')')
-    for name in sorted(set(b_names) - seen_names):
-        notes.append(f'FIXED NAME `{name}`: one address now -- drop the row')
-    for addr in sorted(set(b_addrs) - seen_addrs):
-        notes.append(f'FIXED ADDR 0x{addr:08x}: no size disagreement now -- '
-                     f'drop the row')
+    if 'NAME' in halves:
+        for name in sorted(set(b_names) - seen_names):
+            notes.append(f'FIXED NAME `{name}`: one address now -- drop the row')
+    if 'ADDR' in halves:
+        for addr in sorted(set(b_addrs) - seen_addrs):
+            notes.append(f'FIXED ADDR 0x{addr:08x}: no size disagreement now -- '
+                         f'drop the row')
     return fails, notes
 
 
@@ -476,6 +482,15 @@ def selftest():
     # a missing baseline is a failure, not a pass
     f3, _n3 = check(nrows, arows_full, os.path.join(d, 'nope.txt'))
     chk('a missing baseline fails', any('no baseline' in x for x in f3), True)
+    # --names-only must not call the ADDR rows it never looked at FIXED
+    open(bl, 'w').write('NAME g_view_left 0x004b95f4,0x008299ac   # accepted\n'
+                        'ADDR 0x0066809c g_lock=124,g_ddsd=108   # accepted\n')
+    _f4, n4 = check(nrows, [], bl, ('NAME',))
+    chk('--names-only does not claim an unchecked ADDR row is FIXED',
+        any('FIXED ADDR' in x for x in n4), False)
+    _f5, n5 = check(nrows, [], bl)
+    chk('a full run still reports a gone ADDR row',
+        any('FIXED ADDR 0x0066809c' in x for x in n5), True)
 
     for x in fails:
         print(f'FAIL {x}')
@@ -519,7 +534,8 @@ def main():
             return 0
         return 1
 
-    fails, notes = check(name_rows, addr_rows, args.baseline)
+    halves = ('NAME',) if args.names_only else ('NAME', 'ADDR')
+    fails, notes = check(name_rows, addr_rows, args.baseline, halves)
     for n in notes:
         print(n)
     for f in fails:
