@@ -18,13 +18,14 @@
 //
 //   measurement                          pre-fix            with the fix
 //   ----------------------------------   ----------------   ----------------
-//   static-mask control (hidden/hidden)  23 / 0 / 25 px     18 px
-//   static-mask signal  (shown/hidden)   23 / 0 / 25 px     2682/2444/2123 px
+//   static-mask control (hidden/hidden)  23 / 0 / 25 px     14 / 14 / 21 px
+//   static-mask signal  (shown/hidden)   23 / 0 / 25 px     3575/3449/3828 px
+//   Z-buffer cells, last person drawn    0                  up to 353 of 15360
 //   Draw3DPersonModel faces drawn        0 of 67 + 0 of 12  all that face front
 //   pixels the four tri3d fillers wrote  0                  thousands
 //
 // The pre-fix signal is the control, distribution for distribution, with SIX
-// minifigures on screen. The fix is worth ~400 pixels per visitor.
+// minifigures on screen. The fix is worth ~250 pixels per on-screen visitor.
 
 (async function () {
   const W = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -163,10 +164,69 @@
       : 'BLOKES DO NOT DRAW: the signal is the control. This is the pre-fix '
         + 'build (P1-6).' });
 
+  // ---- 5. THE Z-BUFFER WITNESS: pixels rasterised, with no pixel timing ----
+  // Better than any canvas diff, and the probe to use in a park whose camera
+  // will not hold still (the tutorial): `RenderZBufferObject` (tri3d.c:630)
+  // ZEROES the whole 128x120 dword Z buffer at the top of EVERY
+  // Draw3DPersonModel, and the only code that ever writes it again is the four
+  // tri3d fillers' `*zp = zspan`, once per pixel they draw. So the number of
+  // non-zero dwords in g_zbuf is literally "how many pixels were rasterised for
+  // the LAST 3D person of the frame" -- zero if that person drew nothing, and
+  // about 350 for a whole minifigure. Sample it for a few seconds so at least
+  // some frames end on a person whose viewport is the full (0,0,160,120).
+  //
+  // CAVEAT, and it is a correction to everything in this wave that uses
+  // `flags62 |= 0x80` as "hide this bloke": it is NOT a universal hide. It
+  // suppresses the bloke in `RenderPeople`, but rin.c:520 reads it the other
+  // way round for a RIDE's occupant --
+  //     if (rider && (rider->bloke->flags62 & 0x80)) IP_RenderBlokeIn3DNow(...)
+  // -- so while a ride has occupants the "hidden" arm still draws the riders as
+  // 3D persons and the Z buffer is non-zero in both arms. Measured on one build
+  // in one park minutes apart: shown 350 / hidden 212, then shown 353 /
+  // hidden 0 in 40 of 40. The walking visitors are the whole of the difference
+  // either way. Judge this section on the shown/hidden RATIO, not on the hidden
+  // arm being exactly zero.
+  {
+    const zb = I[a.g_zbuf >> 2] >> 2, zw = I[a.g_zbw >> 2], zh = I[a.g_zbh >> 2];
+    const zcount = () => { let n = 0; for (let i = 0; i < zw * zh; i++) if (I[zb + i] !== 0) n++; return n; };
+    const vp = () => [R('g_clip_x0'), R('g_clip_y0'), R('g_clip_x1'), R('g_clip_y1')].join(',');
+    const sample = async (n, ms) => { const o = []; for (let k = 0; k < n; k++) { o.push([zcount(), vp()]); await W(ms); } return o; };
+    show(); await W(400); const zs = await sample(40, 110);
+    hide(); await W(500); const zh2 = await sample(40, 110);
+    show();
+    const mx = (r) => Math.max.apply(null, r.map((x) => x[0]));
+    log.push({ step: '5. the Z-buffer witness', zbufCells: zw * zh,
+      shown_max: mx(zs), shown_nonZeroSamples: zs.filter((x) => x[0] > 0).length,
+      hidden_max: mx(zh2), hidden_nonZeroSamples: zh2.filter((x) => x[0] > 0).length,
+      shownSample: zs.filter((x) => x[0] > 0).slice(0, 5),
+      hiddenSample: zh2.filter((x) => x[0] > 0).slice(0, 5),
+      verdict: mx(zs) === 0
+        ? 'NO PIXELS AT ALL: the fillers write nothing (P1-6, pre-fix).'
+        : (mx(zh2) === 0
+            ? 'PIXELS ARE RASTERISED: ~350 Z-buffer cells per minifigure with '
+              + 'the blokes shown, exactly 0 in every hidden sample.'
+            : 'PIXELS ARE RASTERISED (' + mx(zs) + ' cells). The hidden arm is '
+              + 'not zero because this park has a ride with occupants: '
+              + 'rin.c:520 makes the ride draw a bloke whose flags62 carries '
+              + '0x80 -- see the caveat above.') });
+  }
+
   // A figure centre is (sx + 80, sy + 90): rin.c:541 builds the 160x120 render
   // window at (sx, sy) and person3d.c centres the model at ox = 80<<16,
   // oy = 90<<16. PORT-P1's replay 05 ringed (sx, sy) -- the window's CORNER --
   // which is 80 px left and 90 px above every bloke it was looking for.
+  //
+  // MEASURED, both parks, on the fixed build:
+  //   FREE PLAY (30 visitors, 15 figures on screen)
+  //     static mask   control 14/14/21 px   signal 3575/3449/3828 px
+  //     Z buffer      shown max 353   hidden 0/40  (and once 350 vs 212 --
+  //                   see the caveat: a ride draws its own riders)
+  //   TUTORIAL Lesson 1 (3 visitors, the path objective met)
+  //     Z buffer      shown 346..350 cells in 33 of 40 samples
+  //                   hidden 0 cells in 40 of 40
+  // The tutorial drew nothing before the fix either -- these macros are the only
+  // path any 3D person takes in any park -- so P1-6 was never free-play
+  // specific and `StartFreePlayPark` (uimisc2.c:404) is not implicated.
   console.log(JSON.stringify(log, null, 2));
   return log;
 })();
