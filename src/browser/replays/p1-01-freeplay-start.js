@@ -11,6 +11,12 @@
 //       indexedDB.deleteDatabase(d.name);
 //     location.reload();
 //
+// SUPERSEDED IN PART BY p1-00-prelude.js: this file keeps the narrative walk
+// and its hashes, but P1.start() there is what later replays call, and it adds
+// a THIRD poke this file does not make — g_cur_profile+0x30..0x33, the four
+// theme unlock bytes (P1-3). Without it the park's Wild West, Castle and
+// Adventurers tabs are blank plates and only the LEGOLAND menu can be opened.
+//
 // TWO POKES ARE REQUIRED AND BOTH ARE THE GAME'S OWN RULE, NOT A CHEAT.
 // Free play is locked behind progress the front end never grants to a fresh
 // profile, and this lane could not play twelve levels to unlock it:
