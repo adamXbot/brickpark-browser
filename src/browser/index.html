@@ -871,7 +871,8 @@
     for (i = 0; i < 8; i++) if (at(4 + i)) by[cls[i]] = at(4 + i);
     return {
       words: w,
-      objs: { live: at(1), high: at(2), exhausted: at(3), byClass: by },
+      objs: { live: at(1), high: at(2), exhausted: at(3), capacity: at(34),
+              byClass: by },
       dcEvictions: at(12),
       setBkMode: { transparent: at(13), opaque: at(14) },
       textOut: at(15), drawText: at(16),

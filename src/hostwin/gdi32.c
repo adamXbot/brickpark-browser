@@ -40,6 +40,7 @@
  *     not on screen anyway.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ll_host.h"
@@ -55,7 +56,28 @@
 #define LL_OBJ_RGN    6
 #define LL_OBJ_STOCK  7
 
-#define LL_OBJ_MAX    256
+/* The table GROWS (PORT-B13). It used to be a fixed 256 entries, and running
+ * out of them did not fail -- obj_new handed back a handle with no slot in it,
+ * which every later obj_get quietly rejected. What that looks like on screen is
+ * P4-3: `ll_host_brush_colour` falls back to BLACK, so DrawCachedTextSprite
+ * (bubblecache.c:419) fills its cell black while the game sets the sprite's
+ * colour key to the INK it asked for, the key misses the fill, and the box is
+ * blitted opaque with the text legible on top of it. Measured in lesson 5: the
+ * money readout at 51.7% pure black with `objs.live 255, exhausted 4,
+ * fill.noBrush 3, fillLast.colorref 0x0, ck.lastLow 0x1f` -- the fill and the
+ * key two different colours, from one full table.
+ *
+ * 256 was not enough because the game leaks memory DCs: misc3.c's
+ * MeasurePopUpTitle / MeasurePopUpBody never DeleteDC theirs (an ORIGINAL bug,
+ * recorded at misc3.c:1054 -- "every pop-up resize leaks a DC"), and Windows
+ * absorbs that because a process gets ~10,000 GDI handles. So the table starts
+ * at 256, doubles on demand, and stops at the handle format's own ceiling: the
+ * slot field is 12 bits, so 4095 slots is all a `0x4c47 | class << 12 | slot`
+ * handle can name. At the game's two-per-pop-up leak that is ~2,000 pop-up
+ * opens, which no session reaches -- and if one ever did, `objs.exhausted`
+ * in llGdi() says so out loud instead of turning text boxes black. */
+#define LL_OBJ_INIT   256
+#define LL_OBJ_LIMIT  4096         /* the 12-bit slot field; slot 0 is reserved */
 #define LL_OBJ_TAG    0x4c470000u
 
 typedef struct LLObj {
@@ -66,27 +88,84 @@ typedef struct LLObj {
     LLRect        rc;          /* LL_OBJ_RGN */
 } LLObj;
 
-static LLObj g_objs[LL_OBJ_MAX];
+static LLObj* g_objs;
+static int    g_objs_cap;
+
+/* Double the table (or make the first one). No caller holds an LLObj* across a
+ * call that could grow it -- obj_new's `out` and obj_get's result are both used
+ * and dropped inside one shim function -- so a realloc that moves is safe. */
+static int obj_grow(void)
+{
+    int    cap = g_objs_cap ? g_objs_cap * 2 : LL_OBJ_INIT;
+    LLObj* p;
+    if (g_objs_cap >= LL_OBJ_LIMIT)
+        return 0;
+    if (cap > LL_OBJ_LIMIT)
+        cap = LL_OBJ_LIMIT;
+    p = (LLObj*)realloc(g_objs, (size_t)cap * sizeof(LLObj));
+    if (!p)
+        return 0;
+    memset(p + g_objs_cap, 0, (size_t)(cap - g_objs_cap) * sizeof(LLObj));
+    g_objs = p;
+    g_objs_cap = cap;
+    return 1;
+}
+
+/* ---- PORT-B13: the witness (ll_host.h's LLGdiStats) --------------------- */
+static LLGdiStats g_gdi;
+
+/* Cheap on purpose: FillRect, DrawTextA and every Blt call this, so it must not
+ * walk the table. The census is ll_host_gdi_census, which only the page runs. */
+LLGdiStats* ll_host_gdi_stats(void) { return &g_gdi; }
+
+void ll_host_gdi_census(void)
+{
+    int i;
+    g_gdi.words = (int)(sizeof(g_gdi) / 4);
+    g_gdi.objs_live = 0;
+    for (i = 0; i < 8; i++)
+        g_gdi.objs_by_class[i] = 0;
+    for (i = 1; i < g_objs_cap; i++) {
+        if (!g_objs[i].used)
+            continue;
+        g_gdi.objs_live++;
+        if (g_objs[i].cls >= 0 && g_objs[i].cls < 8)
+            g_gdi.objs_by_class[g_objs[i].cls]++;
+    }
+    g_gdi.objs_capacity = g_objs_cap;
+    if (g_gdi.objs_live > g_gdi.objs_high)
+        g_gdi.objs_high = g_gdi.objs_live;
+}
 
 static void* obj_new(int cls, LLObj** out)
 {
     int i;
     /* Slot 0 is never handed out, so a zero handle stays "no object". Regions
      * are created and DeleteObject'd once per Print call, so slots recycle. */
-    for (i = 1; i < LL_OBJ_MAX; i++) {
-        if (!g_objs[i].used) {
-            memset(&g_objs[i], 0, sizeof(g_objs[i]));
-            g_objs[i].used = 1;
-            g_objs[i].cls = cls;
-            if (out)
-                *out = &g_objs[i];
-            return (void*)(size_t)(LL_OBJ_TAG | ((unsigned)cls << 12) |
-                                   (unsigned)i);
+    for (;;) {
+        for (i = 1; i < g_objs_cap; i++) {
+            if (!g_objs[i].used) {
+                memset(&g_objs[i], 0, sizeof(g_objs[i]));
+                g_objs[i].used = 1;
+                g_objs[i].cls = cls;
+                if (out)
+                    *out = &g_objs[i];
+                return (void*)(size_t)(LL_OBJ_TAG | ((unsigned)cls << 12) |
+                                       (unsigned)i);
+            }
         }
+        if (!obj_grow())
+            break;
     }
-    /* Table full: hand back a classed handle with no slot rather than null, so
-     * the caller's DeleteObject and SelectObject still behave. A leak here can
-     * only come from a caller that creates objects without deleting them. */
+    /* Every slot the handle format can name is taken. Hand back a classed
+     * handle with no slot rather than null, so the caller's DeleteObject and
+     * SelectObject still behave -- but say so, because a slotless handle makes
+     * every LATER lookup of it fail silently: a brush that resolves to black
+     * (P4-3), a clip region that does not clip. Nothing the shipped game does
+     * reaches this now; llGdi().objs.exhausted is the witness if it ever does. */
+    g_gdi.objs_exhausted++;
+    ll_host_trace("gdi32: object table EXHAUSTED at %d slots -- handle for "
+                  "class %d has no slot and will not resolve", g_objs_cap, cls);
     if (out)
         *out = 0;
     return (void*)(size_t)(LL_OBJ_TAG | ((unsigned)cls << 12));
@@ -101,7 +180,7 @@ static LLObj* obj_get(void* h, int cls)
     if (((v >> 12) & 0xf) != (unsigned)cls)
         return 0;
     slot = v & 0xfff;
-    if (slot == 0 || slot >= LL_OBJ_MAX || !g_objs[slot].used)
+    if (slot == 0 || (int)slot >= g_objs_cap || !g_objs[slot].used)
         return 0;
     return &g_objs[slot];
 }
@@ -175,6 +254,8 @@ static LLDC* dc_of(void* h)
         if (g_dcs[i].seq < g_dcs[oldest].seq) oldest = i;
     }
     dc = &g_dcs[oldest];
+    if (dc->h)
+        g_gdi.dc_evictions++;      /* PORT-B13: a live HDC lost its attributes */
     dc->h = h;
     dc->seq = ++g_dc_seq;
     dc_defaults(dc);
@@ -261,6 +342,10 @@ unsigned long ll_host_brush_colour(void* brush)
     /* GetStockObject(5) is GRAY_BRUSH, the class background screen.c asks for. */
     if (obj_class(brush) == LL_OBJ_STOCK)
         return 0x00808080ul;
+    /* Not one of ours, or a slotless handle from an exhausted table: the caller
+     * is about to fill in BLACK on the strength of it. PORT-B13 counts it,
+     * because that is exactly what P4-3 looks like from the canvas. */
+    g_gdi.fill_no_brush++;
     return 0x00000000ul;
 }
 
@@ -341,11 +426,27 @@ void* CreateDCA(const char* driver, const char* device, const char* output,
 { (void)driver; (void)device; (void)output; (void)devmode;
   return obj_new(LL_OBJ_DC, 0); }
 
+/* PORT-B13: THIS IS THE ROOT OF P4-3. A memory DC is TWO things in this shim --
+ * an entry in the DC-attribute table (fg/bg/bk_mode/selections) and a slot in
+ * the OBJECT table that CreateCompatibleDC/CreateDCA took from obj_new -- and
+ * this released only the first. So every balanced CreateCompatibleDC/DeleteDC
+ * pair the game makes still leaked a slot: bighelp.c's BubbleHelp,
+ * bubblecache.c's measure and fpui2.c's HTBubbleHelp all do one per tooltip.
+ * Measured in the lesson-5 park: llGdi().objs.byClass.dc climbed one per hover,
+ * 13 -> 24 over fourteen of them, and 281 hovers later the table was full at
+ * 255 with `exhausted 4` -- after which every CreateSolidBrush came back
+ * slotless, the cached-text fill went black under a colour key that was still
+ * the ink the game asked for, and the money readout, the objective bubble and
+ * the info pop-up's body all blitted as opaque black boxes with their text
+ * legible on top. Freeing the slot is the fix; the growing table above is the
+ * guard for misc3.c's two GENUINE original leaks, which remain. */
 int DeleteDC(void* hdc)
 {
     LLDC* dc = dc_find(hdc);
     if (dc)
         dc->h = 0;
+    if (obj_class(hdc) == LL_OBJ_DC)
+        DeleteObject(hdc);
     return 1;
 }
 
@@ -422,7 +523,7 @@ int DeleteObject(void* obj)
     int i;
     if ((v & 0xffff0000u) != LL_OBJ_TAG || obj_class(obj) == LL_OBJ_STOCK)
         return 1;
-    if (slot == 0 || slot >= LL_OBJ_MAX)
+    if (slot == 0 || (int)slot >= g_objs_cap)
         return 1;
     /* A selected object must not vanish from under a DC: clear the references
      * first, which is also what GDI does (it refuses, leaving the DC valid). */
@@ -481,6 +582,8 @@ int SetBkMode(void* hdc, int mode)
     int prev = dc->bk_mode;
     if (mode == 1 || mode == 2)
         dc->bk_mode = mode;
+    if (mode == 1) g_gdi.bk_transparent++;
+    else if (mode == 2) g_gdi.bk_opaque++;
     return prev;
 }
 
@@ -502,6 +605,7 @@ int TextOutA(void* hdc, int x, int y, const char* text, int len)
 {
     LLFontTarget  t;
     LLFontMetrics m;
+    g_gdi.textout_calls++;
     if (!text || len <= 0)
         return 1;
     if (!ll_host_dc_target(hdc, &t))

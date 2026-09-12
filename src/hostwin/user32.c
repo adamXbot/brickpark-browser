@@ -819,13 +819,32 @@ int wsprintfA(char* out, const char* fmt, ...)
  * before drawing the bubble's text into it, so this one is on screen. */
 int FillRect(void* hdc, const LLRect* rc, void* brush)
 {
+    LLGdiStats* g = ll_host_gdi_stats();
     LLFontTarget t;
     unsigned short c;
+    unsigned long cr;
     long y, x;
 
-    if (!rc || !ll_host_dc_target(hdc, &t))
+    g->fill_calls++;
+    if (!rc || !ll_host_dc_target(hdc, &t)) {
+        g->fill_no_target++;
         return 1;
-    c = ll_font_colorref_to_565(ll_host_brush_colour(brush));
+    }
+    cr = ll_host_brush_colour(brush);
+    c = ll_font_colorref_to_565(cr);
+    /* PORT-B13: the whole of P4-3 is in these five fields. An unresolved brush
+     * resolves to BLACK, which is indistinguishable on the canvas from a fill
+     * the colour key missed -- so record the handle, what it resolved to, and
+     * the pixel that went down, and let llGdi() tell the two apart. */
+    g->fill_last_brush = (unsigned int)(size_t)brush;
+    g->fill_last_colorref = cr;
+    g->fill_last_565 = c;
+    g->fill_last_rect[0] = (int)rc->left;
+    g->fill_last_rect[1] = (int)rc->top;
+    g->fill_last_rect[2] = (int)rc->right;
+    g->fill_last_rect[3] = (int)rc->bottom;
+    g->fill_last_surf_w = t.w;
+    g->fill_last_surf_h = t.h;
     for (y = rc->top; y < rc->bottom; y++) {
         unsigned short* row;
         if (y < t.clip.top || y >= t.clip.bottom)
@@ -860,6 +879,7 @@ int DrawTextA(void* hdc, const char* text, int len, LLRect* rc,
     int have_target;
 
     if (ll_host_beating()) ll_host_beat("user32.DrawTextA");
+    ll_host_gdi_stats()->drawtext_calls++;
     if (!rc || !text)
         return 0;
     ll_host_dc_font(hdc, &m);
