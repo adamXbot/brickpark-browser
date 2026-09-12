@@ -416,6 +416,35 @@ extern unsigned char g_selection_lock[];
 extern unsigned char g_drag_lock[];
 extern unsigned char g_popup_info[];
 
+/* PORT-M19 -- the BUILD PANEL's item list, which is the whole of P4-2.  The
+ * side panel is not a view of "the classes this level has": it is a view of
+ * ONE linked list, `g_object_list`, rebuilt from scratch by `ObjectLinkedList`
+ * (fpui2.c:573) every time the theme menu changes.  That builder keeps a class
+ * only if its LLIDB element reads `(flags & 0x13) == 0x13` AND its ObjDef's
+ * +0x58/+0x5c/+0x60 elements (parent / theme / sub-menu) equal "BUILD MENU",
+ * the selected theme and the sub-menu of the pass -- so "the panel lost three
+ * rides" has exactly four places it can come from, and all four are readable:
+ *   g_object_list      0x00668e40  ObjNode* {next, ObjDef*, keep}
+ *   g_object_list_mode 0x00668e34  int   1 = a parentless child is promoted
+ *   g_list_menu        0x00668e64  byte  the menu the list was built for
+ *   g_list_scroll      0x00668e44  int[8] per-menu saved scroll offset
+ *   g_menu_index       0x004baff8  int   the open theme menu (5 = none)
+ *   g_menu_dirty       0x0066871c  int   set by every GIVE/TAKE
+ *   g_theme_new_count  0x007fe114  byte[4] per-theme "new object" counters
+ *   g_panel_state      0x007fdd80  PanelState {byte, int f04}
+ *   g_submenus         0x004baffc  Menu[4] the four sub-menu NAMES
+ *   g_scroll_flags     0x006688b8  int   bit0 up lit, bit1 down lit */
+extern unsigned char g_object_list[];
+extern unsigned char g_object_list_mode[];
+extern unsigned char g_list_menu[];
+extern unsigned char g_list_scroll[];
+extern unsigned char g_menu_index[];
+extern unsigned char g_menu_dirty[];
+extern unsigned char g_theme_new_count[];
+extern unsigned char g_panel_state[];
+extern unsigned char g_submenus[];
+extern unsigned char g_scroll_flags[];
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -551,7 +580,17 @@ extern unsigned char g_popup_info[];
     X(129, g_worker_on_mouse_type)      \
     X(130, g_selection_lock)            \
     X(131, g_drag_lock)                 \
-    X(132, g_popup_info)
+    X(132, g_popup_info)                \
+    X(133, g_object_list)               \
+    X(134, g_object_list_mode)          \
+    X(135, g_list_menu)                 \
+    X(136, g_list_scroll)               \
+    X(137, g_menu_index)                \
+    X(138, g_menu_dirty)                \
+    X(139, g_theme_new_count)           \
+    X(140, g_panel_state)               \
+    X(141, g_submenus)                  \
+    X(142, g_scroll_flags)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
