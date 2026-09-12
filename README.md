@@ -1929,12 +1929,20 @@ untouched — and every result says `instSource`. New probes: **`llFind(name)`**
 bbox and flags; substring match, so `llFind('hut')` finds the hut; no argument =
 the whole park census), `llClasses()` and `llMapObjects()`.
 
-**P3-7 is worse than "throttled to 1 Hz".** The port yields through
+**P3-7 is sharper than "throttled to 1 Hz".** The port yields through
 `emscripten_sleep`, which the loader implements as `new Promise(r =>
 setTimeout(r, ms))` — so the game's whole main loop is ONE `setTimeout` chain,
-and Chrome's background budget applies to chains. Measured with `?beat=1000` in
-a long-hidden tab: one BEAT at `t=59493` and the next at `t=102493`, **seven host
-calls in 43 seconds**, with the yield's own `since_yield` still reading 0 ms.
+and Chrome's background budget applies to chains. Measured per 10-second window
+in a hidden background tab with nothing polling it: **33.5 fps for the first
+thirty seconds, then exactly five wake-ups per ten seconds — 0.50 fps — flat,
+for as long as you leave it.** The `?beat=1000` heartbeat agrees from inside the
+wasm: one BEAT at `t=59493`, the next at `t=102493`, **seven host calls in 43
+seconds**, with the yield's own `since_yield` still reading 0 ms.
+
+Two traps for anyone re-measuring it: the cliff is thirty seconds away, so a
+twenty-second measurement sees nothing; and driving the tab from a debugger
+**un-throttles it**, so the numbers have to come from an in-page sampler that is
+started, left alone, and read once.
 
 Three candidates were measured in that same tab. `requestAnimationFrame` is
 **suspended** (three frames did not arrive in six seconds) so it cannot be a
@@ -1947,8 +1955,11 @@ test runner may never have — and leaves the tab permanently audible.
 
 So while `document.hidden` is true the page delivers 0-or-1 ms timers as
 MessageChannel messages; everything longer is a real wait (the 5 s profile flush,
-`MessageBoxA`'s pause) and is left alone. **0.5 fps -> 35.8 fps**, which is the
-game's own 28 ms `FlipPrimary` ceiling, with no permission and no worker. The
+`MessageBoxA`'s pause) and is left alone. A hopped call still gets a handle and
+`clearTimeout` still cancels it. Same protocol, same tab, `?awake=1`: **35.7 fps
+flat through the thirty-second cliff and past it** — 0.50 fps -> 35.8, a factor
+of 71 — which is the game's own 28 ms `FlipPrimary` ceiling, with no permission
+and no worker. The
 cost is that a hidden tab really does keep running and burns a core: right for a
 testing page, wrong for a shipping one, so `?awake=0` turns it off and
 `llAwake()` reports and pins it. Notes: `docs/lanes/scope-port-a10.md`.
