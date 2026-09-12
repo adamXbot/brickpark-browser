@@ -862,6 +862,18 @@
                                                 read g_num_visitors 0x00832bd0,
                                                 which is really g_power_supply. */
       visitorLimit: i32(a.g_visitor_limit),
+      // PORT-M18: the two numbers that turn P1-7 from a mystery into a read.
+      // `maxBlokes` is the pool ceiling (g_map+0x1a, workers3.c:221); once the
+      // chain reaches it NewBloke returns 0 and no visitor can ever enter
+      // again. `ghosts` is people - numVisitors: blokes that are alive and
+      // walking but that the spawner is not counting, which is exactly what a
+      // load leaves behind -- LoadGame restores the chain and never restores
+      // g_visitor_count, so every load adds visitorLimit more of them. It is 0
+      // in a park that has not been loaded and stays 0 for the rest of that
+      // session; anything else means a load happened.
+      maxBlokes:    (function () { var m = i32(a.g_map);
+                                   return m ? HEAPU16[(m + 0x1a) >> 1] : 0; })(),
+      ghosts:       n - i32(a.g_visitor_count),
       simFrame:     i32(a.g_sim_frame),
       gameMode:     i32(a.g_game_mode),
       screenMode:   i32(a.g_screen_mode),

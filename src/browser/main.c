@@ -192,6 +192,17 @@ extern unsigned char g_visitor_count[];     /* 0x006661bc  int */
 extern unsigned char g_people_head[];       /* 0x0066b574  Bloke* */
 extern unsigned char g_visitor_limit[];     /* 0x0083291c  int */
 
+/* PORT-M18 -- the bloke POOL, which is the other half of the visitor answer.
+ * The chain is not a heap list: NewBloke (blokeai.c:363) hands out the first
+ * slot of g_bloke_base whose flags62 bit 0 is clear, and the array is exactly
+ * g_map->max_blokes entries of 172 bytes (workers3.c:221). So "how many
+ * visitors" has THREE numbers behind it, and P1-7 is the gap between them:
+ * the chain's length, g_visitor_count (what the spawner gates on, and what a
+ * load does NOT restore), and max_blokes (the hard ceiling the tutorial hits
+ * after one load). Naming the base turns a pool-slot census from a heap scan
+ * into a subtraction. */
+extern unsigned char g_bloke_base[];        /* 0x0066b57c  Bloke* */
+
 /* PORT-M13 -- the LINK goal and the path network, which is the ONE question a
  * player-reported "the game keeps asking me to link the ride" cannot answer
  * from the canvas. EventTick_Link (eventtick.c:939) tests exactly one square
@@ -342,7 +353,8 @@ extern unsigned char g_tile_info[];         /* 0x00801f40  TileInfo[] */
     X(80, g_drag_class)                 \
     X(81, g_query_extra)                \
     X(82, g_edit_cursor)                \
-    X(83, g_tile_info)
+    X(83, g_tile_info)                  \
+    X(84, g_bloke_base)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
