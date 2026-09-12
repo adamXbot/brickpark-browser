@@ -305,6 +305,57 @@ extern unsigned char g_imt_theme[];
  * canvas.  screens3.c:219 -- Icon* g_theme_icon[4], 0x007fdd70. */
 extern unsigned char g_theme_icon[];
 
+/* PORT-P4 -- the WORKERS, which are three of the five tutorial lessons.
+ * `NEEDGARDENERS n` and `NEEDMECHANICS n` (eventtick2.c:398/417) test nothing
+ * but `GetGardenerCount()` / `GetMechanicCount()` (tinystubs.c:113 -- plain
+ * reads of g_gardener_count / g_mechanic_count), and planting a flower is a
+ * gardener WORK ORDER (misc3.c:395) rather than a build, so "the objective did
+ * not drain" has exactly three possible causes and these globals separate
+ * them: nobody was hired, nobody took the order, or the order was never made.
+ * `g_worker_on_mouse` (GetSelectedBloke, tinystubs.c:120) is the pick-up
+ * latch -- lesson 2 opens by asking the player to carry four Gardeners out of
+ * a hedge pen, and it is the only way to tell a missed click from a refused
+ * pick-up.
+ *   g_gardener_count       0x0079a8bc  int
+ *   g_mechanic_count       0x0079a8cc  int
+ *   g_gardener_list        0x0079a8a8  Bloke*
+ *   g_mechanic_list        0x0079a8ac  Bloke*
+ *   g_gardener_orders      0x0079a8b0  WorkOrder*
+ *   g_gardener_order_count 0x0079a8b8  int
+ *   g_mechanic_orders      0x0079a8c0  WorkOrder*
+ *   g_worker_on_mouse      0x007fdff0  Bloke* -- the bloke being carried */
+extern unsigned char g_gardener_count[];
+extern unsigned char g_mechanic_count[];
+extern unsigned char g_gardener_list[];
+extern unsigned char g_mechanic_list[];
+extern unsigned char g_gardener_orders[];
+extern unsigned char g_gardener_order_count[];
+extern unsigned char g_mechanic_orders[];
+extern unsigned char g_worker_on_mouse[];
+extern unsigned char g_worker_on_mouse_type[];
+
+/* PORT-P4 -- the RASTER HIT, which is how the game decides a click landed on a
+ * person.  rin.c:534 `Render3DPerson` is the whole mechanism: it rasterises the
+ * model, and ONLY if `g_raster_hit` came back set (tri3d.c:305 -- the
+ * rasteriser ORs it when it paints the pixel under the mouse, and
+ * SetRasterOrigin clears it) does it publish `g_hit_info.type` as
+ * 0x306/0x307/0x308 and `g_hit_info.bloke`.  So a bloke that is not DRAWN
+ * cannot be clicked, queried or picked up -- there is no second hit path for
+ * people, the way there is a cell lookup for objects.  That makes
+ * `g_raster_hit` the decisive reading for PORT-B12's P1-6: it separates "the
+ * model is drawn and the click missed" from "the model never painted".
+ *   g_raster_hit      0x007feb14  int
+ *   g_mouse_pixel     0x007fe9a8  char*  the surface address under the cursor
+ *   g_selection_lock  0x00668954  int    (== g_drag_lock)
+ *   g_drag_lock       0x00668954  int    raised while a worker is in hand
+ *   g_popup_info      0x007fdec0  PopUpInfo -- PORT-M15's rename of the
+ *                                 0x1c-sheared `g_popup` that blocked hiring */
+extern unsigned char g_raster_hit[];
+extern unsigned char g_mouse_pixel[];
+extern unsigned char g_selection_lock[];
+extern unsigned char g_drag_lock[];
+extern unsigned char g_popup_info[];
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -404,7 +455,21 @@ extern unsigned char g_theme_icon[];
     X(93, g_imt_cmd)                    \
     X(94, g_imt_cmd_arg)                \
     X(95, g_imt_theme)                  \
-    X(96, g_theme_icon)
+    X(96, g_theme_icon)                 \
+    X(97, g_gardener_count)             \
+    X(98, g_mechanic_count)             \
+    X(99, g_gardener_list)              \
+    X(100, g_mechanic_list)             \
+    X(101, g_gardener_orders)           \
+    X(102, g_gardener_order_count)      \
+    X(103, g_mechanic_orders)           \
+    X(104, g_worker_on_mouse)           \
+    X(105, g_worker_on_mouse_type)      \
+    X(106, g_raster_hit)                \
+    X(107, g_mouse_pixel)               \
+    X(108, g_selection_lock)            \
+    X(109, g_drag_lock)                 \
+    X(110, g_popup_info)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {

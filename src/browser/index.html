@@ -984,6 +984,79 @@
     };
   };
 
+  // ---- PORT-P4: the workers, and the work orders ---------------------------
+  //
+  // Three of the five tutorial lessons are about hiring somebody, and every one
+  // of those objectives is `GetGardenerCount()`/`GetMechanicCount()` and
+  // nothing else (eventtick2.c:398/417 -> tinystubs.c:113, plain reads).
+  // Planting is not a build: `FLOWERS` becomes a gardener WORK ORDER
+  // (misc3.c:395) that a free gardener has to walk to, so an objective that
+  // will not drain has three separable causes -- nobody hired, nobody free, or
+  // no order made -- and this tells them apart in one read.  `carrying` is
+  // GetSelectedBloke: lesson 2 opens by asking the player to pick four
+  // Gardeners up out of a hedge pen and put them down outside it.
+  window.llWorkers = function () {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32;
+    function i32(p) { return I[p >> 2]; }
+    function orders(head) {
+      var out = [], p = i32(head), n = 0;
+      while (p && n++ < 64) {
+        out.push({ addr: p, cell: [i32(p + 0x08), i32(p + 0x0c)],
+                   nrects: i32(p + 0x14), assigned: i32(p + 0x18),
+                   waiting: i32(p + 0x30),
+                   elem: i32(p + 0x04) ? llStrAt(i32(i32(p + 0x04))) : null });
+        p = i32(p);
+      }
+      return out;
+    }
+    return {
+      gardeners: i32(a.g_gardener_count),
+      mechanics: i32(a.g_mechanic_count),
+      gardenerListHead: i32(a.g_gardener_list),
+      mechanicListHead: i32(a.g_mechanic_list),
+      gardenerOrderCount: i32(a.g_gardener_order_count),
+      gardenerOrders: orders(a.g_gardener_orders),
+      mechanicOrders: orders(a.g_mechanic_orders),
+      carrying: i32(a.g_worker_on_mouse)     /* the bloke on the cursor */
+    };
+  };
+
+  // ---- PORT-P4: can this pixel see a PERSON? -------------------------------
+  //
+  // rin.c:534 `Render3DPerson` is the game's ONLY hit path for people.  It
+  // rasterises the model and then, *only if* `g_raster_hit` came back set
+  // (tri3d.c:305 -- the rasteriser ORs it when it paints the pixel under the
+  // mouse; SetRasterOrigin clears it first), publishes
+  // `g_hit_info.type = 0x306 / 0x307 / 0x308` (visitor / gardener / mechanic)
+  // and `g_hit_info.bloke`.  There is no cell lookup for blokes the way there
+  // is for objects, so **a person that is not drawn cannot be clicked** -- not
+  // queried, not picked up, not put down.  That makes this one read the
+  // difference between "the click missed" and "the model never painted",
+  // which is what PORT-B12's P1-6 leaves open.
+  //
+  // Hover the pixel first (llMove); this reads the state that hover left.
+  window.llHit = function () {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32;
+    return {
+      rasterHit:   I[a.g_raster_hit >> 2],
+      mousePixel:  I[a.g_mouse_pixel >> 2],
+      hitType:     '0x' + (I[a.g_hit_info >> 2] >>> 0).toString(16),
+      hitBloke:    I[(a.g_hit_info + 4) >> 2],
+      dragLock:    I[a.g_drag_lock >> 2],
+      carrying:    I[a.g_worker_on_mouse >> 2],
+      carryKind:   '0x' + (I[a.g_worker_on_mouse_type >> 2] >>> 0).toString(16),
+      /* PopUpInfo through PORT-M15's name: +0x1c type, +0x20 obj, +0x24 ref,
+       * +0xd8 kind, +0xdc active (fpui2.c:1454's layout, 0x007fdec0 base). */
+      popup: { type: I[(a.g_popup_info + 0x1c) >> 2],
+               obj:  I[(a.g_popup_info + 0x20) >> 2],
+               active: I[(a.g_popup_info + 0xdc) >> 2] }
+    };
+  };
+
   // ---- P3-4: finding a class, and finding what is PLACED ------------------
   //
   // PORT-P3 §3.4 filed this as a probe limitation and lost ten minutes to it:
