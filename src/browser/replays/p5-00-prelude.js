@@ -220,6 +220,79 @@ window.P5 = {
     });
   },
 
+  /* ---- THE LIST ITSELF, which is the answer to P4-2 ---------------------
+   * `g_object_list` is what the panel draws; `ObjectLinkedList` (fpui2.c:572)
+   * rebuilds it from the LLIDB on every `TestMenu`.  Reading the CHAIN instead
+   * of arming icons separates the three things an icon walk cannot:
+   *   - the class is not in the list at all (the GIVE did not take, or it
+   *     failed ObjectLinkedList's `(type_flags & 0x13) == 0x13` /
+   *     theme / submenu / parent gate);
+   *   - it is in the list as a CHILD (`keep == 0`) of a collapsed parent, so
+   *     MakeUpObjectList draws a bar instead of an icon;
+   *   - it is in the list, with an icon, OUTSIDE the four-slot scroll window.
+   * The third is what PORT-P4 measured and read as the first. */
+  str: function (p) {
+    var s = '', c; if (!p) return null;
+    while ((c = HEAPU8[p++]) && s.length < 64) s += String.fromCharCode(c);
+    return s;
+  },
+  objectList: function () {
+    this.guard();
+    var a = llAddrs(), I = HEAP32, out = [], n = 0;
+    var p = I[a.g_object_list >> 2];
+    while (p && n++ < 128) {
+      var d = I[(p + 4) >> 2];
+      var el = d ? I[(d + 0xc4) >> 2] : 0;
+      out.push({ node: p, keep: I[(p + 8) >> 2],
+                 name: d ? this.str(I[(d + 0x78) >> 2]) : null,
+                 elem: el ? this.str(I[el >> 2]) : null,
+                 typeFlags: el ? '0x' + (I[(el + 8) >> 2] >>> 0).toString(16) : null,
+                 parent: I[(d + 0x58) >> 2] ? this.str(I[I[(d + 0x58) >> 2] >> 2]) : null,
+                 theme: I[(d + 0x5c) >> 2] ? this.str(I[I[(d + 0x5c) >> 2] >> 2]) : null,
+                 submenu: I[(d + 0x60) >> 2] ? this.str(I[I[(d + 0x60) >> 2] >> 2]) : null });
+      p = I[p >> 2];
+    }
+    return { count: out.length, menuIndex: I[a.g_menu_index >> 2],
+             listMenu: HEAPU8[a.g_list_menu], mode: I[a.g_object_list_mode >> 2],
+             dirty: I[a.g_menu_dirty >> 2],
+             menus: [0, 1, 2, 3].map(function (i) {
+               return P5.str(a.g_menus + i * 20); }),
+             submenus: [0, 1, 2, 3].map(function (i) {
+               return P5.str(a.g_submenus + i * 20); }),
+             nodes: out };
+  },
+
+  /* The same three gate fields for EVERY class the level loaded, whether or
+   * not it reached the list — so "why is this one missing" is one read. */
+  classGate: function () {
+    this.guard();
+    var I = HEAP32, cs = llClasses() || [], self = this;
+    return cs.map(function (c) {
+      var d = c.addr, el = I[(d + 0xc4) >> 2];
+      return { name: c.name, elem: c.elem,
+               typeFlags: el ? '0x' + (I[(el + 8) >> 2] >>> 0).toString(16) : null,
+               gatePasses: el ? ((I[(el + 8) >> 2] & 0x13) === 0x13) : false,
+               parent: I[(d + 0x58) >> 2] ? self.str(I[I[(d + 0x58) >> 2] >> 2]) : null,
+               theme: I[(d + 0x5c) >> 2] ? self.str(I[I[(d + 0x5c) >> 2] >> 2]) : null,
+               submenu: I[(d + 0x60) >> 2] ? self.str(I[I[(d + 0x60) >> 2] >> 2]) : null };
+    });
+  },
+
+  /* Enumerate the panel HONESTLY: scroll to the TOP first.  PORT-P4's
+   * `panelNames()` starts from wherever the scroll happens to be and only ever
+   * clicks the DOWN arrow, and `MakeUpObjectList` restores
+   * `g_list_scroll[g_list_menu]` on every rebuild — so the offset survives a
+   * panel close/open AND a MAP round trip, and a four-slot window gets
+   * reported as the whole list.  That is P4-2. */
+  panelTop: async function (pages) {
+    this.guard();
+    if (llPark().editState !== 1 && !P4.panelOpen()) {
+      await llClick(53, 394); await P4.W(1300);
+    }
+    for (var i = 0; i < 14; i++) { await llClick(63, 44); await P4.W(260); }
+    return await this.panel(pages || 8);
+  },
+
   /* A black-fill reading for P4-3: the share of pure-black pixels in a game
    * rectangle, sampled n times so a transient can be told from a persistent. */
   blackPct: function (x, y, w, h) {
