@@ -192,7 +192,7 @@ window.P5 = {
   panelSlots: [89, 153, 217, 281],
   panel: async function (pages) {
     this.guard();
-    if (!P4.panelOpen()) { await llClick(53, 394); await P4.W(1200); }
+    await this.openPanel('legoland');
     var seen = [], pageRows = [];
     for (var p = 0; p < (pages || 4); p++) {
       var row = [];
@@ -278,6 +278,47 @@ window.P5 = {
     });
   },
 
+  /* ---- IS THE PANEL OPEN?  ASK THE GAME, NOT A PIXEL ---------------------
+   * PORT-P4's `P4.panelOpen()` samples canvas pixel (5,200) and calls the
+   * panel open unless that pixel is a particular green.  It is wrong often
+   * enough to matter: measured in tutorial lesson 5 with `g_menu_index == 5`
+   * (the panel is CLOSED and `g_object_list` is empty), `P4.panelOpen()`
+   * answered TRUE -- so `armByName`/`arm` skipped opening the panel, every
+   * slot click landed on the MAP instead, `P4.armed()` returned the stale
+   * previously-armed name, and the enumeration reported a list that was never
+   * on screen.  `g_menu_index` is the theme the object list is built for
+   * (0..3) or 5 for none, and `ObjectLinkedList` is the only thing that moves
+   * it.  Every panel operation in this lane goes through this. */
+  menuIndex: function () { return HEAP32[llAddrs().g_menu_index >> 2]; },
+  openPanel: async function (theme) {
+    this.guard();
+    var t = P4.TAB[theme || 'legoland'], want = { legoland: 0, west: 1, castle: 2, adv: 3 }[theme || 'legoland'];
+    for (var i = 0; i < 4; i++) {
+      if (this.menuIndex() === want) return { open: true, tries: i };
+      await llClick(t[0], t[1]); await P4.W(1400);
+    }
+    return { open: this.menuIndex() === want, menuIndex: this.menuIndex() };
+  },
+  /* Arm a class by DISPLAY name, with the panel scrolled from the top and the
+   * open test taken from `g_menu_index`.  Returns the slot it was found in. */
+  arm: async function (name) {
+    this.guard();
+    var o = await this.openPanel('legoland');
+    if (!o.open) return { ok: false, why: 'panel would not open', o: o };
+    var want = String(name).toLowerCase(), p, s;
+    for (var up = 0; up < 14; up++) { await llClick(63, 44); await P4.W(200); }
+    for (p = 0; p < 8; p++) {
+      for (s = 0; s < 4; s++) {
+        await llClick(63, this.panelSlots[s]); await P4.W(420);
+        var n = P4.armed();
+        if (n && n.toLowerCase().indexOf(want) >= 0 && llPark().editState === 1)
+          return { ok: true, name: n, page: p, slot: s };
+      }
+      await llClick(63, 344); await P4.W(500);
+    }
+    return { ok: false, last: P4.armed(), menuIndex: this.menuIndex() };
+  },
+
   /* Enumerate the panel HONESTLY: scroll to the TOP first.  PORT-P4's
    * `panelNames()` starts from wherever the scroll happens to be and only ever
    * clicks the DOWN arrow, and `MakeUpObjectList` restores
@@ -286,9 +327,7 @@ window.P5 = {
    * reported as the whole list.  That is P4-2. */
   panelTop: async function (pages) {
     this.guard();
-    if (llPark().editState !== 1 && !P4.panelOpen()) {
-      await llClick(53, 394); await P4.W(1300);
-    }
+    await this.openPanel('legoland');
     for (var i = 0; i < 14; i++) { await llClick(63, 44); await P4.W(260); }
     return await this.panel(pages || 8);
   },
