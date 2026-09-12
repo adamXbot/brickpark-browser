@@ -869,6 +869,121 @@
     };
   };
 
+  // ---- PORT-P4: the SCRIPT's own progress ---------------------------------
+  //
+  // Three earlier play lanes reported an objective as "done" or "stuck" from
+  // the canvas and from `money`.  That is a reading of the SYMPTOM.  The level
+  // script keeps the answer itself: every objective is one `ScriptStep`
+  // (eventmake.c:44 -- {next, id, text, goals, events}), the whole level is a
+  // list sorted on `id` at `g_script_steps`, and `g_script_cur` is the step in
+  // progress.  A step is finished when its `goals` list empties, so
+  //
+  //   llGoals().cur.id         == the objective number the notepad is showing
+  //   llGoals().cur.goals[]    == what is still UNMET inside it
+  //   llGoals().steps[].done   == whether that step is behind g_script_cur
+  //
+  // is the drain, measured rather than inferred.  `kind` is named from
+  // eventmake.c's constructors (33..69 are the goal kinds; 2..32 step events).
+  var LL_KIND = {
+    2: 'GIVE', 3: 'KIND3', 4: 'TAKE', 5: 'ADDBRICKS', 6: 'CURRENCY', 7: 'PLACE',
+    8: 'CLEAR', 9: 'UNGLUE', 10: 'GLUE', 11: 'EXTENDPARK', 12: 'FMV',
+    13: 'INTERVAL', 14: 'MESSAGE', 15: 'FEATURE', 16: 'GARDENER/MECHANIC',
+    17: 'WORKERS', 18: 'DEGRADE', 19: 'CAPACITY', 20: 'CAPACITYSCALE',
+    21: 'CAPACITYCAP', 22: 'ENTRANCEFEE', 23: 'LOOKAT', 24: 'REPORT',
+    25: 'THEMEICON', 26: 'ADDFLAG', 27: 'BRIDGES', 28: 'BRIEFINGFILE',
+    29: 'HINTSFILE', 30: 'FLASHBUTTON', 31: 'PURGE', 32: 'ENDLEVEL',
+    33: 'NEED', 34: 'NEEDAT', 35: 'NEEDIN', 36: 'CONNECT', 37: 'LINK',
+    38: 'RANGE', 39: 'CLEARAREA', 40: 'REMOVE', 41: 'REMOVERANGE',
+    42: 'COMPOSITE', 43: 'LOOPCOMPOSITE', 44: 'TECHLEVEL', 45: 'PARKVISITORS',
+    46: 'RIDEVISITORS', 47: 'RIDERS', 48: 'SCENERYCOVERAGE', 49: 'PATHSCENERY',
+    50: 'RIDECOVERAGE', 51: 'SHOPCOVERAGE', 52: 'FOODCOVERAGE',
+    53: 'TOTCOVERAGE', 55: 'STUDAREA', 56: 'SAVE', 57: 'HAPPINESS',
+    58: 'NEEDGARDENERS', 59: 'NEEDMECHANICS', 60: 'HUNGER', 61: 'FIXRIDES',
+    62: 'POWERRIDES', 63: 'ZONING', 64: 'CHECKFLAG', 65: 'SELECTTHEME',
+    66: 'SELECTTAB', 67: 'SELECTMODE', 68: 'KIND68', 69: 'FOREVER'
+  };
+  window.llGoals = function (withEvents) {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32;
+    function i32(p) { return I[p >> 2]; }
+    /* The LLIDB element a goal names is at ScriptEvent +0x04; its own name is
+     * the first field of the element, the way llClasses() reads it. */
+    function ev(p) {
+      var o = { addr: p, kind: i32(p + 0x0c), mode: i32(p + 0x38),
+                flags: HEAPU8[p + 0x10],
+                f14: i32(p + 0x14), f18: i32(p + 0x18), f1c: i32(p + 0x1c) };
+      o.kindName = LL_KIND[o.kind] || ('?' + o.kind);
+      var t = i32(p + 0x08); if (t) o.text = llStrAt(t);
+      var e = i32(p + 0x04); if (e) o.elem = llStrAt(i32(e)) || llStrAt(e);
+      var r = [i32(p + 0x28), i32(p + 0x2c), i32(p + 0x30), i32(p + 0x34)];
+      if (r[0] || r[1] || r[2] || r[3]) o.area = r;
+      return o;
+    }
+    function chain(p, n) {
+      var out = [], g = 0;
+      while (p && g++ < (n || 64)) { out.push(ev(p)); p = i32(p); }
+      return out;
+    }
+    var cur = i32(a.g_script_cur), head = i32(a.g_script_steps), steps = [], s = head, k = 0;
+    var seenCur = false;
+    while (s && k++ < 128) {
+      var row = { addr: s, id: i32(s + 0x04), open: i32(s + 0x0c) ? true : false,
+                  goals: chain(i32(s + 0x0c)).length,
+                  isCur: s === cur };
+      var tx = i32(s + 0x08); if (tx) row.text = llStrAt(tx).slice(0, 70);
+      if (s === cur) seenCur = true;
+      row.done = !seenCur && s !== cur;      /* steps before g_script_cur */
+      steps.push(row);
+      s = i32(s);
+    }
+    var out = { stepCount: steps.length, steps: steps,
+                curAddr: cur, rootAddr: i32(a.g_script_root),
+                flags: Array.from(HEAPU8.subarray(a.g_script_bytes, a.g_script_bytes + 10),
+                                  function (b) { return b > 127 ? b - 256 : b; }) };
+    if (cur) {
+      out.cur = { id: i32(cur + 0x04),
+                  text: i32(cur + 0x08) ? llStrAt(i32(cur + 0x08)) : null,
+                  goals: chain(i32(cur + 0x0c)) };
+      if (withEvents) out.cur.events = chain(i32(cur + 0x10));
+    }
+    return out;
+  };
+
+  // ---- PORT-P4: the cheat ring, read back byte for byte --------------------
+  //
+  // input.c:337.  Every printable key is pushed into a 20-byte ring and every
+  // cheat is a strnicmp of its TAIL at a FIXED offset (`:PRAISEME` at +11,
+  // `:EGYPT` at +14, `:COLDHARDCASH` at +7), so a ring that is off by one
+  // character silently kills every cheat and nothing on screen says so.
+  // PORT-B12 found LLVM duplicating 3 of the 19 bytes of `memcpy(g_type_buf,
+  // g_type_buf + 1, 19)`; this is the readback that says whether the memmove
+  // fix holds.  `effects` is what the cheats actually DO, so one call answers
+  // both halves of "did it fire".
+  window.llRing = function () {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32, b = HEAPU8.subarray(a.g_type_buf, a.g_type_buf + 20), s = '', i;
+    for (i = 0; i < 20; i++) s += b[i] >= 32 && b[i] < 127 ? String.fromCharCode(b[i]) : '.';
+    return {
+      ring: s, bytes: Array.from(b),
+      tail: { at4: s.slice(4), at5: s.slice(5), at7: s.slice(7), at8: s.slice(8),
+              at10: s.slice(10), at11: s.slice(11), at13: s.slice(13),
+              at14: s.slice(14), at15: s.slice(15) },
+      effects: {
+        instantAppraisal: I[a.g_instant_appraisal >> 2],   /* :PRAISEME  */
+        appraisalMinutes: I[a.g_appraisal_minutes >> 2],
+        money:            I[a.g_bricks >> 2],             /* :COLDHARDCASH */
+        imtState:         I[a.g_imt_state >> 2],          /* :THEME/:EGYPT/... */
+        imtCmd:           I[a.g_imt_cmd >> 2],
+        imtCmdArg:        I[a.g_imt_cmd_arg >> 2],
+        imtTheme:         I[a.g_imt_theme >> 2]
+      },
+      themeIcons: [I[a.g_theme_icon >> 2], I[(a.g_theme_icon + 4) >> 2],
+                   I[(a.g_theme_icon + 8) >> 2], I[(a.g_theme_icon + 12) >> 2]]
+    };
+  };
+
   // ---- P3-4: finding a class, and finding what is PLACED ------------------
   //
   // PORT-P3 §3.4 filed this as a probe limitation and lost ten minutes to it:

@@ -256,6 +256,55 @@ extern unsigned char g_query_extra[];       /* 0x00810144 */
 extern unsigned char g_edit_cursor[];       /* 0x007febc0 */
 extern unsigned char g_tile_info[];         /* 0x00801f40  TileInfo[] */
 
+/* PORT-P4 -- the SCRIPT's own progress, which is the only honest answer to
+ * "did the objective drain".  Money and frame hashes say a thing happened;
+ * the step list says WHICH objective the level is on.  eventmake.c:44 is the
+ * layout: a ScriptStep is {next, id, text, goals, events} and every objective
+ * is one step, sorted on `id`.  levelkw.c's section closer inserts them and
+ * eventtick.c advances g_script_cur as each step's goal list empties, so
+ * `g_script_cur->id` IS the objective number on the notepad and
+ * `g_script_cur->goals` is what is still unmet in it.  g_script_root is the
+ * root goal of the step being built.  g_script_bytes is the ten THEMEICON /
+ * level flags SetThemeIcon and AddLevelFlag keep (eventgoalprim.c:73).
+ *   g_script_steps  0x00668798  ScriptStep*  head of the whole level's steps
+ *   g_script_cur    0x0066879c  ScriptStep*  the step in progress
+ *   g_script_root   0x007fdca4  ScriptEvent*
+ *   g_script_bytes  0x007fe930  signed char[10]
+ *   g_goal_kind_count 0x0066872c int[]  QueuePendingEvent's per-kind tally */
+extern unsigned char g_script_steps[];
+extern unsigned char g_script_cur[];
+extern unsigned char g_script_root[];
+extern unsigned char g_script_bytes[];
+extern unsigned char g_goal_kind_count[];
+
+/* PORT-P4 -- the cheat ring and the two things cheats are observable through.
+ * input.c:337's `g_type_buf[20]` is the ring every printable key is pushed
+ * into, and every cheat is a strnicmp of its TAIL at a FIXED offset, so the
+ * only way to tell "the cheat did not fire" from "the ring is wrong" is to
+ * read the 20 bytes.  PORT-B12 proved the ring was being corrupted by an
+ * overlapping memcpy; this is the readback that confirms the memmove fix.
+ * `:PRAISEME` sets g_instant_appraisal (eventgoalprim.c:37) and the theme
+ * cheats post to the interactive-music mailbox (sysmisc2.c:134 SetTheme:
+ * g_imt_cmd = 4, g_imt_cmd_arg = theme % 5, SetEvent) -- with MIDI stubbed the
+ * mailbox IS the effect, so it is what gets measured.
+ *   g_type_buf          0x00668d94  char[20]
+ *   g_instant_appraisal 0x00666098  int
+ *   g_appraisal_minutes 0x00832978  int
+ *   g_imt_state/cmd/cmd_arg/theme  0x004bf778 / 0x0079a6a4 / a8 / ac */
+extern unsigned char g_type_buf[];
+extern unsigned char g_instant_appraisal[];
+extern unsigned char g_appraisal_minutes[];
+extern unsigned char g_imt_state[];
+extern unsigned char g_imt_cmd[];
+extern unsigned char g_imt_cmd_arg[];
+extern unsigned char g_imt_theme[];
+
+/* PORT-P4 -- the four theme Icon pointers.  PORT-M16 closed P2-2 by proving
+ * the LEGOLAND button's own Icon* was being parked in g_info_icon_d by the
+ * g_popup shear; the replay that confirms it needs to read the array, not the
+ * canvas.  screens3.c:219 -- Icon* g_theme_icon[4], 0x007fdd70. */
+extern unsigned char g_theme_icon[];
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -342,7 +391,20 @@ extern unsigned char g_tile_info[];         /* 0x00801f40  TileInfo[] */
     X(80, g_drag_class)                 \
     X(81, g_query_extra)                \
     X(82, g_edit_cursor)                \
-    X(83, g_tile_info)
+    X(83, g_tile_info)                  \
+    X(84, g_script_steps)               \
+    X(85, g_script_cur)                 \
+    X(86, g_script_root)                \
+    X(87, g_script_bytes)               \
+    X(88, g_goal_kind_count)            \
+    X(89, g_type_buf)                   \
+    X(90, g_instant_appraisal)          \
+    X(91, g_appraisal_minutes)          \
+    X(92, g_imt_state)                  \
+    X(93, g_imt_cmd)                    \
+    X(94, g_imt_cmd_arg)                \
+    X(95, g_imt_theme)                  \
+    X(96, g_theme_icon)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
