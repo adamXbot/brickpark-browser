@@ -129,6 +129,31 @@
                              cost is that a hidden tab really does keep running
                              -- right for a testing page, wrong for a shipping
                              one.
+
+     PORT-B13 closed P4-4 and P4-5, the two findings PORT-P4 filed against this
+     page, and both are about the page lying to the DRIVER rather than to the
+     player:
+       the canvas is never scaled.  `max-width: 100%` let the flex line squash
+                             it, and a MouseEvent's clientX is an integer, so
+                             llPoint's fractions were truncated and several game
+                             columns arrived as one.  Measured at a 312 px pane:
+                             game x 320, 321, 322 and 323 all reached the game as
+                             320.  The canvas now keeps its intrinsic size
+                             (`flex: none`, `min-width: min-content`) and wears
+                             an OUTLINE rather than a border, so
+                             getBoundingClientRect() is exactly 640x480 and
+                             llPoint is the identity.  A narrow pane scrolls.
+       llPoint throws        on a canvas below half size instead of mapping
+                             every game pixel onto one spot.  P4-4 cost PORT-P4
+                             three page loads because nothing said why the walk
+                             had diverged.
+       window.llSleep(ms)    the wait the hooks use, exported.  While the
+                             keep-awake hop is engaged it yields through that hop
+                             instead of setting a real timer, because a hidden
+                             tab clamps real timers to ~1 Hz and `?awake=1` was
+                             only ever waking the GAME: one llClick cost 3.2 s
+                             hidden against 0.81 s on a MessageChannel pump
+                             (P4-5).  llAwake().waits counts them.
 -->
 
 <html lang="en">
@@ -157,9 +182,27 @@
   label { cursor: pointer; }
   #wrap { display: flex; flex-wrap: wrap; gap: 14px; padding: 14px; align-items: flex-start; }
   /* image-rendering: pixelated keeps the 640x480 surface crisp when the
-     browser scales it; the game's art is 1:1 pixel work. */
+     browser scales it; the game's art is 1:1 pixel work.
+
+     PORT-B13 (P4-4): THE CANVAS IS NEVER SCALED, and that is a correctness
+     rule, not a preference. `max-width: 100%` let the flex line shrink it to
+     whatever was left over beside #log -- and a MouseEvent's clientX is a
+     `long`, so the driver's fractional client coordinates are TRUNCATED. At the
+     0.27 scale a 312 px pane produced, llPoint(320..323) all arrived as
+     clientX 101 and the game read game-x 320 four times; in the limit PORT-P4
+     measured (a collapsed canvas, rect width 2) every one of the 640 columns
+     collapsed onto the same spot and the driver silently clicked one pixel.
+       - `flex: none` keeps flex-shrink at 0, so the line never squashes it;
+       - `min-width/min-height: min-content` is the canvas's OWN intrinsic size,
+         so this follows a mode change instead of hard-coding 640x480;
+       - the frame is an `outline`, not a `border`, so the border box equals the
+         content box and getBoundingClientRect() reports exactly 640x480 --
+         llPoint and ll_canvas.js's inverse are then the identity, not 642/640.
+     A narrow pane now scrolls (and #wrap wraps #log underneath) instead of
+     scaling the one surface the driver measures in. */
   canvas { background: #000; image-rendering: pixelated;
-           border: 1px solid #2a2f37; max-width: 100%; }
+           outline: 1px solid #2a2f37; flex: none;
+           min-width: min-content; min-height: min-content; }
   #log { flex: 1 1 320px; min-width: 280px; height: 480px; overflow: auto;
          white-space: pre-wrap; background: #0e1014; border: 1px solid #2a2f37;
          padding: 8px; color: #9aa3b2; }
@@ -313,7 +356,7 @@
   // profile flush, MessageBoxA's pause) and hurrying them changes behaviour.
   var awakeParam = /[?&]awake=([01])/.exec(location.search);
   var awakeWanted = awakeParam ? awakeParam[1] === '1' : true;
-  var awake = { enabled: false, hops: 0, timers: 0, installed: false,
+  var awake = { enabled: false, hops: 0, timers: 0, waits: 0, installed: false,
                 reason: awakeWanted ? '' : '?awake=0' };
   (function () {
     if (!awakeWanted) return;
@@ -381,6 +424,7 @@
     }
     return { installed: awake.installed, engaged: awake.enabled,
              hidden: document.hidden, hops: awake.hops, timers: awake.timers,
+             waits: awake.waits,
              forced: awake.installed ? awake.forced : null,
              how: awake.reason };
   };
@@ -580,13 +624,59 @@
   });
   window.llDead = function () { return deadError; };
 
-  function llSleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  // PORT-B13 (P4-5): EVERY WAIT IN THE DRIVER, and why it is not a setTimeout.
+  //
+  // `?awake=1` keeps the GAME awake in a hidden pane by hopping its 0-or-1 ms
+  // yields through a MessageChannel (PORT-A10, above). It does nothing for the
+  // DRIVER: llMove/llClick/llDrag/llKey wait 60-600 ms, those go to a real
+  // timer, and a hidden tab clamps real timers to ~1 Hz. So the game ran at
+  // 35.7 fps while the driver crawled -- PORT-P4 measured one llClick at 3.2 s
+  // hidden against 0.81 s on a MessageChannel pump (§5, P4-5), and had to
+  // install its own `P4.fast()` over these hooks to get a replay finished.
+  //
+  // The fix is to wait on the hop that is already there: a zero-delay
+  // setTimeout is exactly the shape the keep-awake hop intercepts, so the wait
+  // yields through it until the WALL CLOCK says the time is up. That is not
+  // clamped, it is accurate to a millisecond, and it shares one FIFO queue with
+  // the game's own yields -- so the game keeps its 28 ms FlipPrimary ceiling
+  // while the driver waits, which is the whole point. When the hop is not
+  // engaged (the page is visible, or `?awake=0`) this is one real timer, as
+  // before: a visible tab does not clamp, and spinning there would only burn a
+  // core for nothing.
+  function llSleep(ms) {
+    if (!awake.enabled)
+      return new Promise(function (r) { setTimeout(r, ms); });
+    return new Promise(function (resolve) {
+      var t0 = performance.now();
+      (function hop() {
+        if (performance.now() - t0 >= ms) { awake.waits++; resolve(); return; }
+        setTimeout(hop, 0);            // <= 1 ms: the keep-awake hop takes it
+      })();
+    });
+  }
+  window.llSleep = llSleep;            // replays need the same wait as the hooks
   // GAME pixel -> client coordinate, through the canvas's own rect. This is
   // EXACTLY the arithmetic ll_canvas.js inverts (`x = (clientX - r.left) * LL.w
   // / r.width`), so the deltas the game receives are the ones intended at any
   // CSS scale.
+  //
+  // PORT-B13 (P4-4): and it REFUSES a collapsed canvas instead of mapping every
+  // game pixel to one spot. A MouseEvent's clientX is a `long`, so whatever
+  // fraction this returns is truncated; at a scale of 0.27 four game columns
+  // share one client pixel and at PORT-P4's rect width of 2 all 640 do. The
+  // page's CSS now pins the canvas at 1:1 (see the `canvas` rule), so this is a
+  // tripwire for the next thing that resizes it -- a page zoom, a device pixel
+  // ratio, a shell that styles the canvas itself -- and not a condition the
+  // page is expected to be in. Half scale is the line: below it a click cannot
+  // be trusted to land on the pixel it names, and a loud throw is worth far
+  // more than three silently wrong page loads.
   function llPoint(gx, gy) {
     var c = Module.canvas, r = c.getBoundingClientRect();
+    if (!(r.width >= 320) || !(r.height >= 240))
+      throw new Error('llPoint: the canvas is ' + r.width.toFixed(1) + 'x' +
+                      r.height.toFixed(1) + ' CSS px, below half of 640x480 -- ' +
+                      'game pixels would not map to distinct client pixels. ' +
+                      'Widen the pane (>= ~820x760) or stop scaling the canvas.');
     return { c: c, x: r.left + gx * r.width / 640, y: r.top + gy * r.height / 480 };
   }
   function llMouse(type, p, button) {
@@ -753,6 +843,47 @@
       out[s] = Module._ll_dbg_addr(i);
     }
     return out;
+  };
+  // PORT-B13: the host shim's own GDI and blit counters (ll_host.h's
+  // LLGdiStats), which is what P4-3 -- three text boxes that fill solid black --
+  // actually needs. The game's cached-text sprites (bubblecache.c:419
+  // DrawCachedTextSprite) fill the whole cell with GetNearestColor(ink), print
+  // the text in `paper` ON TOP of it, and then make that same ink the sprite's
+  // COLOUR KEY, so the fill is meant to be invisible and the box on screen is
+  // meant to show whatever is behind it. A solid black box is therefore one of
+  // two different bugs that look identical on the canvas:
+  //
+  //   * `fillLast.colorref` is 0 while the game asked for a colour -- the brush
+  //     did not resolve (`fillNoBrush` rising), so the fill really is black; or
+  //   * `fillLast.c565` is the right colour but `ck.lastLow` is a different
+  //     value, or `blt.keysrcUnset` is rising -- the fill is right and the key
+  //     missed it, so an opaque rectangle is blitted.
+  //
+  // Read it after the box has gone black and the two numbers say which.
+  window.llGdi = function () {
+    if (!Module._ll_gdi_stats) return null;
+    var p = Module._ll_gdi_stats(), I = HEAP32, w = I[p >> 2], i;
+    if (w < 30) return { words: w, error: 'unexpected LLGdiStats layout' };
+    function at(n) { return I[(p >> 2) + n]; }
+    function u(n) { return I[(p >> 2) + n] >>> 0; }
+    var cls = ['(none)', 'font', 'dc', 'bitmap', 'pen', 'brush', 'rgn', 'stock'];
+    var by = {};
+    for (i = 0; i < 8; i++) if (at(4 + i)) by[cls[i]] = at(4 + i);
+    return {
+      words: w,
+      objs: { live: at(1), high: at(2), exhausted: at(3), byClass: by },
+      dcEvictions: at(12),
+      setBkMode: { transparent: at(13), opaque: at(14) },
+      textOut: at(15), drawText: at(16),
+      fill: { calls: at(17), noTarget: at(18), noBrush: at(19) },
+      fillLast: { brush: '0x' + u(20).toString(16),
+                  colorref: '0x' + u(21).toString(16),
+                  c565: '0x' + (at(22) & 0xffff).toString(16),
+                  rect: [at(23), at(24), at(25), at(26)],
+                  surface: at(27) + 'x' + at(28) },
+      ck: { sets: at(29), lastLow: '0x' + u(30).toString(16) },
+      blt: { keysrc: at(31), keysrcUnset: at(32), plain: at(33) }
+    };
   };
   // The render state RenderView reads (renderview.c:150's contract block),
   // decoded. A7-1 asks "why does the frame draw the HUD and not the map", and
