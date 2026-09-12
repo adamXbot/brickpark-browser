@@ -93,6 +93,41 @@
        window.llPad(name)    (PORT-M14) every cell of the ride's footprint
                              expanded by one, classified interior vs ring, with
                              what an eraser click on each would find.
+
+     PORT-A10 closed P3-4 and P3-7, the two findings PORT-P3 filed against this
+     page rather than against the game:
+       window.llFind(name)   EVERY PLACED INSTANCE in the park, with its class,
+                             its two names, its anchor, its footprint, its cell
+                             count, its bounding box and its flags. Matches a
+                             substring of either name, normalised, so
+                             llFind('hut') finds "Mechanic's Hut". With no
+                             argument it is the whole census: what is in this
+                             park and what it is called.
+       window.llClasses()    the ObjDef census -- both names, the type, the
+                             footprint and the class's own +0x04 instance chain.
+       window.llMapObjects() the MAP census -- every distinct object the cells
+                             reference, which is the authority on what is
+                             placed. ObjDef +0x04 is NOT: measured in lesson 1,
+                             "Park Entrance" has an empty chain and 120 cells.
+       llLink / llPad        now match on EITHER name (the LLIDB element name
+                             "ENTRANCE 1" or the display name "Park Entrance")
+                             and fall back to the map census when the class's
+                             chain is empty. Both report `matchedBy` and
+                             `instSource` so the reading is never a guess. This
+                             is P3-4: the old probes answered `found: true,
+                             insts: []` for an object that was on the map, and
+                             `found: false` for the name llCellAt itself prints.
+       window.llAwake()      P3-7. A hidden tab stalls the game -- the whole
+                             main loop is one setTimeout chain through
+                             emscripten_sleep and Chrome's background budget
+                             kills the chain after a few links (measured: 7 host
+                             calls in 43 seconds). While the document is hidden
+                             this page delivers 0/1 ms timers as MessageChannel
+                             messages instead, which are not timers and carry no
+                             budget: 0.5 fps -> 35.8 fps, the game's own
+                             ceiling. `?awake=0` turns it off. The cost is that
+                             a hidden tab really does keep running -- right for
+                             a testing page, wrong for a shipping one.
 -->
 
 <html lang="en">
@@ -216,6 +251,115 @@
                  .split(/\s+/).filter(function (s) { return s.length > 0; });
   }
   argsEl.textContent = gameArgs ? gameArgs.join(' ') : '-nointro -nomusic (default)';
+
+  // ---- P3-7: the hidden tab, and why this page runs at full rate in one ----
+  //
+  // PORT-P3 §3.7 measured a hidden pane at 0.3 fps and called it "Chrome
+  // throttles setTimeout to 1 Hz"; PORT-A10 measured it again and it is worse
+  // and more specific than that. The port yields through `emscripten_sleep`,
+  // which the generated loader implements as
+  //
+  //     _emscripten_sleep = ms => ... new Promise(r => setTimeout(r, ms)) ...
+  //
+  // so the game's whole main loop is ONE setTimeout chain. Chrome's background
+  // budget applies to chains: measured in a hidden tab on this page, a chain of
+  // setTimeout(...,0) runs its first ~7 links instantly and then STOPS -- one
+  // BEAT line at t=59493 and the next at t=102493, seven host calls in the 43
+  // seconds between them. Not 1 Hz; effectively stalled, with the yield's own
+  // `since_yield` still reading 0 ms because from inside the wasm no time has
+  // passed at all.
+  //
+  // Three mechanisms were measured in that same hidden tab:
+  //
+  //   requestAnimationFrame   SUSPENDED. Three frames did not arrive in six
+  //                           seconds. It cannot be a fallback for a hidden
+  //                           tab; it only helps the visible-but-unfocused
+  //                           case, which was never throttled here anyway.
+  //   a Web Worker timer      works (0.3 ms for setTimeout(0), 5.8 ms for
+  //                           setTimeout(4)) but needs a Worker, a Blob URL and
+  //                           a postMessage round trip per yield, and the game
+  //                           yields ~1400 times in five seconds.
+  //   a MessageChannel hop    0.003 ms per hop over 200 hops. A port message is
+  //                           not a timer, so no timer budget applies to it.
+  //   P3's audio oscillator   works, and costs an AudioContext that the autoplay
+  //                           policy will not start without a user gesture --
+  //                           on a page driven by a test runner there may be no
+  //                           gesture at all -- plus a permanently audible tab.
+  //
+  // So this page takes the cheapest one: while the document is HIDDEN, a
+  // zero-or-one-millisecond setTimeout is delivered as a MessageChannel message
+  // instead of a timer. Nothing else changes -- the same callback, the same
+  // macrotask ordering, one queue, no library, no permission, no worker.
+  // MEASURED: 0.5 fps -> 35.8 fps in a hidden background tab, which is the
+  // game's own 28 ms FlipPrimary ceiling (35.71 fps); zero traps.
+  //
+  // THE TRADE-OFF, stated plainly: a hidden tab now burns a full core, because
+  // the game really is running. That is the point for a testing page and it is
+  // NOT what a shipping page should do -- a player who switches tabs expects
+  // the game to idle. Hence the switch: `?awake=0` turns it off, and a shipping
+  // shell should default it off. It defaults ON here because every replay in
+  // portable/src/browser/replays/ is driven from a pane that is hidden more
+  // often than not, and a driver cannot tell "the click did nothing" from "the
+  // tab was asleep" (PORT-P3 lost ten minutes to exactly that).
+  //
+  // Timers longer than 1 ms are left alone: they are real waits (the 5 s
+  // profile flush, MessageBoxA's pause) and hurrying them changes behaviour.
+  var awakeParam = /[?&]awake=([01])/.exec(location.search);
+  var awakeWanted = awakeParam ? awakeParam[1] === '1' : true;
+  var awake = { enabled: false, hops: 0, timers: 0, installed: false,
+                reason: awakeWanted ? '' : '?awake=0' };
+  (function () {
+    if (!awakeWanted) return;
+    if (typeof MessageChannel !== 'function') {
+      awake.reason = 'no MessageChannel'; return;
+    }
+    var nativeSetTimeout = window.setTimeout.bind(window);
+    var chan = new MessageChannel();
+    var queue = [];
+    chan.port1.onmessage = function () {
+      var fn = queue.shift();
+      // Never let one callback's throw eat the rest of the queue: the game's
+      // next yield is in there.
+      if (fn) { try { fn(); } catch (e) { console.error('[awake]', e); } }
+    };
+    window.setTimeout = function (fn, delay) {
+      // Only the shape the yield uses: one function, no extra arguments, a
+      // delay of 0 or 1, and only while the document is hidden. Everything
+      // else goes to the real timer, unchanged.
+      if (awake.enabled && typeof fn === 'function' && arguments.length <= 2 &&
+          (delay === undefined || delay === null || delay <= 1)) {
+        awake.hops++;
+        queue.push(fn);
+        chan.port2.postMessage(0);
+        return 0;                    // no handle: nothing clears a yield
+      }
+      awake.timers++;
+      return nativeSetTimeout.apply(null, arguments);
+    };
+    awake.forced = null;             // null = follow document.hidden
+    awake.sync = function () {
+      awake.enabled = awake.forced === null ? document.hidden : awake.forced;
+    };
+    document.addEventListener('visibilitychange', awake.sync);
+    awake.sync();
+    awake.installed = true;
+    awake.reason = 'MessageChannel hop while hidden';
+  })();
+  // `llAwake()` is the witness: whether the hop is installed, whether it is
+  // engaged right now, and how many hops and real timers have gone through it.
+  // `llAwake(false)` / `llAwake(true)` pin it off/on for a measurement and
+  // `llAwake(null)` hands it back to the visibility state -- run one of each in
+  // a hidden tab and compare llStats().fps to reproduce the numbers above.
+  window.llAwake = function (on) {
+    if (arguments.length && awake.installed) {
+      awake.forced = on === null || on === undefined ? null : !!on;
+      awake.sync();
+    }
+    return { installed: awake.installed, engaged: awake.enabled,
+             hidden: document.hidden, hops: awake.hops, timers: awake.timers,
+             forced: awake.installed ? awake.forced : null,
+             how: awake.reason };
+  };
   // LL_HOST_TRACE is read once, from the environment, the first time a shim
   // function traces (kernel32.c's ll_tracing caches it), so the toggle cannot
   // take effect mid-run: it reloads instead. See docs/lanes/scope-port-b2.md §6.
@@ -701,6 +845,210 @@
     };
   };
 
+  // ---- P3-4: finding a class, and finding what is PLACED ------------------
+  //
+  // PORT-P3 §3.4 filed this as a probe limitation and lost ten minutes to it:
+  // `llLink('MECHANICS HUT')` answered `{found: true, insts: []}` for a hut
+  // that `llCellAt(46,6)` showed sitting on the map, and the reading a driver
+  // takes from that is "the hut was never instantiated" -- a game defect that
+  // is not there. PORT-A10 reproduced BOTH halves in tutorial lesson 1 and they
+  // are two different bugs in the probe, not one:
+  //
+  //   1. THE NAME. Every ObjDef carries two names: the LLIDB element name at
+  //      +0xc4 -> +0x00 ("LEGO SHOP 1", "ENTRANCE 1", "MECHANICS HUT") and the
+  //      DISPLAY name at +0x78 ("LEGO Toy Shop", "Park Entrance", "Mechanic's
+  //      Hut"). The old lookup compared only the element name, so every name a
+  //      player or a screenshot would give -- which is the display name -- came
+  //      back `found: false`. Measured: llLink('LEGO Toy Shop') -> found false,
+  //      while llCellAt(71,57).owner IS "LEGO Toy Shop".
+  //
+  //   2. THE INSTANCES. `ObjDef +0x04` is not a complete placed-instance list.
+  //      Measured in lesson 1: "LEGO Toy Shop" has one instance on that chain,
+  //      base (74,61), and it is right -- but "Park Entrance" has an EMPTY
+  //      chain while its entrance really is placed, 120 cells of it, anchored
+  //      at (81,40) (llCellAt(78,32).base). The map is the authority on what is
+  //      placed, so when the chain is empty the instances are taken from a
+  //      census of the map instead. The anchor a cell reports (Cell +0x04/+0x05)
+  //      is the SAME value the chain's own instances carry at +0x0e/+0x0f -- the
+  //      shop agrees at (74,61) both ways -- so the link-square arithmetic below
+  //      is identical whichever source the row came from. Each row says which
+  //      it came from in `source`.
+  //
+  // `llClasses()` is the ODF census, `llMapObjects()` the map census, and
+  // `llFind(name)` the one a driver actually wants: every PLACED instance whose
+  // class matches, however it was spelled.
+  function llStrAt(p) {
+    var s = '', c;
+    if (!p) return null;
+    while ((c = HEAPU8[p++]) && s.length < 128) s += String.fromCharCode(c);
+    return s;
+  }
+  // "MECHANICS HUT" and "Mechanic's Hut" are the same words with different
+  // punctuation and case, so a normalised compare catches that pair; it does
+  // NOT catch "ENTRANCE 1" vs "Park Entrance", which is why both names are
+  // compared and why `llFind` also takes a substring.
+  function llNorm(s) {
+    return s ? String(s).toUpperCase().replace(/[^A-Z0-9]+/g, '') : '';
+  }
+  window.llClasses = function () {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32, U = HEAPU8;
+    function i32(p) { return I[p >> 2]; }
+    var out = [], d = i32(a.g_odf_head), guard = 0;
+    while (d && guard++ < 4096) {
+      var el = i32(d + 0xc4);
+      var insts = [], o = i32(d + 0x04), g2 = 0;
+      while (o && g2++ < 1024) {
+        insts.push({ addr: o, base: [U[o + 0x0e], U[o + 0x0f]], source: 'chain' });
+        o = i32(o);
+      }
+      out.push({ addr: d, name: llStrAt(i32(d + 0x78)),
+                 elem: el ? llStrAt(i32(el)) : null, elemAddr: el,
+                 type: I[(d + 0x20) >> 2] << 16 >> 16,
+                 flags: i32(d + 0x1c),
+                 entranceOffset: [i32(d + 0x0c), i32(d + 0x10)],
+                 footprint: { left: i32(d + 0x3c), top: i32(d + 0x40),
+                              right: i32(d + 0x44), bottom: i32(d + 0x48) },
+                 chainInsts: insts });
+      d = i32(d);
+    }
+    return out;
+  };
+  // Every distinct object the MAP references, with the class that owns it and
+  // the anchor the cells agree on. 84x84 cells is 7k reads -- cheap enough to
+  // run on every llLink call that needs it.
+  window.llMapObjects = function () {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32, U = HEAPU8;
+    function i32(p) { return I[p >> 2]; }
+    function u16(p) { return U[p] | (U[p + 1] << 8); }
+    var map = i32(a.g_map), rows = i32(a.g_map_rows);
+    if (!map || !rows) return [];
+    var mw = u16(map + 0x14), mh = u16(map + 0x16);
+    var seen = {}, out = [], x, y;
+    for (y = 0; y < mh; y++) {
+      var rowp = i32(rows + y * 4);
+      if (!rowp) continue;
+      for (x = 0; x < mw; x++) {
+        var p = rowp + x * 0x14, obj = i32(p);
+        if (!obj) continue;
+        var r = seen[obj];
+        if (!r) {
+          var def = i32(obj + 0x0c), el = def ? i32(def + 0xc4) : 0;
+          r = seen[obj] = { addr: obj, def: def,
+                            name: def ? llStrAt(i32(def + 0x78)) : null,
+                            elem: el ? llStrAt(i32(el)) : null,
+                            base: [U[p + 4], U[p + 5]],
+                            cells: 0, bbox: [x, y, x, y], flags: u16(p + 0x0c),
+                            source: 'map' };
+          out.push(r);
+        }
+        r.cells++;
+        if (x < r.bbox[0]) r.bbox[0] = x;
+        if (y < r.bbox[1]) r.bbox[1] = y;
+        if (x > r.bbox[2]) r.bbox[2] = x;
+        if (y > r.bbox[3]) r.bbox[3] = y;
+      }
+    }
+    return out;
+  };
+  // The lookup every probe below shares. `how` says which of the four rules
+  // matched, because "it matched on the normalised display name" is the
+  // difference between a real miss and a spelling.
+  function llMatchClass(name, classes) {
+    classes = classes || window.llClasses();
+    if (!classes) return null;
+    var want = String(name), n = llNorm(want), i, c;
+    var rules = [
+      ['elem', function (c) { return c.elem === want; }],
+      ['name', function (c) { return c.name === want; }],
+      ['elem (case)', function (c) { return c.elem && c.elem.toUpperCase() === want.toUpperCase(); }],
+      ['name (case)', function (c) { return c.name && c.name.toUpperCase() === want.toUpperCase(); }],
+      ['elem (normalised)', function (c) { return llNorm(c.elem) === n; }],
+      ['name (normalised)', function (c) { return llNorm(c.name) === n; }]
+    ];
+    for (i = 0; i < rules.length; i++) {
+      var hits = classes.filter(rules[i][1]);
+      if (!hits.length) continue;
+      // Two classes can answer to one spelling; the one with instances is the
+      // one the caller meant.
+      var withInsts = hits.filter(function (c) { return c.chainInsts.length; });
+      c = (withInsts.length ? withInsts : hits)[0];
+      return { cls: c, how: rules[i][0], candidates: hits.length };
+    }
+    return null;
+  }
+  // The instances of one class, from the chain if it has any and from the map
+  // if it does not. The rows are the same shape either way.
+  function llInstancesOf(cls) {
+    if (cls.chainInsts.length) return cls.chainInsts.slice();
+    var objs = window.llMapObjects() || [];
+    return objs.filter(function (o) { return o.def === cls.addr; })
+               .map(function (o) {
+                 return { addr: o.addr, base: o.base, source: 'map',
+                          cells: o.cells, bbox: o.bbox };
+               });
+  }
+  // `llFind(name)` -- every PLACED instance whose class matches `name` in any
+  // spelling, with its class, base, footprint and flags. With no argument it
+  // lists everything on the map, which is the census a driver wants first:
+  // "what is actually in this park, and what is it called".
+  window.llFind = function (name) {
+    var classes = window.llClasses();
+    if (!classes) return null;
+    var objs = window.llMapObjects() || [];
+    var byDef = {};
+    classes.forEach(function (c) { byDef[c.addr] = c; });
+    var n = name === undefined || name === null ? null : llNorm(name);
+    var rows = [];
+    objs.forEach(function (o) {
+      var c = byDef[o.def] || null;
+      if (n !== null) {
+        var hay = llNorm(o.name) + ' ' + llNorm(o.elem);
+        if (hay.indexOf(n) < 0) return;
+      }
+      rows.push({ addr: o.addr, name: o.name, elem: o.elem, classAddr: o.def,
+                  base: o.base, cells: o.cells, bbox: o.bbox,
+                  flags: '0x' + o.flags.toString(16),
+                  isFootprint: !!(o.flags & 0x80), isObject: !!(o.flags & 0x08),
+                  isPathTile: !!(o.flags & 0x10),
+                  footprint: c ? c.footprint : null,
+                  entranceOffset: c ? c.entranceOffset : null,
+                  type: c ? c.type : null, source: 'map' });
+    });
+    // A class whose chain has instances the map census did not reach (an object
+    // held but not placed) is worth saying out loud rather than dropping.
+    //
+    // Deduplicated on (class, anchor), NOT on the record address: the two
+    // sources name the same placed object by different pointers. Measured in
+    // lesson 1 -- the map cells of the LEGO Toy Shop carry 0x00d00ffc, which is
+    // the class's own LLIDB ELEMENT, while its +0x04 chain node is 0x0134a468;
+    // both agree the anchor is (74,61) and both mean the one shop that is
+    // standing there. Keying on the address listed it twice.
+    classes.forEach(function (c) {
+      if (n !== null && llNorm(c.name).indexOf(n) < 0 &&
+          llNorm(c.elem).indexOf(n) < 0) return;
+      c.chainInsts.forEach(function (ci) {
+        if (rows.some(function (r) {
+              return r.classAddr === c.addr &&
+                     r.base[0] === ci.base[0] && r.base[1] === ci.base[1];
+            })) return;
+        rows.push({ addr: ci.addr, name: c.name, elem: c.elem,
+                    classAddr: c.addr, base: ci.base, cells: 0, bbox: null,
+                    flags: null, footprint: c.footprint,
+                    entranceOffset: c.entranceOffset, type: c.type,
+                    source: 'chain (no map cells found)' });
+      });
+    });
+    return { query: name === undefined ? null : name, count: rows.length,
+             instances: rows,
+             classes: classes.map(function (c) {
+               return { name: c.name, elem: c.elem, chainInsts: c.chainInsts.length };
+             }) };
+  };
+
   // PORT-M13: the LINK goal, measured instead of guessed.
   //
   // A player reporting "the game keeps telling me to link the ride and I HAVE
@@ -762,15 +1110,15 @@
       return null;
     }
 
-    // The class, found by its LLIDB element's name (ObjDef +0xc4 -> LLElem +0x00).
-    var cls = null, d = i32(a.g_odf_head), all = [];
-    guard = 0;
-    while (d && guard++ < 4096) {
-      var el = i32(d + 0xc4), nm = el ? str(i32(el)) : null;
-      all.push(nm);
-      if (nm === name) { cls = d; break; }
-      d = i32(d);
-    }
+    // The class, by EITHER of its two names (P3-4). The old lookup compared
+    // only the LLIDB element name (ObjDef +0xc4 -> LLElem +0x00), so every
+    // display name -- the name llCellAt reports and the name a player uses --
+    // came back "not found".
+    var classes = window.llClasses() || [];
+    var all = classes.map(function (c) { return c.elem; });
+    var allNames = classes.map(function (c) { return c.name; });
+    var match = llMatchClass(name, classes);
+    var cls = match ? match.cls.addr : null;
     // The cursor as the GAME sees it: the pixel the shim delivered and the
     // cell ScreenToMapRef (objmap2.c:650) made of it. Reported whether or not
     // the class was found -- it is the shim's own witness, not the park's.
@@ -778,7 +1126,8 @@
                   mapRef: [i32(a.g_input + 0x24), i32(a.g_input + 0x28)],
                   click: [i32(a.g_input + 0x3c), i32(a.g_input + 0x40)],
                   anchor: [i32(a.g_input + 0x34), i32(a.g_input + 0x38)] };
-    if (!cls) return { name: name, found: false, classNames: all,
+    if (!cls) return { name: name, found: false, matchedBy: null,
+                       classNames: all, classDisplayNames: allNames,
                        squares: squares, input: input, mapSize: [mw, mh] };
 
     var ent = { x: i32(cls + 0x0c), y: i32(cls + 0x10) };
@@ -790,11 +1139,14 @@
                       (fp.left > ent.x || ent.x > fp.right ||
                        fp.top > ent.y || ent.y > fp.bottom);
 
+    // The instances: the class's own +0x04 chain when it has one, and a census
+    // of the MAP when it does not (P3-4 half 2 -- "Park Entrance" is placed,
+    // 120 cells of it, and its chain is empty). Both sources report the same
+    // anchor, so EventTick_Link's arithmetic below is unchanged.
+    var raw = llInstancesOf(match.cls);
     var insts = [], missing = 0, outside = 0;
-    var o = i32(cls + 0x04);
-    guard = 0;
-    while (o && guard++ < 1024) {
-      var bx = U[o + 0x0e], by = U[o + 0x0f];
+    raw.forEach(function (r) {
+      var bx = r.base[0], by = r.base[1];
       var lx = bx + ent.x, ly = by + ent.y;
       var c = cell(lx, ly);
       var s = c ? findSquare(lx, ly) : null;
@@ -802,10 +1154,11 @@
       var joins = false;
       if (c) { if (!(s && (s.flags & 2))) missing++; else joins = true; }
       else { missing++; outside++; }
-      insts.push({ addr: o, base: [bx, by], linkSquare: [lx, ly],
-                   onMap: !!c, cell: c, pathSquare: s, joins: joins });
-      o = i32(o);
-    }
+      insts.push({ addr: r.addr, base: [bx, by], linkSquare: [lx, ly],
+                   onMap: !!c, cell: c, pathSquare: s, joins: joins,
+                   source: r.source, cells: r.cells, bbox: r.bbox });
+    });
+    var instSource = raw.length ? raw[0].source : 'none';
 
     // The pending ScriptEvent list: kind 37 is LINK, and its elem is the class
     // element. flags bit 0x80 is what PORT-M10 watched turn on when it passed.
@@ -830,6 +1183,13 @@
     var entTile = { x: i32(a.g_entrance_tile), y: i32(a.g_entrance_tile + 4) };
     return {
       name: name, found: true, classAddr: cls,
+      // P3-4: which of the class's two names answered, and where the instance
+      // rows came from. `matchedBy: "name (normalised)"` with `instSource:
+      // "map"` is the reading "you gave the display name and the class's own
+      // chain is empty" -- not "nothing is placed".
+      matchedBy: match.how, candidates: match.candidates,
+      className: match.cls.name, classElem: match.cls.elem,
+      instSource: instSource,
       type: type, entranceOffset: [ent.x, ent.y], footprint: fp,
       hasEntrance: hasEntrance,
       insts: insts,
@@ -1023,9 +1383,22 @@
   // CheckCursorFootprint appends), classified. `interior` rows are the ride's
   // own cells; `ring` rows are what RefreshObjList paved. Each row says what
   // an eraser click there would find.
+  // P3-4: this went through llLink and so inherited both of its misses -- a
+  // display name answered `null` and a class whose +0x04 chain is empty
+  // answered `null` for an object that is demonstrably on the map. llLink now
+  // resolves both, and the `notFound` / `noInstance` reason below says which
+  // case a null really was instead of leaving the caller to guess.
   window.llPad = function (name) {
     var L = window.llLink(name || 'SPACE TOWER RIDE');
-    if (!L || !L.found || !L.insts || !L.insts.length) return null;
+    if (!L) return null;
+    if (!L.found)
+      return { name: name || 'SPACE TOWER RIDE', notFound: true, cells: null,
+               classNames: L.classNames, classDisplayNames: L.classDisplayNames };
+    if (!L.insts || !L.insts.length)
+      return { name: name || 'SPACE TOWER RIDE', noInstance: true, cells: null,
+               matchedBy: L.matchedBy, className: L.className,
+               classElem: L.classElem,
+               note: 'the class is loaded but nothing of it is on the map' };
     var base = L.insts[0].base, r = L.footprint;
     if (!r) return null;
     var rows = [], x, y;
@@ -1047,7 +1420,9 @@
                                                : '0x109/0x10d bare tile') });
       }
     }
-    return { name: name || 'SPACE TOWER RIDE', base: base, rect: r, cells: rows };
+    return { name: name || 'SPACE TOWER RIDE', base: base, rect: r, cells: rows,
+             matchedBy: L.matchedBy, className: L.className,
+             classElem: L.classElem, instSource: L.instSource };
   };
 
   // PORT-B9: the RES master directory, walked. `llRes()` lists every bucket
