@@ -223,6 +223,61 @@ set_tests_properties(addr_sweep_selftest PROPERTIES
   FAIL_REGULAR_EXPRESSION "FAIL"
   TIMEOUT 300)
 
+# ---- PORT-A11: a variadic callee declared non-variadic ----------------------
+# clang lowers `...` on wasm32 by writing the variable arguments into a buffer
+# and passing ITS ADDRESS as one extra parameter. So libc's
+# `int sprintf(char*, const char*, ...)` is (i32, i32, i32) -> i32 -- and so is a
+# fixed `int sprintf_w(char*, const char*, int)` declaration of the same
+# function. The two wasm signatures are IDENTICAL, which means:
+#
+#   * wasm-ld warns about nothing and emits no signature_mismatch stub,
+#   * `linkreport.py`'s signature vote sees no conflict,
+#   * `name_trap.py` has no `call_indirect` to explain,
+#   * the module validates and the link closes,
+#
+# and the third argument is read as the address of a va_list. PORT-M20 paid for
+# that in the Spider Ride: `mechrides.c` declared 0x0049e573 (`sprintf`, spelled
+# `Format(char*, const char*, ...)` in six other files) with a fixed third
+# parameter and passed the seat number, so every "%02d" came out "00" and no
+# rider on the Spider, Safari, Barrels or Plane reached a numbered path.
+#
+# No byte gate can see this either -- VC6 pushes the same dwords for both
+# spellings, so audit.py, relocs.py, match.py and verify.py are silent in both
+# the broken and the fixed state, exactly like extern_sweep's and addr_sweep's
+# classes. The sweep groups every prototype in the tree by the address its
+# comment cites and requires them to agree about being variadic and about where
+# the `...` starts. `gen_link.py` runs the same check and REFUSES to generate;
+# this test is the one that runs without a build.
+#
+# Sources only -- no gamedata/, no image, no build products -- so it runs in CI
+# on both toolchains, like extern_sweep, bvstruct_sweep and addr_sweep.
+add_test(NAME variadic_sweep
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/variadic_sweep.py"
+                 --src "${LL_ROOT}/LEGOLAND")
+set_tests_properties(variadic_sweep PROPERTIES
+  PASS_REGULAR_EXPRESSION "variadic_sweep gate: 0 conflict"
+  FAIL_REGULAR_EXPRESSION "FIX:"
+  TIMEOUT 300)
+
+# The sweep's own shapes. Eighteen cases, and the negatives are the half that
+# matters: the `#ifndef LEGOLAND_PORTABLE` arm every fix of this class is written
+# as, PORT-M3's `#define Foo Foo_vc6_body` rename (without which sweep1.c's empty
+# `DBPrintf(void)` reads as the callee and all 34 honest declarations are
+# "conflicts"), an address in the prose ABOVE a declaration, `(void)`, a
+# function-pointer parameter, a prototype inside a body and a macro body. It also
+# asserts the ABI claim the gate rests on -- that a 3-fixed declaration and a
+# 2-fixed variadic one have the same wasm arity -- and that the reader still
+# finds the real tree's declarations, because a scanner that quietly stops
+# working is a gate that always passes.
+add_test(NAME variadic_sweep_selftest
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/variadic_sweep.py" --selftest)
+set_tests_properties(variadic_sweep_selftest PROPERTIES
+  PASS_REGULAR_EXPRESSION "variadic_sweep selftest: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
+
 if(EMSCRIPTEN)
   # Two harnesses from the same sources: `legoland_headless` is the one to run,
   # and `legoland_headless_debug` is the one that NAMES a trap. See
