@@ -1852,6 +1852,106 @@ recipe; any other silent site fails the build. Notes:
 `docs/lanes/scope-port-a9.md`.
 
 
+## The cheat ring, and one memcpy that overlaps itself (scope PORT-B12)
+
+PORT-P1 reported that **roughly every seventh typed character is doubled in the
+cheat ring**, filed it against the press latch, and could not exercise
+`RunAppraisalScreen` because of it. Neither half of that is where the defect
+is, and the screen is now reachable.
+
+### It is not the keyboard, at any of the three layers
+
+Measured in a running free-play park while `llType('ABCDEFGHIJKLMNOP')` runs
+(`portable/src/browser/replays/b12-01-*.js`):
+
+| layer | measurement | result |
+| --- | --- | --- |
+| the DOM | `LL_DEBUG.push` wrapped, every accepted key event counted | **16 keydowns, 16 keyups**, one per character, DIKs correct |
+| the shim | the game's own `g_key_state[256]` sampled at **1 ms** | **16 rises, 16 falls, strictly alternating**; never a second rise inside a press |
+| the game | `g_typed_key_prev` while a key is held | exactly one entry set, to `0x80`, at the right key-map index |
+
+PORT-B6's press latch is correct; `latch_press` is the only writer that raises
+`down`, and it runs only from the sixteen `EV_KEYDOWN` records the first row
+counts. Nothing in `dinput.c` needed to change.
+
+### `memcpy(g_type_buf, g_type_buf + 1, 19)`
+
+input.c:368 shifts the twenty-byte ring with a `memcpy` whose **source and
+destination overlap**, which is undefined behaviour. VC6's x86 `memcpy` copies
+forward and happens to produce the intended shift. LLVM sees a constant length,
+inlines the copy as wide load/stores that are allowed to assume no overlap, and
+**duplicates three of the nineteen bytes**.
+
+Drive the shift with no keyboard at all — write twenty distinct bytes over the
+ring, type one character, read back:
+
+```
+before   0123456789abcdefghij
+after    02345678aabcdefhiijP      three bytes duplicated, three lost
+expected 123456789abcdefghijZ
+```
+
+and the same thing in eleven lines outside the game entirely:
+
+```
+$ emcc -O2 -o t.js t.c && node t.js        # memcpy(b, b+1, 19)
+got      BCDEFGHJJKLMNOPQRST7
+expected BCDEFGHIJKLMNOPQRST7
+```
+
+Three wrong bytes at n = 19 — the count the live game shows. It is size- and
+alignment-dependent (n = 20 comes out clean, n = 63 loses eight), which is why
+it looks arbitrary.
+
+**Why it looked periodic.** It is not periodic in time or in keystrokes; it is
+periodic in the ring. A fixed set of ring offsets is corrupted on every shift,
+and a ring that moves one byte per character walks each character past one of
+them every seven characters — hence a doubled pair always seven apart, with the
+phase differing per run. Each cheat is matched with a `strnicmp` against the
+ring's tail **at a fixed offset** (`&g_type_buf[11]` for `:PRAISEME`), so one
+extra or missing character makes the comparison impossible: **every cheat in
+the game is dead.**
+
+**The fix is one line, in `LEGOLAND/input.c`** — `memmove` under a
+`LEGOLAND_PORTABLE` guard, so the `#else` arm's bytes cannot move. There is no
+shim-side fix: the miscompiled copy is *inlined*, so an overlap-safe `memcpy`
+in `msvcrt.c` would never be called. `docs/lanes/scope-port-b12.md` §2.5 has
+the recipe; §2.6 sweeps the class tree-wide (three sites: this one,
+`narration2.c:429` latent, `ridecb5.c:767` a harmless no-op).
+
+### The appraisal screen, reached
+
+On a build with that one line, in a free-play park: `llKey('ShiftLeft')` then
+`llType('PRAISEME')` leaves the ring reading `FGHIJKLMNOP:PRAISEME` — the word
+at exactly bytes `[11..19]` — the cheat fires, `AppraisalDueTick` pauses the
+sim (`llPark().simFrame` freezes) and **`RunAppraisalScreen` (appraisalscreen.c:381,
+the 8,085-instruction WIP body nobody had seen run) draws**: the REPORT notepad
+with its spiral binding, "Congratulations you have built a thriving Park!", and
+the inspector minifigure with his pencil. Its icons answer, the greyed page
+buttons are correct, and the GoBack icon at game (525, 370) closes it and hands
+the park back with the sim resuming. Zero traps.
+
+### P1-6: the visitors reach the print list and stop
+
+Confirmed, and narrowed to one function (`b12-02-*.js`). Hiding the whole bloke
+chain (`flags62 |= 0x80`, which makes `RenderPeople` skip it) changes the frame
+by fewer pixels than the park's own animation noise — so no bloke is drawn
+anywhere. But 23 type-`0x2000` print-list nodes with real depth keys sit in the
+arena, and `Render3DPerson` **is entered for 27 of 30 persons every frame**
+(its first three statements write `scale = 1.0f` before any early-out, which
+makes a poked sentinel a perfect probe). The records are healthy: a proper
+16.16 rotation matrix, a real frame index, a non-null face table. Everything
+shim-side on the path checks out — `user32.c`'s `IntersectRect` is alias-safe,
+which rin.c:549 depends on, and the locked surface is the one every visible
+sprite is blitted into.
+
+That leaves `Draw3DPersonModel` (person3d.c:1092), the 63.3% WIP body, and its
+portable arms are the place to look: `FMUL`/`FMULA`/`FMULP`/`TOFIX`/`SHADE`
+(person3d.c:529-596) are hand-written replacements for the original's inline
+asm, and a model whose 16.16 scale comes out zero rasterises to nothing,
+silently. Owner: a matching / render lane. Notes:
+`docs/lanes/scope-port-b12.md`.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
