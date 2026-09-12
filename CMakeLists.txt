@@ -27,6 +27,15 @@ target_include_directories(legoland_core PUBLIC
 )
 target_compile_definitions(legoland_core PUBLIC LEGOLAND_PORTABLE=1)
 
+# docs/QUIRKS.md: the portable build fixes a short list of the shipped game's own
+# bugs, each in a LEGOLAND_PORTABLE arm AND inside `#ifndef LL_FAITHFUL`. A
+# faithful build (-DLL_FAITHFUL=ON) keeps the shipped behaviour for A/Bs and
+# save-compatibility oracles.
+option(LL_FAITHFUL "Reproduce the shipped game's quirks instead of fixing them (docs/QUIRKS.md)" OFF)
+if(LL_FAITHFUL)
+  target_compile_definitions(legoland_core PUBLIC LL_FAITHFUL=1)
+endif()
+
 # -fms-extensions: __declspec, __int64, __fastcall/__stdcall (ignored off x86).
 # -fcommon: the sources rely on tentative definitions merging across files.
 # -fno-strict-aliasing / -fwrapv: the code reinterprets float/int storage and
