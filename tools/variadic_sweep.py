@@ -100,6 +100,7 @@ toolchains next to the other asset-free sweeps. `gen_link.py` calls
 one is open.
 """
 import argparse
+import bisect
 import collections
 import glob
 import os
@@ -381,6 +382,8 @@ def _file_scope_statements(text):
 
 _DEFINE = re.compile(r'^\s*#\s*define\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*$')
 _UNDEF = re.compile(r'^\s*#\s*undef\s+([A-Za-z_]\w*)\s*$')
+_MARKER = re.compile(r'^// (FUNCTION|WIP-FUNCTION): LEGOLAND (0x[0-9a-fA-F]+)',
+                     re.M)
 
 
 def renames(text, live=None):
@@ -445,9 +448,12 @@ def scan_decls(src=SRC, live_only=True):
         live = bvs.portable_lines(text) if live_only else None
         ren = renames(text, live)
         seen = set()
+        # one bisect instead of `text.count('\n', 0, start)` per statement: that
+        # was quadratic in the file and most of the sweep's 25 s in CI
+        nl = [m.start() for m in re.finditer('\n', text)]
 
-        def add(start, stmt, comments, defn):
-            line = text.count('\n', 0, start) + 1
+        def add(start, stmt, comments, defn, at=None):
+            line = bisect.bisect_left(nl, start) + 1
             if live is not None and line not in live:
                 return
             for name, piece in _declarators(stmt):
@@ -458,9 +464,15 @@ def scan_decls(src=SRC, live_only=True):
                 if key in seen:
                     return
                 seen.add(key)
-                out.append(Decl(base, line,
-                                rename_at(ren, line).get(name, name),
-                                _addrs_in(comments),
+                eff = rename_at(ren, line).get(name, name)
+                # A body the portable build compiles under a DIFFERENT name
+                # (PORT-M3's `_vc6_body`) is not the definition of the marker's
+                # address any more -- the wrapper that kept the name is. Letting
+                # it claim the marker made sweep1.c's empty `DBPrintf(void)` the
+                # callee of all 34 honest declarations.
+                addrs = _addrs_in(comments) or \
+                    ([at] if at is not None and eff == name else [])
+                out.append(Decl(base, line, eff, addrs,
                                 _shape_of_params(params), defn,
                                 ' '.join(stmt.split())))
 
@@ -472,37 +484,49 @@ def scan_decls(src=SRC, live_only=True):
             stmt, comments, pos = lr._statement_at(text, start)
             add(start, stmt, comments, False)
         # pass B: file scope, which is where a non-`extern` prototype and every
-        # DEFINITION live
+        # DEFINITION lives. A definition's address is its `// FUNCTION:` marker,
+        # taken from the nearest one above it and CONSUMED, so the next body
+        # cannot inherit it. (`linkreport.scan_sources` answers this question by
+        # regex on the next signature-shaped line, which on schoolcar7.c:417
+        # picks up the `__declspec(dllimport) ... wsprintfA` prototype above
+        # `LoadLmsModel` and files 0x00420640 under the import's name. Reading
+        # the declarator is what this module already does, so it does not need
+        # to inherit that.)
+        markers = [(bisect.bisect_left(nl, m.start()) + 1, int(m.group(2), 16))
+                   for m in _MARKER.finditer(text)]
+        mi = 0
         for start, stmt, comments, defn in _file_scope_statements(text):
-            add(start, stmt, comments, defn)
+            at = None
+            if defn:
+                line = bisect.bisect_left(nl, start) + 1
+                while mi < len(markers) and markers[mi][0] < line:
+                    at = markers[mi][1]
+                    mi += 1
+            add(start, stmt, comments, defn, at)
     return out
 
 
 # ---- grouping ---------------------------------------------------------------
 
-def group_decls(decls, def_addr=None):
+def group_decls(decls):
     """key -> [Decl], where the key is ('addr', a) when anything cites one and
     ('name', n) when nothing does.
 
     A declaration with no address comment joins its name's address when the tree
     cites exactly ONE for that name -- which is the ordinary case, and the reason
-    `loadmap.c`'s `Format` and `profiles.c`'s `DBPrintf` are grouped with the
-    rest instead of sitting alone. `def_addr` (name -> address, from
-    `linkreport.scan_sources`'s FUNCTION markers) gives a DEFINITION its address:
-    `sysstubs.c`'s `void DebugPrintf(const char*, ...) {}` carries none of its
-    own."""
+    `loadmap.c`'s `Format` and `profiles.c`'s `DBPrintf` are grouped with the rest
+    instead of sitting alone. Two addresses for one function name is
+    `addr_sweep.py`'s class, not this one's, and such a name is left in a group of
+    its own rather than merging two functions that have nothing to do with each
+    other."""
     name_addr = collections.defaultdict(set)
     for d in decls:
         if d.addrs:
             name_addr[d.name].add(d.addrs[0])
-        elif def_addr and d.name in def_addr:
-            name_addr[d.name].add(def_addr[d.name])
     groups = collections.defaultdict(list)
     for d in decls:
         if d.addrs:
             key = ('addr', d.addrs[0])
-        elif def_addr and d.name in def_addr:
-            key = ('addr', def_addr[d.name])
         else:
             a = name_addr.get(d.name)
             key = ('addr', next(iter(a))) if a and len(a) == 1 else ('name', d.name)
@@ -575,21 +599,15 @@ Group = collections.namedtuple(
     'Group', 'key addr names decls truth why conflicts')
 
 
-def census(src=SRC, def_addr=None):
+def census(src=SRC):
     """[Group] for every group whose truth is variadic or that disagrees about
-    being variadic -- the population this gate is about -- newest rule first.
+    being variadic -- the population this gate is about, conflicts first.
 
     `conflicts` is [(Decl, code, consequence)]; a group with none is clean."""
-    if def_addr is None:
-        try:
-            _externs, defined_at, _stubs = lr.scan_sources()
-            def_addr = {nm: a for a, (nm, _f) in defined_at.items()}
-        except OSError:
-            def_addr = {}
     crt_variadic = _crt_variadic_rows()
     decls = scan_decls(src)
     out = []
-    for key, rs in group_decls(decls, def_addr).items():
+    for key, rs in group_decls(decls).items():
         names = sorted({d.name for d in rs})
         truth, why = truth_of(rs, crt_variadic)
         touches_variadic = truth[0] == VARIADIC or \
@@ -607,8 +625,8 @@ def census(src=SRC, def_addr=None):
     return out
 
 
-def conflicts(src=SRC, def_addr=None):
-    return [g for g in census(src, def_addr) if g.conflicts]
+def conflicts(src=SRC):
+    return [g for g in census(src) if g.conflicts]
 
 
 # ---- output -----------------------------------------------------------------
@@ -835,15 +853,8 @@ def selftest():
         else:
             with open(os.path.join(sub, 'case.c'), 'w') as f:
                 f.write(text)
-        marker = re.compile(r'^// FUNCTION: LEGOLAND (0x[0-9a-fA-F]+)', re.M)
-        def_addr = {}
-        for m in marker.finditer(text):
-            tail = text[m.end():].lstrip('\n')
-            nm = re.search(r'([A-Za-z_]\w*)\s*\(', tail)
-            if nm:
-                def_addr[nm.group(1)] = int(m.group(1), 16)
         got = []
-        for g in census(sub, def_addr):
+        for g in census(sub):
             got += [code for _d, code, _w in g.conflicts]
         if sorted(got) != sorted(want):
             fails.append(f'{title}: got {sorted(got)}, want {sorted(want)}')

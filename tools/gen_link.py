@@ -132,6 +132,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import linkreport as lr  # noqa: E402
 import cdecl  # noqa: E402
 import addr_sweep  # noqa: E402
+import variadic_sweep as vsweep  # noqa: E402
 
 IMAGE_BASE = 0x400000
 
@@ -899,6 +900,34 @@ def main():
     win32 = lr.load_win32()
     externs, defined_at, _stubs = lr.scan_sources()
     cats = lr.classify(defined, undefined, externs, defined_at, win32)
+
+    # ---- PORT-A11: a variadic callee declared non-variadic (PORT-M20) -------
+    # The generator CANNOT bridge this one and must not pretend to. A variadic
+    # callee takes one extra wasm parameter -- the address of the buffer clang
+    # wrote the variable arguments into -- so a fixed `(char*, const char*, int)`
+    # declaration of `sprintf` has the same wasm signature as the real thing and
+    # the third argument lands where the callee reads a va_list. Every signature
+    # check downstream of here (wasm-ld's, `lr.collect_wasm_sigs`'s vote,
+    # `name_trap.py`'s call_indirect report) compares wasm signatures, so all of
+    # them are blind to it by construction, and so is every byte gate in the
+    # project. The one place it can be seen is the DECLARATIONS, which is here.
+    # Refusing beats generating: a forwarder built from the wrong spelling is a
+    # wrong program that links, and PORT-M20 spent a lane finding one.
+    variadic_groups = vsweep.census()
+    variadic_bad = [g for g in variadic_groups if g.conflicts]
+    if variadic_bad:
+        vsweep.report(variadic_groups, out=sys.stderr)
+        print(f'gen_link: REFUSING to close the link -- '
+              f'{sum(len(g.conflicts) for g in variadic_bad)} declaration(s) '
+              f'disagree with a variadic callee about where its `...` starts '
+              f'(see above, and portable/tools/variadic_sweep.py). Nothing was '
+              f'generated.', file=sys.stderr)
+        if not os.environ.get('LL_ALLOW_VARIADIC_CONFLICTS'):
+            sys.exit(3)
+        print('gen_link: LL_ALLOW_VARIADIC_CONFLICTS is set -- generating '
+              'anyway. For bisecting only: the call sites above are wrong in '
+              'the module this produces.', file=sys.stderr)
+
     read = load_image(args.exe)
     wasm_sigs, wasm_defs, wasm_undef_data, sig_conflicts = lr.collect_wasm_sigs(all_objs)
 
@@ -2337,6 +2366,13 @@ def main():
     if n_unexplained:
         print(f'gen_link: WARNING {n_unexplained} raw pointer word(s) -- '
               f'see gen/pointers.md', file=sys.stderr)
+
+    # PORT-A11. The census is here rather than in a file of its own because the
+    # interesting number is zero: a reader checking whether this build could be
+    # carrying M20's defect wants one line, and the table says which functions
+    # the claim covers. A non-zero count cannot reach this point -- the refusal
+    # above exits before anything is generated.
+    manifest += vsweep.markdown(variadic_groups)
 
     manifest += ['', '## Source-derived extents (gen/extents.md)', '',
                  f'- objects the gap tiling would have split: {len(split_log)}',
