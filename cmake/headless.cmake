@@ -167,6 +167,62 @@ set_tests_properties(raw_words PROPERTIES
   FAIL_REGULAR_EXPRESSION "FAIL"
   TIMEOUT 300)
 
+# ---- PORT-A10: one NAME, two ADDRESSES (and one address, two sizes) ---------
+# The sibling of extern_sweep above. That one catches one `extern` STATEMENT
+# carrying several declarators and several addresses; this one catches the same
+# name declared at two different addresses in two different FILES, which no
+# single statement reveals and which PORT-P3 measured as two blockers:
+#
+#   g_view_left   scrolltick.c 0x004b95f4 (scroll slack, shipped 243200)
+#                 coaster3d.c  0x008299ac (3D clip rect, shipped zero)
+#     -> gen_link emits the coaster's, the scroll clamp reads 0, and the map
+#        stops 475 px short of every edge. The Mechanic's Hut lesson 4 tells you
+#        to click cannot be brought on screen at all.
+#   g_popup       bighelp.c/popup.c 0x007fdea4 vs fpui2.c 0x007fdec0
+#     -> one object, so every field fpui2.c stores is 0x1c low and the two
+#        element pointers the hire arm compares read zero. NO GARDENER AND NO
+#        MECHANIC CAN BE HIRED IN THE GAME.
+#
+# Same blindness as extern_sweep: on x86 each TU's declaration only says "an
+# object lives somewhere" and each .obj carried its own address, so both sets
+# really were different memory. The portable build plans ONE object per name.
+# The bytes are identical either way, so audit.py, relocs.py, match.py and
+# verify.py cannot see this state or the fixed one.
+#
+# The gate is the baseline `portable/tests/addr_collisions.txt`: 18 NAME rows and
+# 5 ADDR rows, each with a reason. A row not there, or a row that grew an address
+# or changed a size, FAILS; a row that is no longer reported prints FIXED and
+# passes, which is what lets the file hold PORT-P3's open findings today and go
+# green the moment PORT-M15 renames them.
+#
+# Sources only -- no gamedata/, no image, no build products -- so it runs in CI
+# on both toolchains, like extern_sweep and bvstruct_sweep.
+add_test(NAME addr_sweep
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/addr_sweep.py" --quiet
+                 --src "${LL_ROOT}/LEGOLAND"
+                 --baseline "${CMAKE_CURRENT_SOURCE_DIR}/tests/addr_collisions.txt")
+set_tests_properties(addr_sweep PROPERTIES
+  PASS_REGULAR_EXPRESSION "addr_sweep gate: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
+
+# The sweep's own shapes, with a positive control for each half (a name at two
+# addresses in two files; two comparably sized names at one base) and the
+# negatives that make a gate possible: the same address from several files is
+# not a collision, a declaration wrapped over several lines is ONE citation, an
+# address in prose above a declaration is not a citation of it, and a <=4-byte
+# head name over a wider record is the project's own convention. It also checks
+# the three verdicts the baseline reader has to give -- accepted, GREW, FIXED --
+# and that a MISSING baseline fails instead of passing quietly.
+add_test(NAME addr_sweep_selftest
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/addr_sweep.py" --selftest)
+set_tests_properties(addr_sweep_selftest PROPERTIES
+  PASS_REGULAR_EXPRESSION "addr_sweep selftest: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
+
 if(EMSCRIPTEN)
   # Two harnesses from the same sources: `legoland_headless` is the one to run,
   # and `legoland_headless_debug` is the one that NAMES a trap. See

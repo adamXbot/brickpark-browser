@@ -1852,6 +1852,119 @@ recipe; any other silent site fails the build. Notes:
 `docs/lanes/scope-port-a9.md`.
 
 
+## One name, two addresses — and a hidden tab that stalls (scope PORT-A10)
+
+### `portable/tools/addr_sweep.py` — the sibling of `extern_sweep`
+
+`extern int g_view_left;  /* 0x004b95f4 */` in `scrolltick.c` and
+`extern int g_view_left;  /* 0x008299ac */` in `coaster3d.c` were two different
+objects on x86: each `.obj` carried its own address and the real linker gave
+each spelling the memory it meant. The portable build has no `.obj` —
+`gen_link.py` plans **one storage object per name** — so the two collapse and
+every TU that spelled the loser is sheared, silently. PORT-P3 measured what that
+costs in the running tab: the map scroll clamp reads the coaster's *zeroed* 3D
+clip rect instead of its own 243200-unit slack, so 475 px of every map is
+unreachable and the Mechanic's Hut lesson 4 tells you to click cannot be brought
+on screen; and `g_popup` is sheared by 0x1c, so **no gardener and no mechanic can
+be hired anywhere in the game**.
+
+The C compiles to identical bytes either way, so `audit.py`, `relocs.py`,
+`match.py` and `verify.py` are blind to this state *and to the fixed one* — the
+same blindness `extern_sweep.py` exists for. That one catches one `extern`
+STATEMENT with several declarators and several addresses; this one catches one
+NAME with several addresses across FILES, which no single statement reveals.
+
+```bash
+python3 portable/tools/addr_sweep.py                    # sweep LEGOLAND/
+python3 portable/tools/addr_sweep.py --selftest         # shapes, no sources
+python3 portable/tools/addr_sweep.py --names-only       # the cheap half
+```
+
+Two checks: **NAME** (one name, several addresses — data declarations, function
+declarations and the `// FUNCTION:` markers, read a statement at a time) and
+**ADDR** (one address, several names whose `cdecl.py`-computed sizes disagree,
+with the project's `<= 4`-byte head-name convention vetoed — it is 35 rows
+without that veto and 5 with it).
+
+It finds **18** names, not PORT-P3's 17. The extra one is a *function*:
+`Track_Update` is defined twice, at `0x004275d0` (coaster.c) and `0x00427b20`
+(castleobj.c) — and it is not a live defect, because PORT-M7 already gave the
+second its own symbol with `#define Track_Update Track_Update_427b20`. The row
+is kept so the gate notices if that mitigation is ever dropped.
+
+`portable/tests/addr_collisions.txt` holds all 23 rows with a reason each, and
+the ctest `addr_sweep` gates them: a row not in the file, or a row that grew an
+address or changed a size, fails; a row that is no longer reported prints `FIXED`
+and passes. That last rule is what lets the baseline hold PORT-P3's open
+findings while PORT-M15 renames them in parallel, in either merge order.
+
+`gen_link.py` also stops choosing silently. `linkreport.scan_sources` keeps one
+address per name with a `setdefault` — first file wins, nothing downstream told.
+The manifest now carries `- names with conflicting addresses: 18 (...)` and a
+section attributing every citation to `file:line`, there is a stderr warning, and
+the generated `globals.c` opens with a block comment marking with `->` the
+address it actually emitted for each name. `-DLL_FAIL_ON_ADDR_COLLISION` turns
+that notice into a real `#error`, for after the renames land.
+
+### The page: `llFind`, and why a hidden tab used to stall
+
+PORT-P3 filed two findings against the shell page rather than the game.
+
+**P3-4 was two bugs.** Every `ObjDef` carries two names — the LLIDB *element*
+name (`+0xc4 -> +0x00`, "ENTRANCE 1") and the *display* name (`+0x78`, "Park
+Entrance") — and `llLink`/`llPad` compared only the first, so every name a
+player or `llCellAt` itself would give answered `found: false`. Separately,
+`ObjDef +0x04` is **not** a complete placed-instance list: measured in tutorial
+lesson 1, "Park Entrance" has an EMPTY chain and 120 cells on the map, anchored
+at (81,40). So the old `{found: true, insts: []}` was right about the chain and
+wrong about the park, and it reads as a game defect that is not there.
+
+Both are fixed. The class lookup tries the element name, the display name, then
+either case-insensitively, then either normalised (which is what makes
+`MECHANICS HUT` match `Mechanic's Hut`), and reports `matchedBy`. Instances come
+from the chain when it has any and from a census of the MAP when it does not —
+both sources report the same anchor, so `EventTick_Link`'s arithmetic is
+untouched — and every result says `instSource`. New probes: **`llFind(name)`**
+(every placed instance with its class, both names, anchor, footprint, cell count,
+bbox and flags; substring match, so `llFind('hut')` finds the hut; no argument =
+the whole park census), `llClasses()` and `llMapObjects()`.
+
+**P3-7 is sharper than "throttled to 1 Hz".** The port yields through
+`emscripten_sleep`, which the loader implements as `new Promise(r =>
+setTimeout(r, ms))` — so the game's whole main loop is ONE `setTimeout` chain,
+and Chrome's background budget applies to chains. Measured per 10-second window
+in a hidden background tab with nothing polling it: **33.5 fps for the first
+thirty seconds, then exactly five wake-ups per ten seconds — 0.50 fps — flat,
+for as long as you leave it.** The `?beat=1000` heartbeat agrees from inside the
+wasm: one BEAT at `t=59493`, the next at `t=102493`, **seven host calls in 43
+seconds**, with the yield's own `since_yield` still reading 0 ms.
+
+Two traps for anyone re-measuring it: the cliff is thirty seconds away, so a
+twenty-second measurement sees nothing; and driving the tab from a debugger
+**un-throttles it**, so the numbers have to come from an in-page sampler that is
+started, left alone, and read once.
+
+Three candidates were measured in that same tab. `requestAnimationFrame` is
+**suspended** (three frames did not arrive in six seconds) so it cannot be a
+fallback at all. A Web Worker timer works (0.3 ms) but costs a Worker, a Blob URL
+and a `postMessage` round trip per yield, and the game yields ~1400 times in five
+seconds. A **`MessageChannel` hop** costs 0.003 ms and is not a timer, so no
+timer budget applies to it. PORT-P3's audio oscillator works too, but needs an
+AudioContext the autoplay policy will not start without a user gesture — which a
+test runner may never have — and leaves the tab permanently audible.
+
+So while `document.hidden` is true the page delivers 0-or-1 ms timers as
+MessageChannel messages; everything longer is a real wait (the 5 s profile flush,
+`MessageBoxA`'s pause) and is left alone. A hopped call still gets a handle and
+`clearTimeout` still cancels it. Same protocol, same tab, `?awake=1`: **35.7 fps
+flat through the thirty-second cliff and past it** — 0.50 fps -> 35.8, a factor
+of 71 — which is the game's own 28 ms `FlipPrimary` ceiling, with no permission
+and no worker. The
+cost is that a hidden tab really does keep running and burns a core: right for a
+testing page, wrong for a shipping one, so `?awake=0` turns it off and
+`llAwake()` reports and pins it. Notes: `docs/lanes/scope-port-a10.md`.
+
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
