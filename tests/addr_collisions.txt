@@ -1,0 +1,69 @@
+# The address collisions a lane has RULED ON -- the baseline for the
+# `addr_sweep` ctest. Two row kinds:
+#
+#   NAME <name> <addr>,<addr>...            one name, several addresses
+#   ADDR <addr> <name>=<size>,<name>=<size> one address, several names whose
+#                                           declared sizes disagree
+#
+# The class (docs/lanes/scope-port-p3.md §3.3, docs/lanes/scope-port-a10.md §1):
+# on x86 each TU's `extern` only says "an object of this type lives somewhere"
+# and the real linker resolves each spelling to the address its own .obj
+# recorded, so two files really can mean two different objects by one name. The
+# portable build has no .obj: `gen_link.py` plans ONE storage object per name,
+# so the two spellings collapse and every TU that spelled the loser is sheared
+# by the difference. The bytes VC6 emits are identical either way, so audit.py,
+# relocs.py, match.py and verify.py are blind to this and always will be.
+#
+# The gate:
+#
+#   * a row NOT here, or a row that GREW a new address / changed a size -> FAIL;
+#   * a row here that is no longer reported -> passes and prints FIXED; drop the
+#     row in the same commit as the fix.
+#
+# That last rule is why this file can hold PORT-P3's open findings today and
+# stay green the moment PORT-M15 renames them.
+#
+# Measured 2026-09-12 by PORT-A10 on 25005b2c: 18 NAME rows (PORT-P3's 17 plus
+# `Track_Update`, which PORT-M7 had already mitigated), 5 ADDR rows.
+#
+# ---------------------------------------------------------------- NAME rows --
+# NOTHING IN THIS SECTION IS FIXED except Track_Update. Each row names the
+# address `gen_link` actually emits (the "winner" column of PORT-P3 §3.3) and
+# what the losing TU therefore reads. LEGOLAND/*.c is PORT-M15's to edit.
+
+# ---- the two blockers PORT-P3 measured in the running tab -------------------
+NAME g_view_left 0x004b95f4,0x008299ac    # P3-1 BLOCKER. scrolltick.c's ClampScrollToMap slack (shipped 243200) vs coaster3d.c/coaster10.c/unref3.c's 3D clip rect (zero). gen_link emits 0x008299ac, so the clamp reads 0 and the map scroll stops 475 px short of every edge -- the Mechanic's Hut lesson 4 tells you to click can never be brought on screen. A coaster draw would also stomp the scroll geometry. Fix is a RENAME (two unrelated objects), not a value
+NAME g_view_top 0x004b95f8,0x008299b0     # P3-1, the same four-dword block
+NAME g_view_right 0x004b95fc,0x008299b4   # P3-1, the same four-dword block
+NAME g_view_bottom 0x004b9600,0x008299b8  # P3-1, the same four-dword block
+NAME g_popup 0x007fdea4,0x007fdec0        # P3-2 BLOCKER. bighelp.c/popup.c say PopUpUI at 0x007fdea4; fpui2.c says PopUpInfo at 0x007fdec0, 0x1c higher. One object is emitted (at 0x007fdea4, as an alias of g_info_icon_g), so every field PopUpInfoSetUp stores lands 0x1c low and the two element pointers its "this is a hut, hire someone" arm compares read ZERO. No gardener and no mechanic can be hired in the whole game; FIXRIDES has no input. Also stomps an Icon* and two Sprite* at +0x00/+0x08/+0x0c
+
+# ---- P3-3: the other names of the same class, not yet attributed to a symptom
+NAME g_ui_flags 0x008003e8,0x00813a40     # gen_link emits 0x00813a40 (an alias of g_cursor); logflume2.c, screencb6.c and unref4.c spell 0x008003e8, so the flume and a screen callback read the CURSOR's flags
+NAME g_tile_sprites 0x00805f60,0x0082c680 # gen_link emits 0x00805f60 (the map's); coaster.c spells 0x0082c680, so the coaster's tile sprites are the map's
+NAME g_view 0x004bcbf4,0x007fffc4         # three spellings, two of them (buildtick.c View, eventtick.c Pos) at EditCursor+0x1404 = 0x007fffc4 and sysmisc2.c's ViewCfg at 0x004bcbf4, which is g_game
+NAME g_screen 0x004bcbf4,0x00668078       # gen_link emits 0x004bcbf4 (an alias of g_game); printlist.c spells the DDSurface at 0x00668078
+NAME g_road_tiles 0x004b4c08,0x004cbeac   # gen_link emits 0x004cbeac (an alias of g_road_list); roads.c spells an unsigned short[60] at 0x004b4c08
+NAME g_frame_ticks 0x0060f910,0x006681fc  # gen_link emits 0x006681fc; schoolcar.c spells 0x0060f910, so the driving school's timing is the frame counter
+NAME g_snd_click 0x004b929c,0x004b92c0    # gen_link emits 0x004b92c0 (g_game_fx+0x98, FX entry 11); fpui4.c spells 0x004b929c (entry 12), so one UI click plays the wrong effect. An ALIAS winner carries its offset -- a check that names the alias by its target alone reads this row wrong
+NAME g_lls_accept_on_report 0x004bef70,0x004bf694  # gen_link emits 0x004bf694 (mapscreen2.c); screens3.c spells 0x004bef70, which is the TUTORIAL screen's own Accept sprite -- the screen both tutorial lessons start from
+NAME g_avi_open_count 0x00665f48,0x00668f98        # advisor.c vs movie.c; gen_link emits 0x00665f48
+NAME g_carousel_bnv 0x0061608c,0x00616090   # a +4 shear: bswater.c vs screencb2.c/screencb6.c. Same shape as g_popup -- one struct spelled from two bases
+NAME g_carousel_zspr 0x006160b8,0x006160c0  # a +8 shear: bswater.c/ridecb1.c vs ridecb3.c/screencb2.c/screencb6.c
+NAME g_bz_bnv 0x00616010,0x00616018         # a +8 shear: ridecb3.c vs screencb2.c/screencb6.c
+
+# ---- already mitigated, kept so the gate notices if the mitigation is lost --
+NAME Track_Update 0x004275d0,0x00427b20   # NOT a live defect. Two DEFINITIONS under two `// FUNCTION:` markers -- coaster.c's flat-track editor pass at 0x004275d0 and castleobj.c's build-mode hover at 0x00427b20 -- and PORT-M7 already gave the second its own symbol with `#define Track_Update Track_Update_427b20` (castleobj.c:690), declaring coaster.c's as Track_Update90. The C has two distinct symbols; only the marker name still collides, which is what the sweep can see. If that `#define` is ever dropped, this row GROWS a reason to fail
+
+# ---------------------------------------------------------------- ADDR rows --
+# All five are the project's documented "one object, several views" convention:
+# the sources say so in a comment at each site, and gen_link sizes the object by
+# the widest citation so every narrower view reads the head correctly. They are
+# here, not vetoed in the tool, because a NEW one is a new unreviewed multi-view
+# over live bytes and wants a reader.
+
+ADDR 0x0066809c g_lock=124,g_ddsd=108   # ONE object by construction: gpu.c:195 declares `struct LockState { DDSurfaceDesc ddsd; WinRect render_clip; }` and `#define g_ddsd g_lock.ddsd`, because GenerateNewImageFromZBuffer restores the descriptor with a rep movsd and the clip field by field. blitmisc.c/render3.c/surface.c declare the two ranges as separate globals; both views address the same bytes
+ADDR 0x007cad60 g_temp_profile=272,g_temp_name=30   # the profile NAME is the Profile record's first field, so screens3.c:333's `char g_temp_name[30]` is a head view of profiles.c's `Profile g_temp_profile`. Safe in both directions (the record is the widest citation)
+ADDR 0x007fded4 g_newobj=168,g_mock_defs=80,g_new_obj_defs=80   # the "new object unlocked" carousel: fpui5.c:418 declares `NewObjStrip { void* def[20]; Sprite* spr[20]; int count; int sel; }` and misc3.c/tinystubs.c declare its first array alone (`ObjDef* g_mock_defs[20]` / `void* g_new_obj_defs[20]`), with the sprite array, count and index as their own names at +0x50/+0xa0/+0xa4. One object, three spellings of the same 168 bytes. (popupmisc.c:156 spells the same struct 164 -- a per-name extent disagreement, which is `cdecl_extents`' gate, not this one)
+ADDR 0x007fffc4 g_view=36,g_mapref=8,g_edit_cursor_origin=8,g_cursor_mapref=4   # EditCursor+0x1404: the build cursor's map reference, named by nine files as `Pos g_edit_cursor_origin`, by four as `Pos/MapRef g_mapref`, by objmap.c as the packed `int g_cursor_mapref` and by buildtick.c as the whole 36-byte `View g_view`. All views of one record; buildtick.c's is the widest and sizes it
+ADDR 0x00813a40 g_input=164,g_input_cfg=156,g_cursor=36,g_ui_flags=4,g_gfx_flags=4,g_state_813a40=4   # the input/cursor block: bighelp.c's 164-byte `GameInput g_input` is the record, input2.c's `InputConfig g_input_cfg` its configuration half, workers2.c's `CursorState g_cursor` its cursor half, and the three scalars are single fields. This is also the address g_ui_flags' NAME row resolves to, so the two rows move together
