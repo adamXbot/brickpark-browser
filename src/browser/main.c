@@ -445,6 +445,46 @@ extern unsigned char g_panel_state[];
 extern unsigned char g_submenus[];
 extern unsigned char g_scroll_flags[];
 
+/* PORT-P5 -- THE SIDE PANEL'S OWN LIST, which is what P4-2 is really about.
+ *
+ * PORT-P4 §3.4 enumerated the LEGOLAND panel by ARMING each icon slot and
+ * reading `g_edit_object` back, compared the missing classes' ObjDef flags
+ * (+0x1c) with the ones that were offered, found them equal, and stopped.
+ * The panel does not read that field.  `ObjectLinkedList` (fpui2.c:572,
+ * 0x00475720) rebuilds `g_object_list` from the LLIDB on every `TestMenu`,
+ * and its gate is four things this table did not expose:
+ *
+ *   (e->type_flags & 0x13) == 0x13   the LLIDB element: loaded | AVAILABLE
+ *                                    | type bit.  `EventTick_Give`
+ *                                    (eventtick.c:354) -> MarkElemAvailable
+ *                                    (0x00469900) is what sets the 0x2.
+ *   d->parent   (ObjDef +0x58)       == "BUILD MENU" for a TOP-LEVEL class;
+ *                                    anything else makes it a CHILD, and a
+ *                                    child gets an icon only when its parent
+ *                                    is expanded (MakeUpObjectList's
+ *                                    `prev->obj->elem->type_flags & 8`).
+ *   d->theme    (ObjDef +0x5c)       must equal this theme's element, or
+ *                                    "COMMON THEME" with g_menu_index 0.
+ *   d->submenu  (ObjDef +0x60)       must equal one of the four g_submenus.
+ *
+ * and the rebuild itself is gated: `g_menu_dirty` (set by MarkElemAvailable)
+ * is consumed in fpui3.c:694 by `UpdateMenu` (panelui.c:95), which does
+ * nothing at all when `g_menu_index == 5` (the panel is closed) -- and the
+ * flag is cleared either way.
+ *
+ *   g_object_list      0x00668e40  ObjNode*  {next, ObjDef*, keep}
+ *   g_object_list_mode 0x00668e34  int       0 = build list, 1 = research
+ *   g_menu_index       0x004baff8  int       0..3 theme, 5 = none/closed
+ *   g_list_menu        0x00668e64  char      the menu the list was built for
+ *   g_menu_dirty       0x0066871c  int       "rebuild the panel next tick"
+ *   g_menus            0x004bafa8  Menu[4]   20-byte theme element NAMES
+ *   g_submenus         0x004baffc  Menu[4]   SCENERY/FOOD/SHOPS/ATTRACTIONS
+ *   g_build_menu_name  the "BUILD MENU" key ObjectLinkedList looks up
+ *   g_common_theme_name the "COMMON THEME" key
+ *   g_side_icons       0x006687c8  Icon*     the panel's own icon chain */
+extern unsigned char g_menus[];
+extern unsigned char g_side_icons[];
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -590,7 +630,9 @@ extern unsigned char g_scroll_flags[];
     X(139, g_theme_new_count)           \
     X(140, g_panel_state)               \
     X(141, g_submenus)                  \
-    X(142, g_scroll_flags)
+    X(142, g_scroll_flags)                  \
+    X(143, g_menus)                  \
+    X(144, g_side_icons)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
