@@ -1273,6 +1273,86 @@
              }) };
   };
 
+  // PORT-M19: the BUILD PANEL's item list, read instead of clicked.
+  //
+  // PORT-P4 enumerated the LEGOLAND panel by arming every icon slot and reading
+  // the display name back out of `g_edit_object`. That is a measurement of what
+  // the panel WILL HAND OUT, which is the player's question but not the
+  // programmer's: between "the class is in the list" and "an icon for it is
+  // reachable" sit `MakeUpObjectList`'s row arithmetic and the scroll offset.
+  // `llPanel()` reads the list itself -- `g_object_list`, the 12-byte
+  // {next, ObjDef*, keep} nodes (fpui5.c:340) -- so the two readings can be
+  // compared, and it re-evaluates `ObjectLinkedList`'s own predicate per class
+  // so a class that is MISSING says which clause dropped it.
+  //
+  //   nodes[]    the list in list order: name, keep (1 top-level, 0 a child),
+  //              cost, and the three menu elements the builder tested
+  //   classes[]  every loaded ObjDef with its LLIDB element FLAGS decoded
+  //              (1 exists, 2 available, 4 class loaded, 8 expanded,
+  //              0x10 in a build menu, 0x10000 taken away, 0x20000 GIVEn)
+  //              and `wouldKeep` -- the builder's verdict, recomputed here
+  //   menu       g_menu_index / g_list_menu / g_list_scroll / g_menu_dirty
+  window.llPanel = function () {
+    var a = window.llAddrs();
+    if (!a) return null;
+    var I = HEAP32, U = HEAPU8;
+    function i32(p) { return I[p >> 2]; }
+    function elemName(e) { return e ? llStrAt(i32(e)) : null; }
+    /* GetObjCost (sweep3.c:261) is the SIGNED 16-bit field at ObjDef +0x26; the
+     * panel dims an icon whose cost exceeds the brick count and the list is
+     * kept sorted on it, cheapest first. */
+    function cost(d) { return (U[d + 0x26] | (U[d + 0x27] << 8)) << 16 >> 16; }
+    var mi = i32(a.g_menu_index);
+    /* The theme the builder compares against is g_menus[g_menu_index], and the
+     * four sub-menu names are g_submenus[0..3] -- 20-byte name slots. */
+    var sub = [0, 1, 2, 3].map(function (i) { return llStrAt(a.g_submenus + i * 20); });
+    var nodes = [], n = i32(a.g_object_list), guard = 0;
+    while (n && guard++ < 512) {
+      var d = i32(n + 0x04), el = d ? i32(d + 0xc4) : 0;
+      nodes.push({ node: n, def: d, keep: i32(n + 0x08),
+                   name: d ? llStrAt(i32(d + 0x78)) : null,
+                   elem: elemName(el), cost: d ? cost(d) : null,
+                   parent: d ? elemName(i32(d + 0x58)) : null,
+                   theme: d ? elemName(i32(d + 0x5c)) : null,
+                   submenu: d ? elemName(i32(d + 0x60)) : null });
+      n = i32(n);
+    }
+    var classes = [], d2 = i32(a.g_odf_head), g2 = 0;
+    var inList = {};
+    nodes.forEach(function (r) { inList[r.def] = r; });
+    while (d2 && g2++ < 4096) {
+      var e2 = i32(d2 + 0xc4), f = e2 ? i32(e2 + 0x08) : 0;
+      var par = elemName(i32(d2 + 0x58));
+      var sm = elemName(i32(d2 + 0x60));
+      classes.push({ def: d2, name: llStrAt(i32(d2 + 0x78)),
+                     elem: elemName(e2), elemAddr: e2,
+                     elemFlags: '0x' + (f >>> 0).toString(16),
+                     exists: !!(f & 1), available: !!(f & 2), loaded: !!(f & 4),
+                     expanded: !!(f & 8), inBuildMenu: !!(f & 0x10),
+                     takenAway: !!(f & 0x10000), given: !!(f & 0x20000),
+                     predicate: (f & 0x13) === 0x13,
+                     parent: par, theme: elemName(i32(d2 + 0x5c)),
+                     submenu: sm, submenuKnown: sub.indexOf(sm) >= 0,
+                     cost: cost(d2), inList: !!inList[d2] });
+      d2 = i32(d2);
+    }
+    return {
+      menu: { menuIndex: mi, listMenu: U[a.g_list_menu],
+              listMenuWord: i32(a.g_list_menu),
+              scroll: [0, 1, 2, 3, 4, 5, 6, 7].map(function (i) {
+                return i32(a.g_list_scroll + i * 4); }),
+              dirty: i32(a.g_menu_dirty), mode: i32(a.g_object_list_mode),
+              scrollFlags: i32(a.g_scroll_flags),
+              panelRebuild: i32(a.g_panel_state + 4),
+              newPerTheme: [U[a.g_theme_new_count], U[a.g_theme_new_count + 1],
+                            U[a.g_theme_new_count + 2], U[a.g_theme_new_count + 3]],
+              submenus: sub },
+      count: nodes.length, nodes: nodes,
+      missing: classes.filter(function (c) { return c.predicate && !c.inList; }),
+      classes: classes
+    };
+  };
+
   // PORT-M13: the LINK goal, measured instead of guessed.
   //
   // A player reporting "the game keeps telling me to link the ride and I HAVE
