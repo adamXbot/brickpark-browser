@@ -243,6 +243,37 @@ window.P5 = {
     return rows;
   },
 
+  /* ---- the THIRD modal, which PORT-P4 never met -------------------------
+   * PORT-P4 §3.1 (P4-8) warns that a "You have a new object" pop-up swallows
+   * every click and reads back as hit 0x1.  There is a second one, and it cost
+   * this lane four measurements: the TUTORIAL HELP NOTEPAD — a full-canvas
+   * page of text ("Earning and spending money") that a script MESSAGE step
+   * raises.  While it is up EVERY click is eaten, `llPark().screenMode` stays
+   * 7, `llStats().modal` reads "—", and hovering anything answers 0x100 — so
+   * a driver reads it as "the ERASER button does nothing" and "the shop
+   * cannot be selected", which is two defects that are not there.  It is
+   * dismissed by TURNING THE PAGE (the flashing arrow, game (458,447)) until
+   * the last page, and then the Thumbs Up at (577,419).
+   *
+   * The oracle is that a hover over two different map pixels answers with two
+   * different hit records; under any of the three modals it does not. */
+  modalUp: async function () {
+    await llMove(300, 120, 130); var a = llSel().hit;
+    await llMove(520, 300, 130); var b = llSel().hit;
+    return !(a.type !== b.type || a.obj !== b.obj || a.cell !== b.cell);
+  },
+  clearModals: async function () {
+    this.guard();
+    var tried = [];
+    for (var i = 0; i < 8; i++) {
+      if (!(await this.modalUp())) return { clear: true, tried: tried };
+      var pt = [[458, 447], [577, 419], [545, 235]][i % 3];
+      await llClick(pt[0], pt[1]); await P4.W(1300);
+      tried.push(pt);
+    }
+    return { clear: !(await this.modalUp()), tried: tried };
+  },
+
   note: function (tag, extra) {
     this.guard();
     var e = P4.note(tag);
