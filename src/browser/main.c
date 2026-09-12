@@ -614,6 +614,17 @@ EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_name(int which)
     }
 }
 
+/* PORT-B13: the address of the host shim's GDI/blit witness (ll_host.h's
+ * LLGdiStats), for the page's llGdi(). The object census is refreshed HERE and
+ * not in ll_host_gdi_stats, because the drawing paths call that one per
+ * FillRect and per Blt and must not walk a 4,096-entry table to do it. So the
+ * page reads the struct AFTER calling this, not before. */
+EMSCRIPTEN_KEEPALIVE unsigned int ll_gdi_stats(void)
+{
+    ll_host_gdi_census();
+    return (unsigned int)(size_t)ll_host_gdi_stats();
+}
+
 /* ---- PORT-B9/B5: profiles across a page reload ---------------------------
  *
  * PORT-A7 §8 wrote this patch and could not afford the link; this is it,

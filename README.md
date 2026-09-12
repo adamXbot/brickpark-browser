@@ -2076,6 +2076,86 @@ locked, the second candidate is the 63.3% WIP body's own portable arms
 scale that comes out zero rasterises to nothing, silently. Owner: a matching /
 render lane. Notes: `docs/lanes/scope-port-b12.md`.
 
+## A leaked GDI handle turns text boxes black (scope PORT-B13)
+
+PORT-P4 filed three text boxes — the money readout, the objective help bubble
+and the info pop-up's body — that **fill solid black and stay that way**, with
+the text printing legibly on top of the black, and suspected an ignored
+`SetBkMode(TRANSPARENT)`. It is not `SetBkMode` (`llGdi().setBkMode` is
+`{transparent: 4344, opaque: 0}` over a whole lesson — every call honoured) and
+it is not `ll_font.c`. **It is a leaked handle in `gdi32.c`.**
+
+The three boxes are one thing: cached-text sprites, painted by
+`DrawCachedTextSprite` (bubblecache.c:419). That routine fills the whole cell
+with `GetNearestColor(ink)`, prints the text in `paper` on top, and then
+**makes that same ink the sprite's COLOUR KEY** (line 459) — so the fill is
+meant to VANISH when `RenderSprite` blits the cell with `DDBLT_KEYSRC`. A black
+box under legible text is therefore not "an opaque background": it is the fill
+and the key being two different colours, and only two numbers tell you which of
+them moved.
+
+They moved because a memory DC is two things in this shim — an entry in the
+DC-attribute table and a slot in the OBJECT table that `obj_new` gave
+`CreateCompatibleDC` — and `DeleteDC` released only the first. Every *balanced*
+`CreateCompatibleDC`/`DeleteDC` pair the game makes still leaked a slot, and the
+game makes one per tooltip (`fpui2.c:1009/1016`, `bighelp.c:321/328`,
+`bubblecache.c:505/512`). With all 256 gone, `obj_new` returned a handle with no
+slot in it rather than failing, `obj_get` rejected it, `ll_host_brush_colour`
+fell back to BLACK, and the fill went down as `0x0000` while the key stayed
+`0x001f`. The key matched nothing; the cell blitted opaque.
+
+Measured in the lesson-5 park, one build, identical script either side (the
+"before" column is the same tree with one `#ifdef` backing out the slot
+release). Each hover is one tooltip measure:
+
+| after 298 HUD hovers | before | after |
+| --- | --- | --- |
+| `llGdi().objs.byClass.dc` | **255** (table full) | **0** |
+| `objs.exhausted` / `fill.noBrush` | 1 / 1, rising | **0 / 0** |
+| money readout, x 220..430 y 8..30, PURE black | **51.7%** | **0.0%** |
+| help bubble, x 420..630 y 318..398, PURE black | **86.6%** | **2.2%** (its ink) |
+| panel caption box, x 3..208 y 357..383, PURE black | **70.8%** | **4.4%** (its ink) |
+| `fillLast.colorref` / `ck.lastLow` | `0x0` / `0x1f` | `0xff0000` / `0x1f` |
+
+The last row is the finding in two numbers: the fill and the colour key have to
+be the same colour.
+
+`DeleteDC` now frees the slot, and the object table **grows** — 256, doubling,
+capped at 4095 because the handle format (`0x4c47 | class << 12 | slot`) has a
+12-bit slot field — with a trace if it is ever genuinely exhausted. The growth
+is not cover for the bug above; it is cover for the game's OWN leak, which the
+recovery already records at misc3.c:1054: `MeasurePopUpTitle` and
+`MeasurePopUpBody` never `DeleteDC` theirs, so "every pop-up resize leaks a DC".
+Windows absorbs that with ~10,000 handles per process; 4095 slots is ~2,000
+pop-up opens, which no session reaches. **Nothing in `LEGOLAND/*.c` changed.**
+
+New page hook, reads only: **`llGdi()`** — the object census by class with its
+high-water mark and exhaustion count, `SetBkMode` by mode, the last `FillRect`
+(brush handle, COLORREF, the 565 pixel written, rect, surface) and the colour
+key and keyed-blit counters beside it. It exists because a black box on the
+canvas is two different bugs that look identical; `fillLast.c565` against
+`ck.lastLow` is what separates them.
+
+**The page stops lying to the driver, too.** `max-width: 100%` let the flex line
+squash the canvas, and `MouseEvent.clientX` is a `long` — so `llPoint`'s
+fractions were truncated and several game columns arrived as one. Measured in a
+312 px pane (scale 0.272): game x 320, 321, 322 and 323 all reached the game as
+**320**, and at PORT-P4's collapsed rect (width 2) all 640 columns do. The
+canvas now keeps its intrinsic size (`flex: none`, `min-width: min-content`, so
+it follows a mode change instead of hard-coding 640x480) and wears an OUTLINE
+rather than a border, so `getBoundingClientRect()` is exactly 640x480 and
+`llPoint` is the identity at every pane size; a narrow pane scrolls. `llPoint`
+throws on a canvas below half size rather than clicking one spot silently.
+
+And `llSleep` — exported now — yields through the **keep-awake MessageChannel
+hop** while that hop is engaged, instead of setting a real timer a hidden tab
+clamps to ~1 Hz. `?awake=1` was only ever waking the GAME. With the clamp
+installed explicitly, one `llClick` goes **3024 ms -> 818 ms** and one `llType`
+of 20 characters **48101 ms -> 5645 ms**, with the game at 35.7 fps throughout;
+unclamped it costs nothing (5605 vs 5641 ms). Replay
+`portable/src/browser/replays/b13-01-the-gdi-object-table-leaks-memory-dcs.js`,
+notes `docs/lanes/scope-port-b13.md`.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and

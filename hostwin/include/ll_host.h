@@ -562,6 +562,57 @@ unsigned short ll_host_dc_fg(void* hdc);
 unsigned short ll_host_dc_bg(void* hdc);
 int  ll_host_dc_opaque(void* hdc);
 unsigned long  ll_host_brush_colour(void* brush);
+
+/* ---- PORT-B13: the GDI/blit witness the page reads as llGdi() -------------
+ *
+ * P4-3 (three text boxes fill solid black) is a question about FOUR numbers
+ * that no screenshot can answer: what colour the game asked the brush for, what
+ * 565 value the fill actually wrote, what colour key the sprite's surface
+ * carries, and whether the blit that put it on screen asked for the key at all.
+ * The game's cached-text sprites (bubblecache.c DrawCachedTextSprite) fill the
+ * whole cell with GetNearestColor(ink) and then SET THAT COLOUR AS THE SPRITE'S
+ * COLOUR KEY, so the fill is MEANT to be invisible -- which means a black box
+ * is either a fill in the wrong colour or a key that missed it, and the two
+ * look identical on the canvas. One struct, written by gdi32.c, user32.c and
+ * ddraw.c; `ll_host_gdi_stats()` hands the page its address. Reads only. */
+typedef struct LLGdiStats {
+    int  words;                    /* sizeof(LLGdiStats)/4 -- the page's check
+                                    * that it is decoding the layout it knows */
+    int  objs_live;                /* GDI objects in the table right now */
+    int  objs_high;                /* high-water mark of that */
+    int  objs_exhausted;           /* obj_new calls with NO free slot left */
+    int  objs_by_class[8];         /* live objects per LL_OBJ_* class */
+    int  dc_evictions;             /* a DC slot reused for a different HDC */
+    int  bk_transparent;           /* SetBkMode(TRANSPARENT) calls */
+    int  bk_opaque;                /* SetBkMode(OPAQUE) calls */
+    int  textout_calls;
+    int  drawtext_calls;
+    int  fill_calls;               /* FillRect entered */
+    int  fill_no_target;           /* ...over a DC with no pixels behind it */
+    int  fill_no_brush;            /* ...with a brush that did NOT resolve:
+                                    * ll_host_brush_colour fell back to BLACK */
+    unsigned int  fill_last_brush;       /* the handle as the game passed it */
+    unsigned long fill_last_colorref;    /* what it resolved to, 0x00bbggrr */
+    int  fill_last_565;                  /* the pixel actually written */
+    int  fill_last_rect[4];
+    int  fill_last_surf_w, fill_last_surf_h;
+    int  ck_sets;                  /* IDirectDrawSurface::SetColorKey calls */
+    unsigned long ck_last_low;     /* the key the last one set */
+    int  blt_keysrc;               /* Blt calls that asked for DDBLT_KEYSRC */
+    int  blt_keysrc_unset;         /* ...on a source with NO key set: opaque */
+    int  blt_plain;                /* Blt calls that did not ask for the key */
+    int  objs_capacity;            /* slots the table has grown to */
+} LLGdiStats;
+
+/* The live counters. Never null, and cheap: the drawing paths call it once per
+ * FillRect/DrawTextA/Blt, so it does NOT walk the object table. */
+LLGdiStats* ll_host_gdi_stats(void);
+
+/* Refresh objs_live / objs_high / objs_by_class / objs_capacity by walking the
+ * table. The page calls this (through main.c's ll_gdi_stats) before reading;
+ * nothing on a drawing path does. */
+void ll_host_gdi_census(void);
+
 int   AddFontResourceA(const char* file);
 int   RemoveFontResourceA(const char* file);
 void* CreateFontIndirectA(const void* logfont);

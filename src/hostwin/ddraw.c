@@ -316,6 +316,18 @@ static long ll_surf_Blt(LLSurface* dst, LLRect* dstrect, LLSurface* src,
     dw = d.right - d.left;  dh = d.bottom - d.top;
     sw = s.right - s.left;  sh = s.bottom - s.top;
 
+    /* PORT-B13: count the key decision. RenderSprite (gpu.c:0x00488a10) asks
+     * for DDBLT_KEYSRC on a sprite with flag 0x40 -- every cached-text sprite
+     * has it -- so a KEYSRC blit whose SOURCE carries no key is an OPAQUE box
+     * where the game wanted a transparent one, which is P4-3's shape exactly. */
+    { LLGdiStats* g = ll_host_gdi_stats();
+      if (flags & DDBLT_KEYSRC) {
+          g->blt_keysrc++;
+          if (!src->ck_src_set) g->blt_keysrc_unset++;
+      } else {
+          g->blt_plain++;
+      } }
+
     if (dw == sw && dh == sh) {
         if (flags & DDBLT_KEYSRC && src->ck_src_set) {
             for (y = 0; y < dh; y++) {
@@ -503,6 +515,12 @@ static long ll_surf_SetColorKey(LLSurface* s, unsigned long flags, LLColorKey* c
         if (s->ck_src_high < s->ck_src_low)
             s->ck_src_high = s->ck_src_low;
         s->ck_src_set = 1;
+        /* PORT-B13: the other half of P4-3's evidence. A cached-text sprite's
+         * fill is meant to VANISH into this key (bubblecache.c:459), so the key
+         * the game sets and the pixel FillRect wrote have to be the same 16-bit
+         * value -- llGdi() puts them side by side. */
+        { LLGdiStats* g = ll_host_gdi_stats();
+          g->ck_sets++; g->ck_last_low = s->ck_src_low; }
     }
     return DD_OK;
 }
