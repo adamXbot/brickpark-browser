@@ -106,6 +106,42 @@
     verdict: 'thirty blokes are worth nothing: every diff is the scenery'
   });
 
+  // ---- 5. and the geometry consumer is never reached ---------------------
+  // Draw3DPersonModel copies EVERY vertex of every person it draws into two
+  // plain .bss scratch arrays -- g_xverts (x86 0x00643ee8, 3 ints per vertex)
+  // and g_vert_key (0x00641004) -- and rewrites them per person, per frame.
+  // So diff the whole static-data region and look for that churn. The highest
+  // address any recovered global resolves to is ~3.05 MB, so 0..6 MB covers
+  // all of it; above ~11 MB is the allocator's.
+  const scan = (span) => {
+    const HI = span >> 2, A = I.slice(0, HI);
+    return new Promise((res) => setTimeout(() => {
+      const B = I.slice(0, HI); const runs = []; let s = -1, ch = 0;
+      for (let w = 0; w < A.length; w++) {
+        const c = A[w] !== B[w]; if (c) ch++;
+        if (c && s < 0) s = w;
+        else if (!c && s >= 0) { if (w - s >= 16) runs.push([s * 4, w - s]); s = -1; }
+      }
+      res({ changedWords: ch, runs });
+    }, 180));
+  };
+  const withBlokes = await scan(6000000);
+  hide(); await W(300);
+  const without = await scan(3300000);
+  shownAgain();
+  log.push({ staticDataChurn_withBlokes: withBlokes,     // ~739 words, runs at 2413xxx only
+             staticDataChurn_blokesHidden: without,      // the 2413xxx runs vanish
+             sampleOfTheOneRun: withBlokes.runs.length
+               ? Array.from(I.slice(withBlokes.runs[0][0] >> 2,
+                                    (withBlokes.runs[0][0] >> 2) + 12)) : null,
+             //  6979, 6966, 10990, 6966 ... = 8.8 walking positions
+             //  (printlist.c:455 does `b->fx >> 8` for the cell), i.e. the
+             //  bloke AI's own state. NO array anywhere in static data
+             //  receives per-vertex data.
+             verdict: 'Render3DPerson is entered (step 2) and its geometry '
+                    + 'consumer is never reached: the bail is at one of the '
+                    + 'two early-outs in rin.c:546-554' });
+
   return log;
 })();
 
@@ -135,14 +171,36 @@
 //
 // WHERE IT DIES
 //
-// Inside `Draw3DPersonModel` (person3d.c:1092), the 1023-instruction WIP body
-// at 63.3%, or one of the tri3d.c fillers it calls. Everything upstream of it
-// is proved live by step 2, and it is the only thing between that and pixels.
-// Its portable arms are the place to look first: FMUL / FMULA / FMULP / TOFIX
-// and the SHADE macro (person3d.c:529-596) are hand-written replacements for
-// the original's inline asm, and TOFIX is what turns the 0.447 isometric
-// foreshortening into 16.16 — a model whose scale comes out 0 rasterises to
-// nothing, silently, which is exactly the symptom.
+// Step 2 says Render3DPerson is ENTERED; step 5 says its geometry consumer is
+// NEVER REACHED. So the bail is at one of the two early-outs between them
+// (rin.c:546-554), and the first is already cleared:
+//
+//     r = g_clip_rect; r.right--; r.bottom--;
+//     if (!IntersectRect(&r, &v, &r)) return;   /* shim side is alias-safe,
+//                                                  and v is on-screen for 2-3 */
+//     OffsetRect(&r, -p->sx, -p->sy);
+//     if (!GetVideoSurface(&vs)) return;        /* <-- the candidate */
+//
+// GetVideoSurface (surface.c:310) returns 0 whenever g_video_locked == 0 — the
+// sources call it "the can I draw? test" in as many words. So test FIRST that
+// the video surface is not locked while DrawAndClearPrintList walks the list:
+// every 3D person would silently return while every SPRITE still drew, because
+// sprites go through PrintSprite -> RenderSprite, which pushes and pops its own
+// lock around each blit. That is exactly the symptom — a fully drawn park with
+// no people in it, no trap, healthy records.
+//
+// g_video_locked is a GAME global and cannot be sampled mid-frame from the
+// console (it reads 0 between frames, which says nothing). It is already in
+// main.c's table as llAddrs().g_video_locked; one host-side trace, or one read
+// from inside the walk, settles it in ten minutes.
+//
+// If the surface IS locked, the second candidate is Draw3DPersonModel itself
+// (person3d.c:1092, the 1023-instruction WIP body at 63.3%) bailing before its
+// vertex copy, and its portable arms are the place to look: FMUL / FMULA /
+// FMULP / TOFIX and the SHADE macro (person3d.c:529-596) are hand-written
+// replacements for the original's inline asm, and TOFIX is what turns the 0.447
+// isometric foreshortening into 16.16 — a model whose scale comes out 0
+// rasterises to nothing, silently.
 //
 // STILL OWED (this lane ran out of clock): the same probe on the TUTORIAL park,
 // where PORT-M10's merge note says blokes walk the paths. If they do not draw

@@ -1945,12 +1945,24 @@ shim-side on the path checks out — `user32.c`'s `IntersectRect` is alias-safe,
 which rin.c:549 depends on, and the locked surface is the one every visible
 sprite is blitted into.
 
-That leaves `Draw3DPersonModel` (person3d.c:1092), the 63.3% WIP body, and its
-portable arms are the place to look: `FMUL`/`FMULA`/`FMULP`/`TOFIX`/`SHADE`
-(person3d.c:529-596) are hand-written replacements for the original's inline
-asm, and a model whose 16.16 scale comes out zero rasterises to nothing,
-silently. Owner: a matching / render lane. Notes:
-`docs/lanes/scope-port-b12.md`.
+And `Draw3DPersonModel` never reaches its vertex loops. It copies every vertex
+of every person it draws into two plain .bss scratch arrays (`g_xverts`,
+`g_vert_key`), so diff the whole static-data region between two frames: **739
+changed words in 0..6 MB**, and the only contiguous run is the bloke AI's own
+8.8 walking positions — which vanishes when the chain is hidden. No array
+anywhere in static data receives per-vertex data.
+
+So the bail is at one of `Render3DPerson`'s two early-outs (rin.c:546-554), and
+the first is cleared. The candidate is `GetVideoSurface`, which
+**returns 0 whenever `g_video_locked == 0`** — the sources call it "the can I
+draw? test". Test first that the video surface is not locked while
+`DrawAndClearPrintList` walks the list: every 3D person would silently return
+while every sprite still drew, because sprites go through `PrintSprite` ->
+`RenderSprite`, which pushes and pops its own lock around each blit. If it *is*
+locked, the second candidate is the 63.3% WIP body's own portable arms
+(`FMUL`/`FMULA`/`FMULP`/`TOFIX`/`SHADE`, person3d.c:529-596), where a 16.16
+scale that comes out zero rasterises to nothing, silently. Owner: a matching /
+render lane. Notes: `docs/lanes/scope-port-b12.md`.
 
 ## Next
 
