@@ -485,6 +485,19 @@ extern unsigned char g_scroll_flags[];
 extern unsigned char g_menus[];
 extern unsigned char g_side_icons[];
 
+/* PORT-P7/PORT-P8: the ride and help-queue LIST HEADS the quirk A/Bs read.
+ * Q9 counts g_object_help's chain after a burst of placements; Q11 walks the
+ * Jungle Cruise's boats and stations to see whether each boat's key still
+ * names its own station. The Boating School's and the driving school's heads
+ * come with them because the same walks want them. */
+extern unsigned char g_object_help[];       /* 0x00668724  ScriptEvent* */
+extern unsigned char g_jc_boats[];          /* 0x00616164  JcBoat* */
+extern unsigned char g_jc_stations[];       /* 0x00629c3c  JcStation* */
+extern unsigned char g_jc_water[];          /* 0x0062fd2c  JcWater* */
+extern unsigned char g_bs_stations[];       /* 0x004cc074  BsStation* */
+extern unsigned char g_bs_water[];          /* 0x004d823c  BsWater* */
+extern unsigned char g_road_list[];         /* 0x004cbeac  RoadRec* */
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -632,7 +645,14 @@ extern unsigned char g_side_icons[];
     X(141, g_submenus)                  \
     X(142, g_scroll_flags)                  \
     X(143, g_menus)                  \
-    X(144, g_side_icons)
+    X(144, g_side_icons)                \
+    X(145, g_object_help)               \
+    X(146, g_jc_boats)                  \
+    X(147, g_jc_stations)               \
+    X(148, g_jc_water)                  \
+    X(149, g_bs_stations)               \
+    X(150, g_bs_water)                  \
+    X(151, g_road_list)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
