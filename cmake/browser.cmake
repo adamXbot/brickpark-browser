@@ -197,6 +197,59 @@ if(LL_PRELOAD_SPEECH)
   list(APPEND LL_PRELOAD "SHELL:--preload-file ${LL_GAMEDATA}/disc/Speech@/gamedata/speech")
 endif()
 
+# PARK-2: the advisor's six clips, decoded at BUILD time into the frames
+# avifil32.c serves. InterfaceBG.lls leaves the in-game advisor window at game
+# (522, 378) transparent and only an advisor frame ever repaints it, so with no
+# frames the cursor and every bubble drawn over that window stay on screen
+# (docs/lanes/scope-port-b11.md §4). The clips are Indeo 5, which no browser
+# decodes; ffmpeg's indeo5 decoder is the only new dependency and
+# portable/tools/advisor_frames.py has the file format. Without ffmpeg or
+# gamedata/ the page builds as before and the window is a hole again.
+# The six names are advisor.c's kAdBlink..kAdWobble, the only advisor clips the
+# exe names; gamedata/main spells some in lower case, so the match is by
+# lower-cased stem.
+set(LL_ADVISOR_CLIPS AD_Blink AD_LR AD_Phone AD_PhoneGesture AD_PhoneDown AD_Wobble)
+set(LL_ADVISOR_DIR "${CMAKE_BINARY_DIR}/advisor")
+set(LL_ADVISOR_FRAMES)
+find_program(LL_FFMPEG ffmpeg)
+if(LL_FFMPEG AND EXISTS "${LL_GAMEDATA}/main")
+  file(GLOB _ll_avis "${LL_GAMEDATA}/main/*.avi" "${LL_GAMEDATA}/main/*.AVI")
+  set(_ll_advisor_avis)
+  foreach(_clip ${LL_ADVISOR_CLIPS})
+    string(TOLOWER "${_clip}" _want)
+    set(_found)
+    foreach(_avi ${_ll_avis})
+      get_filename_component(_stem "${_avi}" NAME_WE)
+      string(TOLOWER "${_stem}" _stem)
+      if(_stem STREQUAL _want)
+        set(_found "${_avi}")
+      endif()
+    endforeach()
+    if(_found)
+      list(APPEND _ll_advisor_avis "${_found}")
+      list(APPEND LL_ADVISOR_FRAMES "${LL_ADVISOR_DIR}/${_want}.llv")
+    else()
+      message(STATUS "advisor frames: ${_clip}.avi is not in ${LL_GAMEDATA}/main")
+    endif()
+  endforeach()
+endif()
+if(LL_ADVISOR_FRAMES)
+  add_custom_command(
+    OUTPUT ${LL_ADVISOR_FRAMES}
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/advisor_frames.py"
+            --ffmpeg "${LL_FFMPEG}" --out "${LL_ADVISOR_DIR}" ${_ll_advisor_avis}
+    DEPENDS ${_ll_advisor_avis} "${CMAKE_CURRENT_SOURCE_DIR}/tools/advisor_frames.py"
+    COMMENT "advisor_frames.py: the advisor's Indeo 5 clips as 16-bpp frames (PARK-2)"
+    VERBATIM)
+  add_custom_target(legoland_advisor_frames DEPENDS ${LL_ADVISOR_FRAMES})
+  list(APPEND LL_PRELOAD "SHELL:--preload-file ${LL_ADVISOR_DIR}@/gamedata/advisor")
+else()
+  message(STATUS "advisor frames: not built (ffmpeg: ${LL_FFMPEG}); the in-game "
+                 "advisor window will not repaint (PARK-2)")
+endif()
+# file_packager packs the frames into legoland.data AT LINK: they are link inputs.
+set(LL_BROWSER_LINK_DEPENDS ${LL_WASM_LINK_DEPENDS} ${LL_ADVISOR_FRAMES})
+
 add_executable(legoland_browser EXCLUDE_FROM_ALL
   "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/main.c")
 target_link_libraries(legoland_browser PRIVATE
@@ -222,7 +275,10 @@ target_link_options(legoland_browser PRIVATE
   -lidbfs.js)
 set_target_properties(legoland_browser PROPERTIES
   SUFFIX ".html" OUTPUT_NAME "legoland"
-  LINK_DEPENDS "${LL_WASM_LINK_DEPENDS}")
+  LINK_DEPENDS "${LL_BROWSER_LINK_DEPENDS}")
+if(TARGET legoland_advisor_frames)
+  add_dependencies(legoland_browser legoland_advisor_frames)
+endif()
 
 # ---- legoland_browser_named: the same page, with a name section -------------
 #
@@ -256,4 +312,7 @@ target_link_options(legoland_browser_named PRIVATE
   -lidbfs.js)
 set_target_properties(legoland_browser_named PROPERTIES
   SUFFIX ".html" OUTPUT_NAME "legoland_dbg"
-  LINK_DEPENDS "${LL_WASM_LINK_DEPENDS}")
+  LINK_DEPENDS "${LL_BROWSER_LINK_DEPENDS}")
+if(TARGET legoland_advisor_frames)
+  add_dependencies(legoland_browser_named legoland_advisor_frames)
+endif()

@@ -107,7 +107,9 @@ set(LL_TEST_SOURCES
   "${LL_TESTS_DIR}/test_tri_raster.c"
   "${LL_TESTS_DIR}/test_zbuf_blit.c"
   # PORT-M5 (docs/lanes/scope-port-m5.md): the last three asm span fillers.
-  "${LL_TESTS_DIR}/test_coaster_span.c")
+  "${LL_TESTS_DIR}/test_coaster_span.c"
+  # PARK-2: the AVIFile shim serving the advisor's decoded frames.
+  "${LL_TESTS_DIR}/test_avifile.c")
 
 if(LL_HAVE_GAMEDATA)
   ll_oracle(tilegeom)
@@ -261,6 +263,13 @@ ll_add_test(zbuf_blit     "${CMAKE_BINARY_DIR}"       FALSE)
 
 # PORT-M5: synthetic key/edge lists into local row buffers, both toolchains.
 ll_add_test(coaster_span  "${CMAKE_BINARY_DIR}"       FALSE)
+
+# PARK-2: avifil32.c's advisor clips, over synthetic frames files the test
+# writes into its OWN directory -- never the build's advisor/, which
+# file_packager packs into legoland.data. wasm32 only: only that driver links
+# the host shim.
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test-avifile")
+ll_add_test(avifile       "${CMAKE_BINARY_DIR}/test-avifile" TRUE)
 
 # ---- PORT-M3: compile-time callback type check (the check IS the compile) --
 # Every callback slot's call-site pointer type against every body registered

@@ -124,6 +124,10 @@ static const struct entry entries[] = {
     { "coaster_span",  test_coaster_span,
       "Span_FillShade/Span_FillShadeZ/TrackShade_FillPoly: the carry-chained "
       "shade, the packed z and the texel address" },
+    /* PARK-2: the AVIFile shim over synthetic advisor frames files the test
+     * writes itself. wasm32 only: the native driver links no host shim. */
+    { "avifile",       test_avifile,
+      "AVIFileOpenA..AVIStreamGetFrame over advisor/*.llv: layouts, DIB, handles" },
 };
 
 int main(int argc, char** argv)

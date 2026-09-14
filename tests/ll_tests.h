@@ -100,5 +100,6 @@ void test_zbuf_blit(void);     /* ZBufferHelper and BltAdvisor */
 #endif
 /* ---- scope PORT-M5: the last three inline-asm span fillers --------------- */
 void test_coaster_span(void);  /* Span_FillShade/_FillShadeZ, TrackShade_FillPoly */
+void test_avifile(void);       /* PARK-2: avifil32.c serving the advisor frames */
 
 #endif /* LL_TESTS_H */

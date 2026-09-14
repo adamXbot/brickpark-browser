@@ -1722,6 +1722,8 @@ this port because `avifil32.c` refuses the advisor AVI. The same stub is why the
 bubble was raised from a panel pixel at all (icon ownership is established by the
 blit, and `BltAdvisor` never runs). So PARK-2 re-files as a PORT-B item, a
 sibling of PARK-4, with the cost written up in `docs/lanes/scope-port-b11.md` §4.
+(Fixed 2026-09-14 by decoding the advisor clips at build time: see "The advisor
+window repaints" below.)
 
 ## Gates for the two classes no gate could see (scope PORT-A9)
 
@@ -2225,6 +2227,54 @@ shorter, previously unknown, and harmless only because that body is empty) and
 `DebugPrint` in `logflume2.c`/`logflume8.c` (which PORT-A4's forwarder does bridge
 correctly; fixed so the gate needs no exceptions). Notes
 `docs/lanes/scope-port-a11.md`.
+
+## The advisor window repaints: the cursor and bubble trail is gone (PARK-2)
+
+Reported 2026-09-14: in the bottom-right corner of the in-game panel the red "?"
+cursor and the bubble help "don't disappear" and pile up into a trail. That is
+PARK-2, traced by PORT-B11 (`docs/lanes/scope-port-b11.md` §4) and left open for
+want of anything to draw. `InterfaceBG.lls` is transparent over the 112x96
+advisor window at game (522, 378), and the only code that paints it is
+`RenderAdvisorIcon` (screens3.c) -- `ScriptEnd.lls` while a script runs, an
+advisor AVI frame otherwise, inside `if (g_vidanim)`, which was dead here because
+`avifil32.c` refused every AVI. The same dead branch holds the window's
+hand-written hit test, so the game read those pixels as a map square outside the
+park: hit type `0x10a`, which raises the "Outside your park" bubble and sets
+pointer 8, `question it2.lls` -- the red "?". One cause, both halves of the trail.
+
+ffmpeg's `indeo5` decoder reads all six advisor clips the exe names (`AD_Blink`,
+`AD_LR`, `AD_Phone`, `AD_PhoneGesture`, `AD_PhoneDown`, `AD_Wobble`; 112x96, 64
+frames at 30/1), so nothing is invented:
+
+* `portable/tools/advisor_frames.py` decodes them at build time into
+  `advisor/<stem>.llv` -- a 20-byte header, then bottom-up X1R5G5B5 frames, the
+  DIB Video for Windows returns for `InitAdvisorBmi`'s 112x96x16 BI_RGB request.
+  `browser.cmake` runs it when ffmpeg and `gamedata/main` are present and
+  preloads the result at `/gamedata/advisor` (+8.26 MB of `legoland.data`).
+  Without ffmpeg the page builds as before and the window is a hole again.
+* `avifil32.c` opens a clip that has frames and answers `AVIFileInfoA`,
+  `AVIFileGetStream`, `AVIStreamInfoA`, `AVIStreamGetFrameOpen` and
+  `AVIStreamGetFrame` in the ILP32 layouts advisor.c reads. The five FMV files
+  have no frames and still fail the open, exactly as PORT-B6 designed. Every
+  handle is found in the shim's own registry before it is followed.
+* No `LEGOLAND/*.c` changed: the pose machine, the clip-end callback,
+  `BltAdvisor` and the hit test run as shipped, so the byte gates cannot have
+  moved, and an `LL_FAITHFUL` build gets the window too (a host capability, not a
+  quirk fix).
+
+Measured in a tab on the P1 free-play walk, the cursor dragged through the window
+and away:
+
+| | before | after |
+| --- | --- | --- |
+| advisor window `(523,380)-(633,473)` once the cursor leaves | residue: `0x282bf3bc` -> `0x1c89b7cb`, still there 4 s later | 150 of 150 samples are frames of the clean 64-frame loop |
+| `g_hit_info` with the cursor over the window | `0x10a`: map, outside the park (red "?", bubble) | `0x2`: the advisor icon owns it |
+| page | 35.7 fps, no traps | 35.7 fps, no traps |
+
+`legoland_tests avifile` (wasm32 ctest, asset-free, so CI runs it) pins the
+layouts, the DIB, the open rules and the handle registry against synthetic frames
+files it writes into `build-wasm/test-avifile`. Serve a rebuilt page on a new
+port or cache-bust it: the browser keeps the previous `legoland.data`.
 
 ## Next
 
