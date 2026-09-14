@@ -556,6 +556,8 @@ extern int PU_GardenerInput(void*, void*, void*, void*);
 extern int PU_MechInput(void*, void*, void*, void*);
 extern int PU_NextInput(void*, void*, void*, void*);
 extern int PU_PrevInput(void*, void*, void*, void*);
+extern int PU_ToolA(void*, void*, void*, void*);
+extern int PU_ToolB(void*, void*, void*, void*);
 extern int PathIconInput(void*, void*, void*, void*);
 extern int ProfileAcceptInput(void*, void*, void*, void*);
 extern int ProfileCloseInput(void*, void*, void*, void*);
@@ -629,6 +631,8 @@ ll_fn_input const ll_tab_input[] = {
     PU_MechInput,
     PU_NextInput,
     PU_PrevInput,
+    PU_ToolA,
+    PU_ToolB,
     PathIconInput,
     ProfileAcceptInput,
     ProfileCloseInput,
@@ -668,10 +672,10 @@ ll_fn_input const ll_tab_input[] = {
     WesternThemeInput,
 };
 /* not named above, and why:
- *   close_fn  [a stale name no game TU defines: gen_link.py forwards it, and takes the forwarder's signature from the registering file's declaration]
+ *   close_fn  [not a function: popup2.c InitPopUpTools' parameter. bighelp.c InitPopUpInfo passes PU_ToolA through it (and PU_ToolB through ok_fn), both named above since they trapped on the pop-up's delete strip]
  *   g_group_cb2  [a stale name no game TU defines: gen_link.py forwards it, and takes the forwarder's signature from the registering file's declaration]
  *   g_icon_handler1  [a stale name no game TU defines: gen_link.py forwards it, and takes the forwarder's signature from the registering file's declaration]
- *   ok_fn  [a stale name no game TU defines: gen_link.py forwards it, and takes the forwarder's signature from the registering file's declaration]
+ *   ok_fn  [not a function: InitPopUpTools' other parameter, carrying PU_ToolB (see close_fn)]
  */
 
 /* ---- render
