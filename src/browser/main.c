@@ -498,6 +498,18 @@ extern unsigned char g_bs_stations[];       /* 0x004cc074  BsStation* */
 extern unsigned char g_bs_water[];          /* 0x004d823c  BsWater* */
 extern unsigned char g_road_list[];         /* 0x004cbeac  RoadRec* */
 
+/* Integrator, 2026-09-14 -- the game-level A/Bs (docs/QUIRKS.md Q7/Q11/Q14):
+ * the coaster support shadow's twelve world vertices (DrawSupportShadow,
+ * coaster4.c, writes g_shadow_v from g_shadow_src plus the snapped support
+ * position), the level record whose +0x28 the :ILIKETOTRAVEL cheat writes,
+ * the pending-state word it sets to 2, and the current profile whose +0x34
+ * holds the fifteen level-done bytes. */
+extern unsigned char g_shadow_v[];          /* 0x006137e8  Vec3f[12] */
+extern unsigned char g_shadow_src[];        /* 0x00612210  Vec3f[12] */
+extern unsigned char g_level_rec[];         /* 0x004bcbf4  GameLevel* (== g_level_map) */
+extern unsigned char g_pending_state[];     /* 0x00832ba0  int */
+extern unsigned char g_cur_profile[];       /* 0x0080ffa0  CurProfile, level_done at +0x34 */
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -652,7 +664,12 @@ extern unsigned char g_road_list[];         /* 0x004cbeac  RoadRec* */
     X(148, g_jc_water)                  \
     X(149, g_bs_stations)               \
     X(150, g_bs_water)                  \
-    X(151, g_road_list)
+    X(151, g_road_list)                 \
+    X(152, g_shadow_v)                  \
+    X(153, g_shadow_src)                \
+    X(154, g_level_rec)                 \
+    X(155, g_pending_state)             \
+    X(156, g_cur_profile)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
