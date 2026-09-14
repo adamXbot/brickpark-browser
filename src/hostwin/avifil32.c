@@ -71,8 +71,10 @@
  *     BI_RGB): a BITMAPINFOHEADER, then X1R5G5B5 rows bottom-up at +0x28, which
  *     is what BltAdvisor (blitmisc.c) reads, widening 555 to 565 itself.
  *
- *     Without the frames (no ffmpeg at build time, the node targets, CI) an
- *     advisor clip fails like the FMV and the window is a hole again.
+ *     Without a frames file (no ffmpeg at build time, the node targets, CI,
+ *     and the player page's disc import) the six advisor clips still open, as
+ *     64 frames of the clips' own dark-green backdrop: the window is a plain
+ *     panel instead of a hole (llv_placeholder).
  *
  * NOTHING UNKNOWN IS EVER FOLLOWED.  A PAVIFILE, PAVISTREAM or PGETFRAME is
  * dereferenced only after a walk of this file's own registry has found it,
@@ -282,11 +284,63 @@ static int llv_stem(const char* name, char* out, size_t cap)
 static uint32_t llv_u16(const unsigned char* p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8; }
 static uint32_t llv_u32(const unsigned char* p) { return llv_u16(p) | llv_u16(p + 2) << 16; }
 
+/* The six clips advisor.c names (kAdBlink .. kAdWobble). */
+static const char* const k_advisor_stems[] = {
+    "ad_blink", "ad_lr", "ad_phone", "ad_phonegesture", "ad_phonedown", "ad_wobble"
+};
+
+/* An ADVISOR clip with no frames file at all -- the player page's disc import
+ * (portable/src/web) has no ffmpeg to decode the Indeo 5 AVIs with -- still
+ * opens, because a failed open is PARK-2 again: nothing repaints the in-game
+ * panel's advisor window and the cursor and bubble help smear a trail across
+ * it. The clip is 64 frames at 30/1 like the real ones, so the pose machine
+ * keeps its timing, of X1R5G5B5 0x0081: the dark green (#002008) that fills
+ * the borders of all six decoded clips. The window shows a plain panel. A file
+ * that exists but is bad still fails, and so does every name not in the list,
+ * the FMV included. */
+static LLVClip* llv_placeholder(const char* stem)
+{
+    const size_t count = sizeof k_advisor_stems / sizeof k_advisor_stems[0];
+    size_t       i, n, bytes;
+    LLVClip*     c;
+
+    for (i = 0; i < count; i++)
+        if (strcmp(stem, k_advisor_stems[i]) == 0)
+            break;
+    if (i == count)
+        return 0;
+    c = (LLVClip*)calloc(1, sizeof *c);
+    if (!c)
+        return 0;
+    snprintf(c->stem, sizeof c->stem, "%s", stem);
+    c->width = 112;
+    c->height = 96;
+    c->frames = 64;
+    c->rate = 30;
+    c->scale = 1;
+    bytes = llv_frame_bytes(c) * c->frames;
+    c->pixels = (unsigned char*)malloc(bytes);
+    if (!c->pixels) {
+        free(c);
+        return 0;
+    }
+    for (n = 0; n + 1 < bytes; n += 2) {
+        c->pixels[n] = 0x81;
+        c->pixels[n + 1] = 0x00;
+    }
+    c->file.clip = c;
+    c->stream.clip = c;
+    c->next = g_llv_clips;
+    g_llv_clips = c;
+    ll_host_trace("AVIFileOpenA: no advisor/%s.llv; the advisor window shows its plain backdrop", stem);
+    return c;
+}
+
 /* advisor/<stem>.llv, relative to the working directory (the page chdir's to
- * /gamedata). A file that is missing, short or implausible is a failed open,
- * never a half-loaded clip: RenderAdvisorIcon blits whatever GetFrame returns
- * without a null test, so a clip that opens has to be able to serve every
- * frame it claims. */
+ * /gamedata). A file that is short or implausible is a failed open, never a
+ * half-loaded clip: RenderAdvisorIcon blits whatever GetFrame returns without
+ * a null test, so a clip that opens has to be able to serve every frame it
+ * claims. A MISSING file is the placeholder above, for advisor clips only. */
 static LLVClip* llv_load(const char* stem)
 {
     char           path[96];
@@ -299,7 +353,7 @@ static LLVClip* llv_load(const char* stem)
     snprintf(path, sizeof path, "advisor/%s.llv", stem);
     f = fopen(path, "rb");
     if (!f)
-        return 0;
+        return llv_placeholder(stem);
     if (fread(hdr, 1, sizeof hdr, f) != sizeof hdr || memcmp(hdr, LLV_MAGIC, 4) != 0)
         goto bad;
     width = llv_u16(hdr + 0x04);

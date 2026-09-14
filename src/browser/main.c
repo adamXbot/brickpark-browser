@@ -755,6 +755,54 @@ static void ll_flush_profiles_cb(void* arg)
     (void)arg;
     ll_flush_profiles();
 }
+static long g_flush_interval;
+
+/* ---- leaving the game -----------------------------------------------------
+ *
+ * WinMain returns when the player confirms Exit: screens3.c's ExitOkInput sets
+ * g_game_mode to 0, GameFrame returns 0 and RunGame tears down. What the page
+ * does next is navigate away (the player page, src/web, shows its "you left the
+ * park" screen), so the profiles this session wrote have to be IN IndexedDB
+ * before it is told: the periodic flush stops -- a timer still running would
+ * undo the page's own save edits, because IDBFS reconciles by timestamp -- one
+ * last syncfs runs, and ITS callback calls Module.llGameExit. A page without
+ * the hook (the developer page) just gets the flush. */
+EM_JS(void, ll_flush_profiles_and_report, (int code), {
+    function report() {
+        if (typeof Module['llGameExit'] === 'function') {
+            try { Module['llGameExit'](code); } catch (e) { console.error('[browser] llGameExit:', e); }
+        }
+    }
+    try {
+        FS.syncfs(false, function (err) {
+            if (err) console.warn('[browser] final profile save failed:', err);
+            report();
+        });
+    } catch (e) {
+        console.warn('[browser] final profile save failed:', e);
+        report();
+    }
+});
+
+/* ---- the player page's absolute pointer ------------------------------------
+ *
+ * dinput.c turns a pointer POSITION into the DirectInput delta that puts the
+ * game's cursor there, and measures against this: the one shared Controller
+ * (input.c's `Controller`, x at +0x08, y at +0x0c) that
+ * UpdateControllerFromMouseData integrates. input2.c:281 heap-allocates it, so
+ * the pointer is 0 until SetupControllers has run -- no cursor to aim yet. */
+extern unsigned char g_controller[];        /* 0x00813b00  Controller* */
+
+static int ll_read_game_cursor(int* x, int* y)
+{
+    const int* c;
+    memcpy(&c, g_controller, sizeof c);
+    if (!c)
+        return 0;
+    *x = c[2];
+    *y = c[3];
+    return 1;
+}
 
 /* winmain.c 0x00453d10. __stdcall is ignored off x86. */
 extern int WinMain(void* hinst, void* hprev, char* cmdline, int ncmdshow);
@@ -814,7 +862,7 @@ int main(int argc, char** argv)
     ll_mount_profiles((int*)&g_syncfs_pending);
     while (g_syncfs_pending)
         emscripten_sleep(10);
-    emscripten_set_interval(ll_flush_profiles_cb, 5000, NULL);
+    g_flush_interval = emscripten_set_interval(ll_flush_profiles_cb, 5000, NULL);
 
     printf("[browser] LEGOLAND portable: WinMain(\"%s\")\n", cmdline);
     fflush(stdout);
@@ -824,6 +872,7 @@ int main(int argc, char** argv)
      * with GetWindowLongA(GWL_HINSTANCE) and passes it to DirectInputCreateA
      * without a check (input2.c:266). */
     ll_host_sleep_hook = ll_host_yield;   /* KERNEL32 Sleep yields through PORT-B's ASYNCIFY yield */
+    ll_host_set_cursor_reader(ll_read_game_cursor);
     /* The CD check (sysmisc.c) wants a CD-ROM drive whose volume is "LEGOLAND"
      * on CDFS; kernel32.c emulates one at $LL_CD_DIR (drive D:). The preload
      * puts the three .res volumes under /gamedata/volumes. */
@@ -832,5 +881,7 @@ int main(int argc, char** argv)
 
     printf("[browser] WinMain returned %d\n", r);
     fflush(stdout);
+    emscripten_clear_interval(g_flush_interval);
+    ll_flush_profiles_and_report(r);
     return r;
 }

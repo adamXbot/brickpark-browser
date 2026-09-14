@@ -310,6 +310,12 @@ void ll_host_key_set(int dik, int down);
 void ll_host_mouse_move(int dx, int dy);
 void ll_host_mouse_wheel(int dz);
 void ll_host_mouse_button(int button, int down);
+/* The absolute pointer (the player page, src/web): the next mouse poll reports
+ * the delta that puts the game's cursor at (x, y), measured against the cursor
+ * `reader` returns -- main.c registers the game's Controller. The reader answers
+ * 0 while the game has no cursor yet, and the position then stays pending. */
+void ll_host_mouse_moveto(int x, int y);
+void ll_host_set_cursor_reader(int (*reader)(int* x, int* y));
 
 /* Run every timeSetEvent callback whose period has elapsed. winmm.c; called
  * once per message-pump pass. */
@@ -436,12 +442,16 @@ int  ll_audio_play_static(int voice, const void* pcm, unsigned int bytes,
                           int volume_cb, int pan_cb, double rate_mul);
 
 /* A buffer rewritten while it plays (the narration ring, the AVI audio track).
- * `cursor` is the play position the game is filling against, so everything
- * behind it is safe to read; returns the number of chunks scheduled. */
+ * `cursor` is the play position; the game rewrites what the cursor has PASSED,
+ * so the feed reads ahead of it, never beyond the write head below. Returns the
+ * number of chunks scheduled. */
 int  ll_audio_feed_stream(int voice, const void* pcm, unsigned int bytes,
                           unsigned int cursor, unsigned int chunk,
                           unsigned int rate, int channels, int bits,
                           double rate_mul);
+/* Where the game's last Unlock of a streamed buffer ended (`full` when it
+ * rewrote the whole buffer): the write head. dsound.c's Unlock reports it. */
+void ll_audio_stream_written(int voice, unsigned int end, int full);
 
 /* The music stream (the DirectMusic lane): planar float chunks at the
  * context's own rate, scheduled back to back on one gain. `lead` is how many

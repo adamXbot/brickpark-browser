@@ -359,3 +359,20 @@ if(LL_HAVE_GAMEDATA)
     FAIL_REGULAR_EXPRESSION "FAIL"
     TIMEOUT 300)
 endif()
+
+# ---- the player page's data libraries (portable/src/web/js) -----------------
+# The disc reader, the main.z extractor, the zip/tar readers, the install layout
+# and the save-file names, over inputs the test synthesises -- asset-free, so CI
+# runs it. The same code against real disc images is
+# `node portable/tools/web_disc_check.mjs IMAGE` (portable/README.md, "The player
+# page").
+find_program(LL_NODE node)
+if(LL_NODE)
+  add_test(NAME web_launcher_libs
+           COMMAND "${LL_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/web/test_web_libs.mjs")
+  # The narration stream: ll_audio.c's own EM_JS scheduler, read out of the
+  # source and run against a model of the game's ring writer, checked sample
+  # for sample (portable/README.md, "Narration reads ahead of the cursor").
+  add_test(NAME narration_feed
+           COMMAND "${LL_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/web/test_narration_feed.mjs")
+endif()

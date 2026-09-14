@@ -316,6 +316,7 @@ void ll_host_yield_throttled(unsigned int min_gap_ms)
 #define LLEV_FOCUS     7
 #define LLEV_BLUR      8
 #define LLEV_CLOSE     9
+#define LLEV_MOUSEABS 10      /* a = x, b = y: the pointer in game pixels (player page) */
 
 static int g_vk_down[256];
 
@@ -344,6 +345,9 @@ void ll_host_drain_events(void)
             break;
         case LLEV_MOUSEMOVE:
             ll_host_mouse_move(ev[1], ev[2]);
+            break;
+        case LLEV_MOUSEABS:
+            ll_host_mouse_moveto(ev[1], ev[2]);
             break;
         case LLEV_MOUSEDOWN:
             ll_host_mouse_button(ev[1], 1);

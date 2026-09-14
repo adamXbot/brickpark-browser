@@ -63,16 +63,16 @@
  *    browser does the rest. This is the path for all 155 archived samples.
  *
  * 2. STREAMED. The narration buffer is 0xa000 bytes of TEN 0x1000 blocks,
- *    played LOOPING for ever while PumpNarration (narration2.c:622) rewrites
- *    the block one ahead of the play cursor, frame after frame; a whole speech
- *    file of any length goes through those 40 KB. A snapshot would play the
- *    first 1.9 seconds of every line on a loop. So a streamed buffer is fed as
- *    small AudioBuffers scheduled back to back, each one copied out of the
- *    game's buffer only AFTER the cursor dsound.c reports has passed over it --
- *    which is the whole trick, because the cursor is what the game fills
- *    against, so "the cursor has passed it" is exactly "the game has written
- *    it". Output therefore lags the reported cursor by one chunk (~46 ms) and
- *    can never read a block the game has not filled.
+ *    played LOOPING for ever: RewindNarrationBuffer (movie.c) primes all ten,
+ *    and PumpNarration (narration2.c:622) then overwrites the block the play
+ *    cursor has just LEFT with the audio for that block's next lap, frame
+ *    after frame; a whole speech file of any length goes through those 40 KB.
+ *    A snapshot would play the first 0.93 seconds of every line on a loop. So a
+ *    streamed buffer is fed as small AudioBuffers scheduled back to back, read
+ *    AHEAD of the cursor dsound.c reports: everything in front of the cursor is
+ *    final, and only what it has passed is ever rewritten. ll_audio_js_feed has
+ *    the details, and the history -- the first version read BEHIND the cursor
+ *    and spliced next-lap audio into about half of every line.
  *
  *    dsound.c decides which mode a buffer is in, and the rule is the game's own
  *    call pattern: a Lock WITHOUT DSBLOCK_ENTIREBUFFER means a partial write,
@@ -144,6 +144,14 @@ EM_JS(int, ll_audio_js_init, (void), {
             refused: s.refused,
             formats: s.formats
         };
+    };
+    /* Mute from the page. The wish is kept on globalThis so a page can set it
+     * before the game has opened a sound device at all. */
+    g.llAudioMute = function (on) {
+        g.__llMuted = !!on;
+        var s = g.__llAudio;
+        if (s && s.master) { try { s.master.gain.value = on ? 0 : 1; } catch (e) {} }
+        return g.__llMuted;
     };
     /* Let the page ask for the context by hand, from its own click handler. */
     g.llAudioResume = function () {
@@ -260,9 +268,13 @@ EM_JS(void, ll_audio_js_stop, (int v), {
     if (!st) return;
     if (st.src) { try { st.src.stop(); } catch (e) {} try { st.src.disconnect(); } catch (e) {} st.src = null; }
     if (st.queue) {
+        /* A streamed voice is heard st.lat seconds behind the cursor it was fed
+         * against, so a Stop at that cursor lets exactly that much more out, and
+         * every chunk scheduled after it never starts. The nodes are left
+         * connected for the tail; an ended source is collected on its own. */
+        var until = a.ctx ? a.ctx.currentTime + (st.lat || 0) : 0;
         for (var i = 0; i < st.queue.length; i++) {
-            try { st.queue[i].stop(); } catch (e) {}
-            try { st.queue[i].disconnect(); } catch (e) {}
+            try { st.queue[i].stop(until); } catch (e) {}
         }
         st.queue = [];
     }
@@ -284,12 +296,20 @@ EM_JS(void, ll_audio_js_chain, (int v), {
     if (st.gain) return;
     try {
         st.gain = a.ctx.createGain();
+        /* Every voice ends in one master gain, which is the page's volume and
+         * mute (llAudioMute): suspending the context instead would stop the
+         * clock the streaming voices schedule against. */
+        if (!a.master) {
+            a.master = a.ctx.createGain();
+            a.master.gain.value = globalThis.__llMuted ? 0 : 1;
+            a.master.connect(a.ctx.destination);
+        }
         if (a.ctx.createStereoPanner) {
             st.panner = a.ctx.createStereoPanner();
             st.gain.connect(st.panner);
-            st.panner.connect(a.ctx.destination);
+            st.panner.connect(a.master);
         } else {
-            st.gain.connect(a.ctx.destination);
+            st.gain.connect(a.master);
         }
         a.created++;
     } catch (e) { st.gain = null; }
@@ -320,9 +340,30 @@ EM_JS(int, ll_audio_js_start, (int v, int off, int looping, double rate_mul), {
     return 1;
 });
 
-/* STREAMED feed. `cursor` is the play position dsound.c reports to the game, so
- * everything BEHIND it has been written; `read` is how far this file has
- * scheduled. One chunk of latency is deliberate -- see the header. */
+/* STREAMED feed: read AHEAD of the cursor.
+ *
+ * The narration buffer is a ring the game keeps full IN FRONT of the play
+ * cursor. RewindNarrationBuffer (movie.c) primes all ten 0x1000-byte blocks
+ * before Play, and PumpNarration (narration2.c) then overwrites the block the
+ * cursor has just LEFT with the audio that block must hold on the cursor's
+ * next lap, 0xa000 bytes (0.93 s at 22050 Hz) later. So everything from the
+ * cursor forward is final and in order, and the only bytes that ever change
+ * are ones the cursor has already passed -- which is why a real mixer reads
+ * ahead of the cursor.
+ *
+ * PORT-B11 read the other way, copying each chunk only after the cursor had
+ * passed it. A chunk not yet copied when the cursor crossed a block edge had
+ * part of it overwritten with next-lap audio first, and the read ran on past
+ * the end of the ring once a lap: scored against the decoded clip, about half
+ * of every narration line came out spliced, the "robotic, choppy" voice.
+ * portable/tests/web/test_narration_feed.mjs runs THIS function against a model
+ * of the game's writer and checks every sample.
+ *
+ * So: from the cursor at a (re)start, keep LEAD seconds scheduled past the
+ * AudioContext clock, never more than half the ring ahead of the cursor, the
+ * ring's wrap honoured. Output is heard LAT seconds behind the cursor it was
+ * fed against, and a stall long enough to drain the lead is an underrun: the
+ * read jumps to the cursor, skipping what played unheard. */
 EM_JS(int, ll_audio_js_feed, (int v, int ptr, int bytes, int cursor, int chunk,
                               int rate, int ch, int bits, double rate_mul), {
     var a = globalThis.__llAudio;
@@ -330,49 +371,77 @@ EM_JS(int, ll_audio_js_feed, (int v, int ptr, int bytes, int cursor, int chunk,
     var st = a.voices[v];
     if (!st || !st.gain) return 0;
     if (a.ctx.state !== 'running') { a.blocked++; return 0; }
-    var bps = (bits >> 3) * ch;
-    if (bps < 1) return 0;
-    if (st.read === undefined || st.read < 0) {
-        /* Start one chunk behind the cursor: the block the game has just
-         * finished writing. */
-        st.read = ((cursor - chunk) % bytes + bytes) % bytes;
-        st.next = 0;
-        st.queue = [];
+    var width = bits >> 3;
+    var bps = width * ch;
+    if (bps < 1 || chunk < bps) return 0;
+    var LEAD = 0.25, LAT = 0.02;
+    var mul = rate_mul > 0 ? rate_mul : 1;
+    var frames = (chunk / bps) | 0;
+    var now = a.ctx.currentTime;
+    var half = bytes / 2;
+    var ahead = function (r) {
+        var d = r - cursor;
+        if (d > half) d -= bytes;
+        if (d <= -half) d += bytes;
+        return d;
+    };
+    if (st.read === undefined || st.read < 0 || !st.next ||
+        st.next < now + 0.005 || ahead(st.read) < -chunk) {
+        if (st.read >= 0 && st.next) a.underruns++;
+        st.read = cursor - (cursor % bps);
+        st.next = now + LAT;
     }
-    var avail = ((cursor - st.read) % bytes + bytes) % bytes;
+    if (!st.queue) st.queue = [];
+    st.lat = LAT;
+    /* The WRITE HEAD: never read past the end of what the game last unlocked
+     * (ll_audio_stream_written). In step with the game that is most of a lap
+     * in front of the cursor; after a stall the blocks beyond it still hold the
+     * previous lap until PumpNarration catches up, so the lead shrinks to what
+     * is really written. A head level with the cursor is a whole lap ahead. */
+    var limit = half;
+    if (!st.wfull && st.wend !== undefined) {
+        var head = ((st.wend - cursor) % bytes + bytes) % bytes;
+        if (head > 0 && head < limit) limit = head;
+    }
     var n = 0;
-    while (avail >= chunk && n < 8) {
-        var frames = (chunk / bps) | 0;
+    while (st.next < now + LEAD && n < 16) {
+        if (ahead(st.read) + chunk > limit) break;
         var buf;
         try { buf = a.ctx.createBuffer(ch, frames, rate); } catch (e) { break; }
         for (var c = 0; c < ch; c++) {
             var out = buf.getChannelData(c);
-            if (bits === 16) {
-                var base = ((ptr + st.read) >> 1) + c;
-                for (var i = 0; i < frames; i++) out[i] = HEAP16[base + i * ch] / 32768;
+            var i;
+            if (st.read + frames * bps <= bytes) {
+                if (bits === 16) {
+                    var base = ((ptr + st.read) >> 1) + c;
+                    for (i = 0; i < frames; i++) out[i] = HEAP16[base + i * ch] / 32768;
+                } else {
+                    var b8 = ptr + st.read + c;
+                    for (i = 0; i < frames; i++) out[i] = (HEAPU8[b8 + i * ch] - 128) / 128;
+                }
             } else {
-                var b8 = ptr + st.read + c;
-                for (var j = 0; j < frames; j++) out[j] = (HEAPU8[b8 + j * ch] - 128) / 128;
+                for (i = 0; i < frames; i++) {
+                    var p = (st.read + (i * ch + c) * width) % bytes;
+                    if (bits === 16) {
+                        var w = HEAPU8[ptr + p] | (HEAPU8[ptr + (p + 1) % bytes] << 8);
+                        out[i] = (w >= 32768 ? w - 65536 : w) / 32768;
+                    } else {
+                        out[i] = (HEAPU8[ptr + p] - 128) / 128;
+                    }
+                }
             }
         }
-        var now = a.ctx.currentTime;
-        if (!st.next || st.next < now + 0.01) {
-            if (st.next) a.underruns++;
-            st.next = now + 0.03;       /* re-prime after a gap */
-        }
         try {
-            var s = a.ctx.createBufferSource();
-            s.buffer = buf;
-            if (rate_mul > 0) s.playbackRate.value = rate_mul;
-            s.connect(st.gain);
-            s.start(st.next);
-            if (!st.queue) st.queue = [];
-            st.queue.push(s);
+            var src = a.ctx.createBufferSource();
+            src.buffer = buf;
+            if (rate_mul > 0) src.playbackRate.value = rate_mul;
+            src.connect(st.gain);
+            src.start(st.next);
+            st.queue.push(src);
             if (st.queue.length > 32) st.queue.shift();
         } catch (e) { break; }
-        st.next += frames / (rate * (rate_mul > 0 ? rate_mul : 1));
+        st.next += frames / (rate * mul);
         st.read = (st.read + chunk) % bytes;
-        avail -= chunk;
         a.fed_chunks++;
         a.fed_bytes += chunk;
         n++;
@@ -597,6 +666,29 @@ int ll_audio_feed_stream(int voice, const void* pcm, unsigned int bytes,
         return 0;
     return ll_audio_js_feed(voice, (int)(long)pcm, (int)bytes, (int)cursor,
                             (int)chunk, (int)rate, channels, bits, rate_mul);
+}
+
+/* The write head of a streamed buffer: where the game's last Unlock ended, or
+ * `full` when it rewrote the whole buffer (RewindNarrationBuffer). The feed
+ * never reads past it; ll_audio_js_feed says why. */
+#ifdef __EMSCRIPTEN__
+EM_JS(void, ll_audio_js_written, (int v, int end, int full), {
+    var a = globalThis.__llAudio;
+    if (!a) return;
+    var st = a.voices[v] || (a.voices[v] = {});
+    st.wend = end;
+    st.wfull = full ? true : false;
+});
+#else
+static void ll_audio_js_written(int v, int end, int full)
+{ (void)v; (void)end; (void)full; }
+#endif
+
+void ll_audio_stream_written(int voice, unsigned int end, int full)
+{
+    if (!voice || !g_audio_live)
+        return;
+    ll_audio_js_written(voice, (int)end, full);
 }
 
 /* ---- music (the DirectMusic lane) ---------------------------------------- */

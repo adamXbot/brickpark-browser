@@ -119,7 +119,7 @@ endif()
 # -O2 at link as well as compile: unoptimised ASYNCIFY instrumentation of the
 # largest bodies (RunAppraisalScreen, 8,085 instructions) exceeds the wasm
 # per-function local limit ("local count too large" at instantiate).
-set(LL_WASM_COMMON_LINK
+set(LL_WASM_BASE_LINK
   -O2
   -sASYNCIFY=1
   -sASYNCIFY_STACK_SIZE=131072
@@ -128,7 +128,10 @@ set(LL_WASM_COMMON_LINK
   -sSTACK_SIZE=8388608
   -sEXIT_RUNTIME=0
   -sASSERTIONS=1
-  --js-library "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/ll_canvas.js"
+  --js-library "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/ll_canvas.js")
+# The developer pages are emcc's --shell-file output; the player page
+# (legoland_web, below) is a static page that loads the module itself.
+set(LL_WASM_COMMON_LINK ${LL_WASM_BASE_LINK}
   --shell-file "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/index.html")
 
 # The JS library and the shell page are INPUTS to the link, but they arrive as
@@ -411,4 +414,89 @@ if(TARGET legoland_advisor_frames)
 endif()
 if(TARGET legoland_music_data)
   add_dependencies(legoland_browser_named legoland_music_data)
+endif()
+
+# ---- legoland_web: the player page ------------------------------------------
+#
+# What a PLAYER opens, as opposed to the instrumented page above: a launcher that
+# installs the game's files into the browser -- downloaded from the site's data
+# pack, or read out of the player's own disc image or install folder -- manages
+# the saves, runs the same game module, and has somewhere to go when the game
+# exits. portable/README.md, "The player page", has the whole story.
+#
+# It is one static directory that any web server can host, build-wasm/web/:
+#
+#   index.html, launcher.css, js/*.js   copied from src/web
+#   legoland.js, legoland.wasm          this link: no --preload-file (the page
+#                                       fills /gamedata from IndexedDB) and no
+#                                       auto-run (the page calls callMain once
+#                                       the files are in)
+#   version.json                        the build id the page cache-busts the
+#                                       module with
+#   data/                               the data pack (manifest.json, core.tar,
+#                                       speech.tar, volumes/), only when
+#                                       gamedata/ is here and LL_WEB_DATA is ON.
+#                                       It is the game's own files: host it only
+#                                       where you have the right to.
+#
+#   ninja -C portable/build-wasm legoland_web
+#   python3 -m http.server -d portable/build-wasm/web 8080
+option(LL_WEB_DATA "Build the player page's downloadable data pack from gamedata/" ON)
+set(LL_WEB_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/web")
+set(LL_WEB_OUT "${CMAKE_BINARY_DIR}/web")
+set(LL_WEB_TOOL "${CMAKE_CURRENT_SOURCE_DIR}/tools/web_datapack.py")
+file(GLOB LL_WEB_FILES CONFIGURE_DEPENDS
+     "${LL_WEB_SRC}/*.html" "${LL_WEB_SRC}/*.css" "${LL_WEB_SRC}/*.svg" "${LL_WEB_SRC}/js/*.js")
+add_custom_command(
+  OUTPUT "${LL_WEB_OUT}/.static.stamp"
+  COMMAND "${Python3_EXECUTABLE}" "${LL_WEB_TOOL}" static
+          --src "${LL_WEB_SRC}" --out "${LL_WEB_OUT}"
+  DEPENDS ${LL_WEB_FILES} "${LL_WEB_TOOL}"
+  COMMENT "web_datapack.py static: the player page's HTML, CSS and scripts"
+  VERBATIM)
+add_custom_target(legoland_web_static DEPENDS "${LL_WEB_OUT}/.static.stamp")
+
+if(LL_WEB_DATA AND EXISTS "${LL_GAMEDATA}/main/stab.str" AND EXISTS "${LL_GAMEDATA}/disc/Legoland.res")
+  file(GLOB LL_WEB_GAMEDATA CONFIGURE_DEPENDS
+       "${LL_GAMEDATA}/main/*" "${LL_GAMEDATA}/disc/*.res")
+  add_custom_command(
+    OUTPUT "${LL_WEB_OUT}/data/manifest.json"
+    COMMAND "${Python3_EXECUTABLE}" "${LL_WEB_TOOL}" data
+            --gamedata "${LL_GAMEDATA}" --advisor "${LL_ADVISOR_DIR}"
+            --out "${LL_WEB_OUT}/data"
+    DEPENDS ${LL_WEB_GAMEDATA} ${LL_ADVISOR_FRAMES} "${LL_WEB_TOOL}"
+    COMMENT "web_datapack.py data: the player page's data pack from gamedata/"
+    VERBATIM)
+  add_custom_target(legoland_web_data DEPENDS "${LL_WEB_OUT}/data/manifest.json")
+  if(TARGET legoland_advisor_frames)
+    add_dependencies(legoland_web_data legoland_advisor_frames)
+  endif()
+else()
+  message(STATUS "player page: no data pack (LL_WEB_DATA=${LL_WEB_DATA}, gamedata "
+                 "at ${LL_GAMEDATA}); the page will offer the disc import only")
+endif()
+
+add_executable(legoland_web EXCLUDE_FROM_ALL
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/main.c")
+target_link_libraries(legoland_web PRIVATE
+  legoland_hostwin
+  "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_core>"
+  "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_gen_browser>")
+target_compile_options(legoland_web PRIVATE -w)
+target_link_options(legoland_web PRIVATE
+  ${LL_WASM_BASE_LINK}
+  -sINVOKE_RUN=0
+  -sEXPORTED_RUNTIME_METHODS=FS,callMain
+  -sERROR_ON_UNDEFINED_SYMBOLS=1
+  -lidbfs.js)
+set_target_properties(legoland_web PROPERTIES
+  SUFFIX ".js" OUTPUT_NAME "legoland"
+  RUNTIME_OUTPUT_DIRECTORY "${LL_WEB_OUT}"
+  LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/ll_canvas.js")
+add_custom_command(TARGET legoland_web POST_BUILD
+  COMMAND "${Python3_EXECUTABLE}" "${LL_WEB_TOOL}" stamp --out "${LL_WEB_OUT}"
+  VERBATIM)
+add_dependencies(legoland_web legoland_web_static)
+if(TARGET legoland_web_data)
+  add_dependencies(legoland_web legoland_web_data)
 endif()

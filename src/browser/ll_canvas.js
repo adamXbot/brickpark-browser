@@ -65,6 +65,7 @@ var LibraryLLCanvas = {
     // Event type tags -- must match the LLEV_* defines in user32.c.
     EV_KEYDOWN: 1, EV_KEYUP: 2, EV_MOUSEMOVE: 3, EV_MOUSEDOWN: 4,
     EV_MOUSEUP: 5, EV_WHEEL: 6, EV_FOCUS: 7, EV_BLUR: 8, EV_CLOSE: 9,
+    EV_MOUSEABS: 10,
 
     // KeyboardEvent.code -> DIK_* scan code. DIK codes ARE the PS/2 set-1 scan
     // codes, which is why this table is mechanical rather than invented. The
@@ -194,6 +195,31 @@ var LibraryLLCanvas = {
       LL.events.push(t, a | 0, b | 0, c | 0);
     },
 
+    // The player page (portable/src/web) sets Module.llAbsoluteMouse: the
+    // pointer is sent as a POSITION in game pixels and dinput.c works out the
+    // delta against the game's own cursor at the poll (see its
+    // ll_host_mouse_moveto). The developer page leaves it unset and keeps the
+    // relative model below, which its llMove/llClick drivers are written for.
+    absolute: function () {
+      return typeof Module !== 'undefined' && !!Module['llAbsoluteMouse'];
+    },
+    pushPosition: function (e) {
+      var c = LL.canvas, r = c.getBoundingClientRect();
+      if (!(r.width > 0) || !(r.height > 0)) return;
+      var x = Math.floor((e.clientX - r.left) * LL.w / r.width);
+      var y = Math.floor((e.clientY - r.top) * LL.h / r.height);
+      x = Math.max(0, Math.min(LL.w - 1, x));
+      y = Math.max(0, Math.min(LL.h - 1, y));
+      // Coalesce: a burst of moves between two polls is one position.
+      var n = LL.events.length;
+      if (n >= 4 && LL.events[n - 4] === LL.EV_MOUSEABS) {
+        LL.events[n - 3] = x;
+        LL.events[n - 2] = y;
+        return;
+      }
+      LL.push(LL.EV_MOUSEABS, x, y, 0);
+    },
+
     vkOf: function (e) {
       if (LL.vk[e.code] !== undefined) return LL.vk[e.code];
       /* PORT-B6: the same `code`-less sources dikOf handles. LL.vk's names are
@@ -280,6 +306,7 @@ var LibraryLLCanvas = {
       // exactly as a physical relative mouse does, which is the behaviour the
       // game was written against.
       c.addEventListener('mousemove', function (e) {
+        if (LL.absolute()) { LL.pushPosition(e); return; }
         var r = c.getBoundingClientRect();
         var sx = LL.w / r.width, sy = LL.h / r.height;
         var x = (e.clientX - r.left) * sx, y = (e.clientY - r.top) * sy;
@@ -296,10 +323,14 @@ var LibraryLLCanvas = {
       // (input.c:279-285 reads exactly those three), and a DOM
       // MouseEvent.button is 0 left / 1 middle / 2 right -- hence the swap.
       c.addEventListener('mousedown', function (e) {
+        // A press with no move before it (a tap, or the first click after the
+        // pointer came back over the canvas) must land where it happened.
+        if (LL.absolute()) LL.pushPosition(e);
         LL.push(LL.EV_MOUSEDOWN, e.button === 1 ? 2 : (e.button === 2 ? 1 : 0), 0, 0);
         e.preventDefault();
       }, false);
       c.addEventListener('mouseup', function (e) {
+        if (LL.absolute()) LL.pushPosition(e);
         LL.push(LL.EV_MOUSEUP, e.button === 1 ? 2 : (e.button === 2 ? 1 : 0), 0, 0);
         e.preventDefault();
       }, false);

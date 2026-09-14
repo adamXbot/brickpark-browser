@@ -1,0 +1,4 @@
+{
+  "//": "The player page's scripts are ES modules; this tells node so, for portable/tests/web and portable/tools/web_disc_check.mjs. Not copied into the served page.",
+  "type": "module"
+}

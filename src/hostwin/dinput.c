@@ -198,6 +198,33 @@ void ll_host_key_set(int dik, int down)
 void ll_host_mouse_move(int dx, int dy) { g_mouse_dx += dx; g_mouse_dy += dy; }
 void ll_host_mouse_wheel(int dz) { g_mouse_dz += dz; }
 
+/* The player page's pointer is ABSOLUTE: the game's cursor belongs under the
+ * real one, wherever the player's mouse or finger went in or out of the canvas.
+ * DirectInput only has deltas, so a position becomes the one delta that lands
+ * the cursor on it -- computed HERE, at the poll, against the cursor the game
+ * has actually integrated, because only there is it exact:
+ * UpdateControllerFromMouseData (input.c:238) adds lX/lY to Controller.x/y with
+ * acceleration off (user32.c's SPI_GETMOUSE answer) and clamps to the screen.
+ * Differencing positions in the page instead is the relative model PORT-M13
+ * spent a lane making accurate, and it still drifts whenever the pointer leaves
+ * the canvas or the game clamps its cursor at an edge.
+ *
+ * main.c registers the reader (the game's Controller). Without one -- headless,
+ * shimtest -- a target just waits. The developer page never sends positions;
+ * its drivers keep the relative model, and a pending position wins over any
+ * deltas queued for the same poll. */
+static int  g_mouse_abs_pending, g_mouse_abs_x, g_mouse_abs_y;
+static int (*g_cursor_reader)(int* x, int* y);
+
+void ll_host_set_cursor_reader(int (*reader)(int* x, int* y)) { g_cursor_reader = reader; }
+
+void ll_host_mouse_moveto(int x, int y)
+{
+    g_mouse_abs_x = x;
+    g_mouse_abs_y = y;
+    g_mouse_abs_pending = 1;
+}
+
 void ll_host_mouse_button(int button, int down)
 {
     if (button < 0 || button >= 4)
@@ -338,6 +365,16 @@ static long dev_GetDeviceState(LLDIDevice* d, unsigned long size, void* data)
 
     if (size >= sizeof(LLMouseState)) {
         LLMouseState* ms = (LLMouseState*)data;
+        if (g_mouse_abs_pending && g_cursor_reader) {
+            int cx, cy;
+            /* Kept pending until the game HAS a cursor (input2.c:281 allocates
+             * the Controller); the target is always the latest position. */
+            if (g_cursor_reader(&cx, &cy)) {
+                g_mouse_dx = g_mouse_abs_x - cx;
+                g_mouse_dy = g_mouse_abs_y - cy;
+                g_mouse_abs_pending = 0;
+            }
+        }
         ms->lX = g_mouse_dx;
         ms->lY = g_mouse_dy;
         ms->lZ = g_mouse_dz;

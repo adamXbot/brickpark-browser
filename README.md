@@ -1665,6 +1665,9 @@ line — so a buffer that is ever Locked WITHOUT `DSBLOCK_ENTIREBUFFER` is marke
 streamed and fed as small AudioBuffers scheduled back to back, **each copied out
 only after the cursor `dsound.c` reports has passed over it**. The cursor is what
 the game fills against, so "behind the cursor" is exactly "already written".
+(Corrected 2026-09-14: that rule is backwards. The game rewrites the blocks the cursor
+has already passed, so reading behind it spliced next-lap audio into about half of every
+line; the feed now reads ahead. See "Narration reads ahead of the cursor" below.)
 
 **Measured**, on a build with `-DLL_PRELOAD_SPEECH=ON`, walking to the tutorial
 briefing with the AudioContext's `createBuffer` wrapped:
@@ -2429,6 +2432,191 @@ meanwhile, and run ctest with `SDKROOT` set to the same SDK, because
 (with it: native 22/22, wasm 30/30). Homebrew's emscripten 6.0.9_1 moved its
 Cellar path, so a wasm tree configured before has to be reconfigured from a
 clean directory.
+
+## The player page: install from a download or a disc, manage saves, leave the park
+
+`legoland.html` is an instrument panel for the people porting the game. `legoland_web`
+builds the page a PLAYER opens, modelled on isle-portable's web port: a launcher that
+gets the game's files into the browser once, runs the game, manages the saves, and has
+somewhere to go when the park closes.
+
+```
+ninja -C portable/build-wasm legoland_web
+python3 -m http.server -d portable/build-wasm/web 8080
+```
+
+`build-wasm/web/` is the whole site: static files, no server logic, no COOP/COEP (the
+module is single-threaded ASYNCIFY).
+
+| path | what |
+| --- | --- |
+| `index.html`, `launcher.css`, `js/*.js` | the launcher, copied from `portable/src/web` |
+| `legoland.js`, `legoland.wasm` | the game: the same objects as `legoland_browser`, linked with `-sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=FS,callMain` and no `--preload-file` |
+| `version.json` | the build id the page appends to the module's URLs, so a rebuilt module is never served from cache |
+| `data/` | the data pack, built when `gamedata/` is present and `-DLL_WEB_DATA=ON` (the default): `manifest.json`, `core.tar` (install files and advisor frames, 22 MB), `speech.tar` (58 MB) and `volumes/*.res` (157 MB, hard links). These are **the game's own files**: deploy `data/` only where you have the right to. Without it the page offers the disc import only. |
+
+The page's own scripts are not cache-busted: serve `index.html` and `js/` with
+revalidation (`Cache-Control: no-cache`) so a deploy is picked up.
+
+### Getting the files in
+
+Two sources, one result. Both write the IndexedDB database `legoland-gamedata`
+(`js/store.js`: one record per file plus 8 MB chunk records, so `Graphics2.res` is never
+one 115 MB allocation and the progress bar moves), in the layout the retail installer
+produced, because that is what the game's paths name: `imusic\segtheme1.sgt`
+(musicthread.c), `Zbuffers\joustride.bnv` (joust.c), `RollerCoaster\RollerCoaster\CreatedData`
+(coaster7.c `chdir`s into it), `.\strings\stab.str`, `.\volumes\<stem>.res` and
+`speech\<name>` (`PlayNarrationFile`). `js/discplan.js` has the rule, and
+`tools/web_datapack.py` mirrors it for the pack. The flat `/gamedata` of the developer page
+keeps working through kernel32.c's flattening fallback; the player page does not need it.
+
+* **Download.** The pack streams in with progress; every file's size is checked and each
+  tar's SHA-256 too.
+* **Your own disc.** A drop or a file picker takes an `.iso` or `.bin` (2048- or
+  2352-byte sectors, Joliet names: `js/iso9660.js`), a `.zip` of one, a copied CD, or an
+  installed LEGOLAND folder. Everything is read in place with `Blob.slice`; nothing leaves
+  the computer. `main.z` is expanded in the page by `js/installshield.js`, a port of
+  `tools/iscab.py` and `tools/blast.py`. Saves found in an installed folder's `profiles\`
+  are offered for import.
+
+`node portable/tools/web_disc_check.mjs [--hash] IMAGE...` runs the same modules under node
+and compares every byte they would install with `gamedata/`. On the six LEGOLAND images on
+hand:
+
+| image | edition | result |
+| --- | --- | --- |
+| `LEGOLAND.iso` (retail: `main.z`) | English | 329/329 install files, 1266 narration clips (sampled) and all three volumes (SHA-256) identical to `gamedata/` |
+| `LEGOLAND-4.iso` (an `INSTALL/` copy of an installed game) | English | identical, same counts |
+| `LEGOLAND-3.iso`, `LEGOLAND.BIN`, `LEGOLAND-2.bin` | three other European editions | read (the BINs as raw Mode 2); installable with an "untested edition" warning; `stab.str` and `EGC.BMP` are localised, everything else in `main.z` is byte-identical |
+| `Legoland-2.iso` (volume `LLAND_CZ`) | Czech re-release | refused with an explanation: its install files are inside a Centauri "CPack" archive |
+
+A disc has no decoded advisor clips (they are Indeo 5, decoded by ffmpeg at build time),
+so `avifil32.c` now opens a MISSING advisor clip as 64 frames of the clips' own dark-green
+backdrop: a plain panel where PARK-2 left a hole. A bad frames file and the FMV still fail
+the open, as `test_avifile.c` pins.
+
+### Saves
+
+Saves stay where the game writes them, `/gamedata/profiles` on IDBFS (main.c):
+`Profile1.txt` .. `Profile8.txt`, and `<p>save<s>.sav` plus `<p>save<s>.sh` per saved park.
+`js/saves.js` edits that IndexedDB database directly (`/gamedata/profiles`, version 21,
+store `FILE_DATA`, keyed by absolute path, `{timestamp: Date, mode, contents}` as
+Emscripten 6.0.9's `libidbfs.js` writes them): the players with their unlock flags
+(`+0x34`: five lessons, then ten game levels), each player's saved parks by the name typed
+in the save dialog (the `.sh` header), export of everything or one player as a zip laid out
+like the original `profiles\` folder, import of such a zip or of loose files (names
+canonicalised to the spelling the game's `sprintf` creates, records size-checked), and
+delete.
+
+Two rules make editing that database from the page safe, because IDBFS reconciles by
+timestamp and a running game's next sync would put back what the page deleted: a Web Lock
+(`legoland-game`) held for the game's lifetime disables save editing in every other tab,
+and the launcher never shares a page with a game that has run (below).
+
+### Playing, and leaving
+
+Play loads the module only then, moves the files from IndexedDB into MEMFS (`canOwn`: no
+second copy) and calls `main`. On the stage:
+
+* **The pointer is absolute.** `Module.llAbsoluteMouse` makes `ll_canvas.js` send positions
+  (`LLEV_MOUSEABS`), and `dinput.c` turns a position into the one DirectInput delta that
+  lands the game's cursor on it, computed at the poll against the game's own Controller
+  (main.c registers the reader; acceleration is off, so the delta is exact). The cursor
+  stays under the real pointer at any scale, after the pointer leaves and re-enters the
+  canvas, and under a finger (the page relays touches as mouse events). The developer page
+  keeps the relative model its drivers are written for.
+* The picture scales to fit the window (or to whole-number steps), and a fading toolbar
+  has sound (a master gain `ll_audio.c` now routes every voice through), full screen
+  (Escape stays the game's where the browser allows it), and **Leave**.
+
+A session ends in one of three ways, and each one reloads the page into its exit screen
+("Thanks for visiting LEGOLAND!", "You left the park", or "The game stopped unexpectedly"
+with the details). A reload, because a module whose globals have run cannot be restarted in
+place, and a second instance in the same page would keep the first one's timers, among them
+the periodic IDBFS sync:
+
+1. **the game's own Exit** (the title screen's exit bubble, "Are you sure?", tick):
+   `ExitOkInput` sets `g_game_mode` to 0, `GameFrame` returns 0, `RunGame` tears down and
+   `WinMain` returns; main.c stops the five-second flush, runs a last `syncfs`, and its
+   callback calls `Module.llGameExit`;
+2. **Leave** on the toolbar: confirm, flush, reload;
+3. **a RuntimeError, an abort or a non-zero `exit()`**: flush what can be flushed, and keep
+   the last 40 log lines for the exit screen.
+
+Verified in a tab (build `852559fe974c9cd4`): the download (227 MB) lands on the menu;
+Play reaches PLAYER DETAILS in 2 s with no console errors; hovering (613, 143) and
+(232, 500) puts the tip of the game's cursor under the pointer; a new player's
+`Profile1.txt` (272 bytes) is in IndexedDB within five seconds; Exit, "Are you sure?", tick
+lands on the exit screen after `WinMain returned 0`; Play again shows the player in slot 1;
+Leave lands on "You left the park". The disc path's review screen was driven in the same
+tab with a dropped file set (one volume, no install files: both problems listed, "Try other
+files" offered), and no launcher screen scrolls sideways at 375 px. A complete install from
+a dropped `LEGOLAND.iso` has not yet been run in a tab: the Browser pane was hidden, and a
+hidden pane stops the page's network, so the 427 MB image never arrived. The modules it
+runs are the ones `web_disc_check.mjs` verifies byte for byte under node, and the chunked
+writer is the one the download exercises.
+
+`node portable/tests/web/test_web_libs.mjs` (ctest `web_launcher_libs`, asset-free, 19
+checks) covers the disc reader (cooked and raw), `main.z`, zip (stored and deflated), tar,
+the layout rule and the save-file names.
+
+## Narration reads ahead of the cursor: the robotic voice
+
+Reported 2026-09-14: the sound effects are fine, but the voice-over narration sounds
+robotic and choppy (and there is no music; see the end of this section).
+
+The narration is the one STREAMED sound. `PlayNarrationFile` decodes MS ADPCM speech
+(22050 Hz mono) into a ring, and the game plays one 0xa000-byte DirectSound buffer, ten
+0x1000-byte blocks of 93 ms each, LOOPING. `RewindNarrationBuffer` (movie.c) primes all
+ten blocks before Play; then, every frame, `PumpNarration` (narration2.c) overwrites
+**the block the play cursor has just left** with the audio that block must hold on the
+next lap, 0.93 s later. Everything from the cursor forward is final. The bytes behind it
+are the ones that change.
+
+PORT-B11's feed (`ll_audio_js_feed`) read the other way. It copied each 2560-byte chunk
+only after the wall-clock cursor had passed it, so whenever the cursor crossed a block edge
+before a chunk was copied -- most of the time, because chunks and blocks do not line up and
+the feed runs once a frame -- `PumpNarration` had already overwritten part of that chunk
+with next-lap audio. The read also ran past the end of the ring once a lap
+(`HEAP16[(ptr + read) >> 1 + i]` never wraps). Scored against the decoded clip, in a
+simulation of dsound.c's cursor, `PumpNarration` and the feed line for line, on "Briefing
+tutorial five" (35.6 s) and TEXT2201 (53.3 s):
+
+| frames | chunks that are not the clip | clip heard in order |
+| --- | --- | --- |
+| steady, 28.6 ms | 49% | 51% |
+| 22-38 ms | 54% | 46% |
+| 22-38 ms, 3% of them stalls of 80-200 ms | 45%, plus 2-3 underrun gaps | 54-55% |
+
+The feed now schedules AHEAD of the cursor. From the cursor at every (re)start it keeps
+250 ms queued past the AudioContext clock, wrapping at the ring's end, and it never reads
+past the WRITE HEAD: `dsound.c`'s Unlock reports where the game's last write ended
+(`ll_audio_stream_written`). In step with the game that is most of a lap ahead; after a
+stall, the blocks beyond it still hold the previous lap until `PumpNarration` catches up,
+and reading them would splice again. A stall that drains the lead is an underrun that
+resumes at the cursor: a skip, never a splice. `dsound.c` feeds a streamed voice the moment
+it is played (the ring is primed first), and a Stop lets out the 20 ms the output trails
+the cursor by. The same simulation: **100% of the clip in order, no gaps, no underruns**,
+in all three frame patterns.
+
+`portable/tests/web/test_narration_feed.mjs` (ctest `narration_feed`, asset-free) reads
+`ll_audio_js_feed`, `ll_audio_js_stop` and `ll_audio_js_written` straight out of
+`ll_audio.c`, runs them over a fake AudioContext against a model of the ring writer, and
+checks every sample of a pseudo-random "clip": steady frames, 18-45 ms frames with a
+150 ppm clock difference, stalls up to 240 ms, a 700 ms stall (exactly one underrun, no
+splice) and repeated 300-500 ms stalls. Against the previous `ll_audio.c` it fails 5 of 5;
+with only the write-head limit taken out, the 700 ms stall fails.
+
+Live, on the player page (build `2a828ebf1ac74467`), the front end's own narration through
+the real module: 77 chunks, every one within a line scheduled back to back (the two gaps
+are the pauses between lines), 20 ms ahead at a line's start and 232 ms (median) after it,
+0 underruns.
+
+**Music** was a separate gap, not this defect, and the DirectMusic lane has since closed it
+("The game's music plays", above). The player page does not have the instruments yet: its
+install copies the music files with the rest of the game, but not `gm16.dls`, which only the
+build extracts from the CD's `directx.cab`, so the music there stays silent until the page
+installs that too.
 
 ## Next
 

@@ -398,8 +398,8 @@ static double ds_rate_mul(const LLDSBuffer* b)
 
 /* The streaming chunk: a sixteenth of the buffer, capped at 4096 bytes and
  * rounded down to a whole frame. For the narration ring (0xa000 bytes) that is
- * 2560 -> 2560, a little over half of the 0x1000 block PumpNarration fills, so
- * the output lags the game's write by well under one block. */
+ * 2560 bytes, 58 ms at 22050 Hz: the unit ll_audio.c schedules AHEAD of the
+ * cursor in, about four of them at a time (its LEAD). */
 static unsigned int ds_stream_chunk(const LLDSBuffer* b)
 {
     unsigned int frame = (unsigned int)(ds_fmt_bits(b) / 8) *
@@ -414,6 +414,8 @@ static unsigned int ds_stream_chunk(const LLDSBuffer* b)
         c = frame;
     return c;
 }
+
+static void ds_audio_feed(LLDSBuffer* b);   /* ds_audio_start feeds a restarted stream */
 
 static void ds_audio_levels(LLDSBuffer* b)
 {
@@ -434,12 +436,15 @@ static void ds_audio_start(LLDSBuffer* b)
     if (!b->voice)
         return;
     if (b->streamed) {
-        /* Nothing to start: the feed in ds_tick begins as soon as the cursor has
-         * moved past a chunk the game has written. Reset the read position so a
-         * restart does not replay stale audio. */
+        /* Drop whatever was scheduled for the old position and schedule from
+         * the new cursor AT ONCE: the game primed the ring before this Play
+         * (RewindNarrationBuffer), and waiting for the next tick would cut the
+         * first frame's worth of every line. ll_audio.c reads ahead of the
+         * cursor from here on. */
         ll_audio_stop(b->voice);
         ds_audio_levels(b);
         b->fed_to = 0;
+        ds_audio_feed(b);
         return;
     }
     ds_audio_levels(b);
@@ -800,8 +805,20 @@ static long LL_DSB_Stop(LLDSBuffer* b)
 static long LL_DSB_Unlock(LLDSBuffer* b, void* ptr1, unsigned long len1,
                           void* ptr2, unsigned long len2)
 {
-    (void)b; (void)ptr1; (void)len1; (void)ptr2; (void)len2;
-    return DS_OK;           /* the game wrote straight into the PCM block */
+    /* The game wrote straight into the PCM block. For a streamed buffer the end
+     * of that write is the WRITE HEAD, which ll_audio.c's read-ahead must not
+     * pass: after a stall the blocks beyond it still hold the previous lap until
+     * PumpNarration catches up. A buffer that has no voice yet (the first
+     * RewindNarrationBuffer, before any Play) is all written by definition. */
+    if (b->streamed && b->voice && ptr1 && b->data->bytes) {
+        unsigned int total = b->data->bytes;
+        unsigned int off = (unsigned int)((const unsigned char*)ptr1 -
+                                          (const unsigned char*)b->data->pcm);
+        unsigned int len = (unsigned int)len1 + (ptr2 ? (unsigned int)len2 : 0u);
+        if (off < total)
+            ll_audio_stream_written(b->voice, (off + len) % total, len >= total);
+    }
+    return DS_OK;
 }
 
 static long LL_DSB_Restore(LLDSBuffer* b)
