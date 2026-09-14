@@ -509,6 +509,9 @@ extern unsigned char g_shadow_src[];        /* 0x00612210  Vec3f[12] */
 extern unsigned char g_level_rec[];         /* 0x004bcbf4  GameLevel* (== g_level_map) */
 extern unsigned char g_pending_state[];     /* 0x00832ba0  int */
 extern unsigned char g_cur_profile[];       /* 0x0080ffa0  CurProfile, level_done at +0x34 */
+extern unsigned char g_ui_flags[];          /* 0x00813a40  0x400 in-game clicks enabled, 0x1000 drag */
+extern unsigned char g_clock_frozen[];      /* 0x0079a890  FreezeGameClock / ThawGameClock */
+extern unsigned char g_edit_mode[];         /* 0x008119b0 */
 
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
@@ -669,7 +672,10 @@ extern unsigned char g_cur_profile[];       /* 0x0080ffa0  CurProfile, level_don
     X(153, g_shadow_src)                \
     X(154, g_level_rec)                 \
     X(155, g_pending_state)             \
-    X(156, g_cur_profile)
+    X(156, g_cur_profile)               \
+    X(157, g_ui_flags)                  \
+    X(158, g_clock_frozen)              \
+    X(159, g_edit_mode)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
