@@ -60,6 +60,9 @@ extern unsigned long g_ddsd_pitch;      /* 0x006680ac  surface.c */
 extern void* g_ddsd_bits;               /* 0x006680c0  surface.c */
 extern int g_video_locked;              /* 0x00668144  surface.c */
 
+extern int g_entrance_x;                /* 0x004b8320  mapobj.c:28 */
+extern int g_entrance_y;                /* 0x004b8324  mapobj.c:29 */
+
 extern unsigned char g_cur_save_slot;   /* 0x0080ffe4  frontend2.c:120 */
 extern int g_cur_save_slot_wide;        /* 0x0080ffe4  gameframe.c:169 */
 extern unsigned char g_profile_unlocked[200]; /* 0x0080ffe6  fpui2.c:168 */
@@ -196,4 +199,15 @@ void test_keystate(void)
     /* Little-endian on every target this port has (x86, wasm32, arm64). */
     LL_CHECK_HEX("g_cur_save_slot_wide spans slot, type and the unlocked block",
                  LL_VU32(g_cur_save_slot_wide), 0x44330011u);
+
+    /* ---- 6. the spot leaving visitors walk to is ONE Pos -------------- */
+    /* goalstate.c's BlokeAction_LeavePark hands `&g_entrance_x` to the path
+     * finders as a Pos; mapobj.c and savegame.c store its y as g_entrance_y.
+     * As two 4-byte objects the y half read alignment padding (0), and every
+     * leaving visitor walked to map row 0 before turning back for the gate. */
+    offset_is("g_entrance_y is g_entrance_x + 4", &g_entrance_x, &g_entrance_y, 4);
+    LL_VINT(g_entrance_x) = 65 << 8;
+    LL_VINT(g_entrance_y) = 53 << 8;
+    LL_CHECK_INT("a Pos read at g_entrance_x sees g_entrance_y as its y",
+                 ((volatile int*)&g_entrance_x)[1], 53 << 8);
 }
