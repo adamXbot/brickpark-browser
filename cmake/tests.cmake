@@ -301,3 +301,21 @@ set_tests_properties(pointer_words PROPERTIES
   PASS_REGULAR_EXPRESSION "pointer gate: 0 failure"
   FAIL_REGULAR_EXPRESSION "FAIL"
   TIMEOUT 300)
+
+# ---- the format-8 COMP reader (tools/comp.py --check) -----------------------
+# The 365 format-8 (8-bit paletted) .lls members of Graphics2.res are the type-2
+# records softblit2.c / softblit.c paint. comp.py's reader for them was once
+# written from the loader alone and crashed on the first real file; this decodes
+# every one of their 6999 frame records and requires each to consume exactly
+# its index block and its control stream, with the records ending at the member
+# end. It prints counts only and reads gamedata/ but no build product, so it
+# runs on both toolchains whenever the volumes are present.
+if(LL_HAVE_GAMEDATA)
+  add_test(NAME comp_format8
+           COMMAND "${Python3_EXECUTABLE}" "${LL_ROOT}/tools/comp.py"
+                   --check "${LL_ROOT}/gamedata/disc/Graphics2.res")
+  set_tests_properties(comp_format8 PROPERTIES
+    PASS_REGULAR_EXPRESSION "comp check: 0 failure"
+    FAIL_REGULAR_EXPRESSION "FAIL"
+    TIMEOUT 300)
+endif()
