@@ -200,7 +200,7 @@ export class GameSession {
           }
           files.clear();
           session.runtimeReady = true;
-          window.Module.callMain([]);
+          window.Module.callMain(session.options.freeplayAll ? ['-ll-freeplay-all'] : []);
         } catch (e) {
           session.crash(e);
         }

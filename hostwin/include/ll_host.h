@@ -317,6 +317,11 @@ void ll_host_mouse_button(int button, int down);
 void ll_host_mouse_moveto(int x, int y);
 void ll_host_set_cursor_reader(int (*reader)(int* x, int* y));
 
+/* The optional quality-of-life switches (ll_portable.h's LL_QOL, portable.c):
+ * a front end passes its assembled command line through this before WinMain.
+ * The switches come out of the string; the bits now on are returned. */
+unsigned int ll_qol_take_switches(char* cmdline);
+
 /* Run every timeSetEvent callback whose period has elapsed. winmm.c; called
  * once per message-pump pass. */
 void ll_host_pump_timers(void);

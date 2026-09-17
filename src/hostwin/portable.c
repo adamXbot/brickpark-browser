@@ -57,3 +57,49 @@ void ll_unhosted(const char* name, const char* dll)
     fprintf(stderr, "LEGOLAND portable: host API %s (%s) is not implemented by the shim yet\n", name, dll);
     abort();
 }
+
+/* ---- optional quality-of-life switches (ll_portable.h's LL_QOL) ---------- */
+
+static unsigned int ll_qol_bits;
+
+unsigned int ll_qol(void)
+{
+    return ll_qol_bits;
+}
+
+/* Take the host's own switches out of a game command line, in place, so the
+ * game never sees them, and turn their bits on. Returns every bit now on. */
+unsigned int ll_qol_take_switches(char* cmdline)
+{
+    static const struct { const char* name; unsigned int bit; } k_switches[] = {
+        { "-ll-freeplay-all", LL_QOL_FREEPLAY_ALL },
+    };
+    char*  out = cmdline;
+    char*  p = cmdline;
+    size_t i;
+
+    for (;;) {
+        size_t n;
+        int    taken = 0;
+
+        p += strspn(p, " \t");
+        if (!*p)
+            break;
+        n = strcspn(p, " \t");
+        for (i = 0; i < sizeof k_switches / sizeof k_switches[0]; i++)
+            if (strlen(k_switches[i].name) == n && strnicmp(p, k_switches[i].name, n) == 0) {
+                ll_qol_bits |= k_switches[i].bit;
+                taken = 1;
+            }
+        if (!taken) {
+            /* `out` trails `p` by at least the whitespace just skipped. */
+            if (out != cmdline)
+                *out++ = ' ';
+            memmove(out, p, n);
+            out += n;
+        }
+        p += n;
+    }
+    *out = 0;
+    return ll_qol_bits;
+}

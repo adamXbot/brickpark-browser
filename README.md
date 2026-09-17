@@ -2618,6 +2618,57 @@ install copies the music files with the rest of the game, but not `gm16.dls`, wh
 build extracts from the CD's `directx.cab`, so the music there stays silent until the page
 installs that too.
 
+## Optional: free play with everything unlocked
+
+Asked for 2026-09-15 as an optional quality-of-life change: start a free-play game with
+every item unlocked and ready to go. It is OFF unless the host passes `-ll-freeplay-all`:
+the player page's **Options → Extras → Free Play with everything**, or
+`legoland.html?args=-nointro+WINDEBUG+-ll-freeplay-all` on the developer page. A faithful
+build (`LL_FAITHFUL`) compiles it out. `ll_portable.h` lists the optional switches
+(`LL_QOL`), and `portable.c`'s `ll_qol_take_switches` takes them out of the command line
+before `WinMain` sees it, so the default switches still apply when a `-ll-` switch is the
+only one (both front ends call it).
+
+Each change is a `LEGOLAND_PORTABLE` arm, so VC6 still compiles the shipped code:
+`tools/audit.py` matches every body it matched before in all seven files, and
+`tools/relocs.py` finds no mismatch.
+
+| where | shipped | with `-ll-freeplay-all` |
+| --- | --- | --- |
+| `InitTitleScreen` (screens2.c) | Free Play is inert until level six's done byte (`HaveCurrentProfile`) | open from the start |
+| `InitFreePlayLists` (fpui2.c) | only the classes the profile has earned | every class |
+| `FreePlayItemAvailable` (uimisc3.c) | a 20000 budget, and a child needs its parent ticked | no budget; the parent rule stays |
+| `InitFreePlayScreen` (fpui2.c) | nothing ticked | a picker that comes back empty is filled by `ll_freeplay_tick_all` (fpui3.c), through each icon's own `FreePlayIconInput` |
+| `RenderFreePlayBar` (fpui.c) | the gauge is the cost over 20000 | it stops at full |
+| `UpdateThemeIconsFromProfile` (screens3.c) | a tab for each earned theme | all four tabs in a new free-play park |
+| `UnlockFreePlayEntry` (frontend2.c) | writes each class made available into the profile | writes nothing in a free-play park |
+
+The last row is what keeps the switch optional. `StartFreePlayPark` makes every ticked
+class available through `MarkElemAvailable`, which calls `UnlockFreePlayEntry`, so without
+it one free-play game would record all 130 classes as earned and switching the option off
+would never bring the old picker back. A loaded park keeps its own saved tab state
+(`UpdateThemeIconsFromFlags` is untouched). The developer page's `llAddrs()` gains
+`g_freeplay_progress`, `g_freeplay_selected_count`, `g_fp_accept_icon` and `g_fp_table`.
+
+Measured on the developer page with a fresh profile, with and without the switch. The run
+without it sets level six's done byte and the 200 unlock bytes as P1's prelude does, and
+ticks every class through its own input handler to test the budget:
+
+| | with the switch | without |
+| --- | --- | --- |
+| title: Free Play | open | inert until level six is done |
+| picker: offered / ticked | 130 / 130 | 0 with nothing earned; 130 / 0 with everything earned |
+| picker: total cost | 104,690, gauge full | 20,000: 31 ticked, 99 refused over budget |
+| park: theme tabs | all four | the one earned (LEGOLAND); the others are blank plates |
+| park: classes available | 130 | 31 |
+| profile once the park is running | 0 unlock bytes, themes and level six unchanged | as set |
+
+The picker never offers three table rows either way; they are the table's own placeholders
+(`XXCASTLE_DUMMY`, `XXROLLER COASTER TRACK`, `xxMINILAND DENMARK`). On the player page with
+the option on, the log reads `[browser] optional switches on: 0x1` then
+`WinMain("-nointro -nomusic")`, and a new player's Free Play opens on the fully ticked
+picker.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and

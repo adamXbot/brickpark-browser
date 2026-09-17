@@ -77,6 +77,32 @@ unsigned int ll_rdtsc(void);
 int stricmp(const char*, const char*);
 int strnicmp(const char*, const char*, __SIZE_TYPE__);
 
+/* ---- optional quality-of-life switches ------------------------------------
+ *
+ * Changes to how the game plays, each OFF unless the host passes its switch.
+ * portable.c's ll_qol_take_switches takes them out of the command line before
+ * WinMain's parser sees it, and the arms test LL_QOL(bit). They are choices,
+ * not docs/QUIRKS.md's fixes, so nothing turns one on by default, and a
+ * faithful build (LL_FAITHFUL) compiles every one of them out.
+ *
+ *   LL_QOL_FREEPLAY_ALL  -ll-freeplay-all: the title's Free Play button is open
+ *       from the start (screens2.c); the picker offers every class (fpui2.c)
+ *       with no 20000 budget (uimisc3.c, and fpui.c's gauge stops at full); a
+ *       picker with nothing ticked starts with everything ticked (fpui3.c's
+ *       ll_freeplay_tick_all); a new free-play park opens all four theme tabs
+ *       (screens3.c); and what a free-play park makes available is not
+ *       written into the profile as earned (frontend2.c).
+ */
+#define LL_QOL_FREEPLAY_ALL 0x1u
+unsigned int ll_qol(void);
+unsigned int ll_qol_take_switches(char* cmdline);
+void ll_freeplay_tick_all(void);
+#ifdef LL_FAITHFUL
+#define LL_QOL(bit) 0
+#else
+#define LL_QOL(bit) ((ll_qol() & (bit)) != 0)
+#endif
+
 /* ---- the type-3 RLE control stream (rlepaint.c / rlepaint2.c) -----------
  *
  * The ten hand-written painters all walk the same stream with a ROTATING

@@ -682,7 +682,9 @@ function showOptions() {
       toggle('narration', 'Voice narration', narrationInstalled ? 'The advisor and the lessons speak. Off saves about 60 MB of memory.' : 'The voice clips aren’t installed.', !narrationInstalled)),
     h('fieldset', { class: 'options' }, h('legend', null, 'Playing'),
       toggle('background', 'Keep running in a background tab', 'The park keeps going when you switch tabs. Uses more battery.'),
-      toggle('fps', 'Show the frame rate', 'A small counter in the corner while you play.'))),
+      toggle('fps', 'Show the frame rate', 'A small counter in the corner while you play.')),
+    h('fieldset', { class: 'options' }, h('legend', null, 'Extras'),
+      toggle('freeplayAll', 'Free Play with everything', 'Free Play is open from the start, every item is already picked and there is no brick budget. Nothing is added to your player’s progress.'))),
   { active: 'options' });
 }
 

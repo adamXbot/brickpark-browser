@@ -514,6 +514,14 @@ extern unsigned char g_ui_flags[];          /* 0x00813a40  0x400 in-game clicks 
 extern unsigned char g_clock_frozen[];      /* 0x0079a890  FreezeGameClock / ThawGameClock */
 extern unsigned char g_edit_mode[];         /* 0x008119b0 */
 
+/* The optional free-play unlock (ll_portable.h's LL_QOL_FREEPLAY_ALL): the
+ * picker's running cost, the number of classes ticked, its Accept icon (flag
+ * 0x400 is the cover) and the table the costs and "chosen" bits live in. */
+extern unsigned char g_freeplay_progress[];       /* 0x007cb3a0  int, 0..20000 without the switch */
+extern unsigned char g_freeplay_selected_count[]; /* 0x00798650  int */
+extern unsigned char g_fp_accept_icon[];          /* 0x0079864c  Icon* */
+extern unsigned char g_fp_table[];                /* 0x004bdeb8  0x86 x {u8 id; char* name; int cost; int chosen} */
+
 /* One table, two accessors. LL_DBG(n, sym) keeps index, name and address on
  * the same line so none of the three can drift from the others. */
 #define LL_DBG_TABLE(X)                 \
@@ -676,7 +684,11 @@ extern unsigned char g_edit_mode[];         /* 0x008119b0 */
     X(156, g_cur_profile)               \
     X(157, g_ui_flags)                  \
     X(158, g_clock_frozen)              \
-    X(159, g_edit_mode)
+    X(159, g_edit_mode)                 \
+    X(160, g_freeplay_progress)         \
+    X(161, g_freeplay_selected_count)   \
+    X(162, g_fp_accept_icon)            \
+    X(163, g_fp_table)
 
 EMSCRIPTEN_KEEPALIVE unsigned int ll_dbg_addr(int which)
 {
@@ -819,6 +831,7 @@ int main(int argc, char** argv)
     char cmdline[1024];
     int  i;
     int  r;
+    unsigned int qol;
 
     cmdline[0] = 0;
     for (i = 1; i < argc; i++) {
@@ -826,6 +839,12 @@ int main(int argc, char** argv)
             strncat(cmdline, " ", sizeof(cmdline) - strlen(cmdline) - 1);
         strncat(cmdline, argv[i], sizeof(cmdline) - strlen(cmdline) - 1);
     }
+    /* The host's own switches come out first (ll_portable.h's LL_QOL, e.g.
+     * -ll-freeplay-all), so the defaults still stand in when those were the
+     * only ones: the player page passes nothing else. */
+    qol = ll_qol_take_switches(cmdline);
+    if (qol)
+        printf("[browser] optional switches on: 0x%x\n", qol);
     if (!cmdline[0])
         strcpy(cmdline, LL_DEFAULT_SWITCHES);
 

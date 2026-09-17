@@ -35,6 +35,9 @@
 /* winmain.c, 0x00453d10. __stdcall is ignored off x86. */
 extern int WinMain(void* hinst, void* hprev, char* cmdline, int ncmdshow);
 
+/* portable.c: the optional switches (ll_portable.h's LL_QOL, -ll-freeplay-all). */
+extern unsigned int ll_qol_take_switches(char* cmdline);
+
 #define LL_DEFAULT_SWITCHES "-nointro -nomusic WINDEBUG"
 
 /* --resmount: the one piece of the spine that sits BEHIND the DirectDraw call
@@ -831,6 +834,11 @@ int main(int argc, char** argv)
             strncat(cmdline, " ", sizeof cmdline - strlen(cmdline) - 1);
         strncat(cmdline, argv[i], sizeof cmdline - strlen(cmdline) - 1);
     }
+    /* -ll-freeplay-all and the other optional switches (ll_portable.h's
+     * LL_QOL) come out before the defaults are considered. */
+    r = (int)ll_qol_take_switches(cmdline);
+    if (r)
+        fprintf(stderr, "legoland_headless: optional switches on: 0x%x\n", (unsigned)r);
     if (!cmdline[0])
         strcpy(cmdline, LL_DEFAULT_SWITCHES);
 

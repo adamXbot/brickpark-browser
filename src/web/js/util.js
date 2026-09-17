@@ -96,7 +96,8 @@ export const DEFAULT_OPTIONS = {
   smooth: false,         // bilinear instead of crisp pixels
   narration: true,       // load speech/ into the game when it is installed
   background: false,     // keep running in a hidden tab
-  fps: false             // show the frame rate while playing
+  fps: false,            // show the frame rate while playing
+  freeplayAll: false     // -ll-freeplay-all: Free Play open, every item ticked, no budget
 };
 
 export function loadOptions() {
