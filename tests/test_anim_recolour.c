@@ -115,7 +115,8 @@ static const ROp g_rrows[RSPR_H][RROW_OPS] = {
 static const ROp g_drows[DSPR_H][RROW_OPS] = {
     /* 0: a left-clip run that ends EXACTLY on the left edge, followed by
      *    singles. `sub edx,ecx / ja` leaves the skip pass here; the plain
-     *    painter's `jns` stays in it and eats the rest of the row. */
+     *    painter's `jns` stays in it and eats the rest of the row -- as
+     *    shipped, and in an LL_FAITHFUL build (QUIRKS.md Q23 fixes it). */
     /* 1: a skip run that consumes the whole width, then a repeat run that
      *    finds a zero budget. `or ecx,ecx / je endrow` writes nothing; the
      *    plain painter's `rep stosd` path writes one stray pixel first. */
@@ -451,9 +452,11 @@ void test_anim_recolour(void)
 
     /* 1. row 0 with a left skip of 3: the copy run ends EXACTLY on the left
      *    edge. `sub edx,ecx / ja` falls out of the skip pass and the two
-     *    singles that follow are painted; the plain painter's `jns` stays in
-     *    it with a skip of 0, `lc_step` drives it to -1, and the rest of the
-     *    row is consumed with nothing drawn. */
+     *    singles that follow are painted; the shipped plain painter's `jns`
+     *    stays in it with a skip of 0, `lc_step` drives it to -1, and the
+     *    rest of the row is consumed with nothing drawn.  That is QUIRKS.md
+     *    Q23: an LL_FAITHFUL build keeps it, the default build paints the row
+     *    exactly as the recolouring painter does. */
     src.left = 3; src.top = 0; src.right = RSPR_W; src.bottom = 1;
     rsurf_fill(g_rsurf);
     SoftBlitAnim(lls, &src, &dst);
@@ -463,10 +466,17 @@ void test_anim_recolour(void)
     memcpy(g_rsurf2, g_rsurf, sizeof g_rsurf);
     rsurf_fill(g_rsurf);
     SoftBlitAnimPlain(lls, &src, &dst);
+#ifdef LL_FAITHFUL
     n = 0;
     for (i = 0; i < RSURF_W * RSURF_H; i++)
         if (g_rsurf[i] != RSENTINEL) n++;
-    LL_CHECK_INT("the plain painter (`jns`) paints nothing on that row", n, 0);
+    LL_CHECK_INT("LL_FAITHFUL: the plain painter (`jns`) paints nothing on "
+                 "that row", n, 0);
+#else
+    LL_CHECK_TRUE("QUIRKS.md Q23: the plain painter paints that row exactly "
+                  "as the recolouring one",
+                  memcmp(g_rsurf, g_rsurf2, sizeof g_rsurf) == 0);
+#endif
 
     /* 2. row 1: a skip run consumes the whole width, leaving a zero budget,
      *    and the repeat run that follows writes NOTHING here

@@ -91,6 +91,46 @@ static const ZOp g_zrows[ZSPR_H][ZROW_OPS] = {
               { ZOP_END, 0, { 0 } } },
 };
 
+/* QUIRKS.md Q23: test_anim_paint.c's seam rows -- a run boundary EXACTLY on
+ * source column 4 in every row, rows 3 and 5 as controls. */
+#define ZEDGE_H 6
+
+static const ZOp g_zedge_rows[ZEDGE_H][ZROW_OPS] = {
+            { { ZOP_REPEAT, 4, { 0x81 } },
+              { ZOP_PIX, 0, { 0x82 } },
+              { ZOP_REPEAT, 7, { 0x83 } },
+              { ZOP_END, 0, { 0 } } },
+            { { ZOP_COPY, 4, { 0x91, 0x92, 0x93, 0x94 } },
+              { ZOP_PIX, 0, { 0x95 } },
+              { ZOP_SKIPN, 7, { 0 } },
+              { ZOP_END, 0, { 0 } } },
+            { { ZOP_SKIPN, 4, { 0 } },
+              { ZOP_SKIP1, 0, { 0 } },
+              { ZOP_COPY, 3, { 0xa1, 0xa2, 0xa3 } },
+              { ZOP_SKIPN, 4, { 0 } },
+              { ZOP_END, 0, { 0 } } },
+            { { ZOP_REPEAT, 4, { 0xb1 } },
+              { ZOP_REPEAT, 8, { 0xb2 } },
+              { ZOP_END, 0, { 0 } } },
+            { { ZOP_COPY, 2, { 0xc1, 0xc2 } },
+              { ZOP_SKIPN, 2, { 0 } },
+              { ZOP_PIX, 0, { 0xc3 } },
+              { ZOP_PIX, 0, { 0xc4 } },
+              { ZOP_REPEAT, 6, { 0xc5 } },
+              { ZOP_END, 0, { 0 } } },
+            { { ZOP_PIX, 0, { 0xd1 } },
+              { ZOP_PIX, 0, { 0xd2 } },
+              { ZOP_PIX, 0, { 0xd3 } },
+              { ZOP_PIX, 0, { 0xd4 } },
+              { ZOP_PIX, 0, { 0xd5 } },
+              { ZOP_REPEAT, 7, { 0xd6 } },
+              { ZOP_END, 0, { 0 } } },
+};
+
+/* The sprite zemit_frame and zexpect read: g_zrows unless a test swaps it. */
+static const ZOp (*g_zops)[ZROW_OPS] = g_zrows;
+static int g_zops_h = ZSPR_H;
+
 static unsigned int   g_zwords[256];
 static unsigned char  g_zidx[256];
 static unsigned int   g_znwords, g_zslot, g_znidx;
@@ -118,9 +158,9 @@ static void zemit_frame(void)
     g_zslot = 16;
     g_znidx = 0;
 
-    for (r = 0; r < ZSPR_H; r++) {
-        for (i = 0; g_zrows[r][i].kind != ZOP_END; i++) {
-            const ZOp* op = &g_zrows[r][i];
+    for (r = 0; r < g_zops_h; r++) {
+        for (i = 0; g_zops[r][i].kind != ZOP_END; i++) {
+            const ZOp* op = &g_zops[r][i];
             switch (op->kind) {
             case ZOP_PIX:
                 zemit_code(0);
@@ -183,8 +223,8 @@ static void zexpect(int top, int h, int vis_lo, int vis_hi, int dxoff)
     for (y = 0; y < h; y++) {
         r = top + y;
         x = 0;
-        for (i = 0; g_zrows[r][i].kind != ZOP_END; i++) {
-            const ZOp* op = &g_zrows[r][i];
+        for (i = 0; g_zops[r][i].kind != ZOP_END; i++) {
+            const ZOp* op = &g_zops[r][i];
             int n = (op->kind == ZOP_COPY || op->kind == ZOP_REPEAT
                   || op->kind == ZOP_SKIPN) ? op->len : 1;
             for (k = 0; k < n; k++, x++) {
@@ -219,6 +259,18 @@ static void zcompare(const char* what)
 #define ZFRAME_BYTES (8 + 256 + 0x200 + 1024)
 static int g_zrec[(0x18 + ZFRAME_BYTES) / 4 + 1];
 
+/* Lay the frame zemit_frame just built into the record's one frame. */
+static void zload(char* lls)
+{
+    int* hdr = (int*)(lls + 0x18);
+
+    hdr[1] = (int)g_znidx;                       /* npixels */
+    memcpy(lls + 0x18 + 8, g_zidx, g_znidx);
+    memset(lls + 0x18 + 8 + g_znidx, 0, 0x200);
+    memcpy(lls + 0x18 + 8 + g_znidx + 0x200, g_zwords, g_znwords * 4);
+    hdr[0] = (int)(8 + g_znidx + 0x200 + g_znwords * 4);
+}
+
 /* ---- BltAdvisor's DIB and destination ----------------------------------- */
 
 #define DIB_W 6
@@ -238,7 +290,6 @@ void test_zbuf_blit(void)
     WinRect src;
     Pos     dst;
     char*   lls;
-    int*    hdr;
     int     i, x, y, bad;
 
     /* ---- ZBufferHelper ------------------------------------------------- */
@@ -253,12 +304,7 @@ void test_zbuf_blit(void)
     lls = (char*)g_zrec;
     *(short*)lls = 0;                            /* frame */
     *(short*)(lls + 0x10) = 1;                   /* nframes */
-    hdr = (int*)(lls + 0x18);
-    hdr[1] = (int)g_znidx;                       /* npixels */
-    memcpy(lls + 0x18 + 8, g_zidx, g_znidx);
-    memset(lls + 0x18 + 8 + g_znidx, 0, 0x200);
-    memcpy(lls + 0x18 + 8 + g_znidx + 0x200, g_zwords, g_znwords * 4);
-    hdr[0] = (int)(8 + g_znidx + 0x200 + g_znwords * 4);
+    zload(lls);
 
     g_frame_override = -1;
 
@@ -329,6 +375,34 @@ void test_zbuf_blit(void)
     ZBufferHelper(lls, &src, &dst, g_zb);
     zexpect(0, ZSPR_H, 3, ZSPR_W, -3);
     zcompare("a left skip of 3 keeps source columns 3..11");
+
+    /* 7. QUIRKS.md Q23: a run that ends EXACTLY on the left edge.  The shipped
+     * `jns c_loop` merges the singles after it into the next run, the same
+     * four slips test_anim_paint.c section 7 lists, here as Z keys. */
+    g_zops = g_zedge_rows;
+    g_zops_h = ZEDGE_H;
+    zemit_frame();
+    LL_CHECK_INT("the seam frame holds 24 index bytes", g_znidx, 24);
+    zload(lls);
+    src.left = 4; src.top = 0; src.right = ZSPR_W; src.bottom = ZEDGE_H;
+    dst.x = 0; dst.y = 0;
+    zb_fill(g_zb);
+    ZBufferHelper(lls, &src, &dst, g_zb);
+    zexpect(0, ZEDGE_H, 4, ZSPR_W, -4);
+#ifdef LL_FAITHFUL
+    g_zwant[0 * ZB_ROWDW + 0] = 0x83u << 24;
+    g_zwant[1 * ZB_ROWDW + 0] = ZSENTINEL;
+    g_zwant[2 * ZB_ROWDW + 0] = 0x95u << 24;
+    g_zwant[4 * ZB_ROWDW + 0] = 0xc5u << 24;
+    g_zwant[4 * ZB_ROWDW + 1] = 0xc5u << 24;
+    zcompare("LL_FAITHFUL: a run ending on the left edge merges the singles "
+             "after it into the next run, as shipped (QUIRKS.md Q23)");
+#else
+    zcompare("a run ending on the left edge leaves the skip pass: the seam "
+             "writes the source keys exactly (QUIRKS.md Q23)");
+#endif
+    g_zops = g_zrows;
+    g_zops_h = ZSPR_H;
 
     /* ---- BltAdvisor ---------------------------------------------------- */
     /* A 6x4 bottom-up DIB: the LAST row of g_dib.pix is the TOP row of the

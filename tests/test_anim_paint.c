@@ -112,6 +112,46 @@ static const AOp g_arows[ASPR_H][8] = {
               { AOP_END, 0, { 0 } } },
 };
 
+/* QUIRKS.md Q23: every row puts a run boundary EXACTLY on source column 4, the
+ * clip the seam test below uses. Rows 3 and 5 are controls. */
+static const AOp g_edge_rows[ASPR_H][8] = {
+    /* 0: repeat, a literal on the edge, repeat (the Abu Simbel seam) */
+            { { AOP_REPEAT, 4, { 0x81 } },
+              { AOP_PIX, 0, { 0x82 } },
+              { AOP_REPEAT, 7, { 0x83 } },
+              { AOP_END, 0, { 0 } } },
+    /* 1: copy, a literal on the edge, skip run */
+            { { AOP_COPY, 4, { 0x91, 0x92, 0x93, 0x94 } },
+              { AOP_PIX, 0, { 0x95 } },
+              { AOP_SKIPN, 7, { 0 } },
+              { AOP_END, 0, { 0 } } },
+    /* 2: skip run, a transparent single on the edge, copy, skip run */
+            { { AOP_SKIPN, 4, { 0 } },
+              { AOP_SKIP1, 0, { 0 } },
+              { AOP_COPY, 3, { 0xa1, 0xa2, 0xa3 } },
+              { AOP_SKIPN, 4, { 0 } },
+              { AOP_END, 0, { 0 } } },
+    /* 3: repeat, repeat -- no single after the edge */
+            { { AOP_REPEAT, 4, { 0xb1 } },
+              { AOP_REPEAT, 8, { 0xb2 } },
+              { AOP_END, 0, { 0 } } },
+    /* 4: copy, skip run to the edge, two literals, repeat */
+            { { AOP_COPY, 2, { 0xc1, 0xc2 } },
+              { AOP_SKIPN, 2, { 0 } },
+              { AOP_PIX, 0, { 0xc3 } },
+              { AOP_PIX, 0, { 0xc4 } },
+              { AOP_REPEAT, 6, { 0xc5 } },
+              { AOP_END, 0, { 0 } } },
+    /* 5: four singles reach the edge (lc_step), a literal, repeat */
+            { { AOP_PIX, 0, { 0xd1 } },
+              { AOP_PIX, 0, { 0xd2 } },
+              { AOP_PIX, 0, { 0xd3 } },
+              { AOP_PIX, 0, { 0xd4 } },
+              { AOP_PIX, 0, { 0xd5 } },
+              { AOP_REPEAT, 7, { 0xd6 } },
+              { AOP_END, 0, { 0 } } },
+};
+
 /* ---- the encoder --------------------------------------------------------- */
 /* The reader keeps a count of the codes left in the current word. A plain
  * code takes one slot; a length takes four, and when fewer than four remain
@@ -252,12 +292,23 @@ static void acompare(const char* what)
 #define AFRAME_BYTES (8 + 256 + 0x200 + 1024)
 static int g_rec[(0x18 + AFRAME_BYTES) / 4 + 1];
 
+/* Lay the frame emit_frame just built into the record's one frame. */
+static void aload(LLSRec* lls)
+{
+    int* hdr = (int*)lls->frames;
+
+    hdr[1] = (int)g_nidx;                                    /* npixels */
+    memcpy(lls->frames + 8, g_idx, g_nidx);
+    memcpy(lls->frames + 8 + g_nidx, g_apal, 0x200);         /* the palette */
+    memcpy(lls->frames + 8 + g_nidx + 0x200, g_words, g_nwords * 4);
+    hdr[0] = (int)(8 + g_nidx + 0x200 + g_nwords * 4);       /* size */
+}
+
 void test_anim_paint(void)
 {
     WinRect src;
     Pos     dst;
     LLSRec* lls;
-    int*    hdr;
     int     i;
 
     for (i = 0; i < 256; i++)
@@ -278,13 +329,7 @@ void test_anim_paint(void)
     lls->nframes = 1;
     lls->pad12 = 0;
     lls->flags = 0;
-
-    hdr = (int*)lls->frames;
-    hdr[1] = (int)g_nidx;                                    /* npixels */
-    memcpy(lls->frames + 8, g_idx, g_nidx);
-    memcpy(lls->frames + 8 + g_nidx, g_apal, 0x200);         /* the palette */
-    memcpy(lls->frames + 8 + g_nidx + 0x200, g_words, g_nwords * 4);
-    hdr[0] = (int)(8 + g_nidx + 0x200 + g_nwords * 4);       /* size */
+    aload(lls);
 
     g_lock.ddsd.lpSurface = g_asurf;
     g_lock.ddsd.lPitch = ASURF_PITCH;
@@ -350,4 +395,32 @@ void test_anim_paint(void)
                  g_blit_hit, 0);
 
     g_sp_mouse_pixel = 0;
+
+    /* ---- 7. QUIRKS.md Q23: a run that ends EXACTLY on the left edge ----- */
+    /* The shipped `jns lclip` keeps skipping after such a run, so the singles
+     * that follow it are merged into the next run: row 0 paints the literal
+     * in the repeat's colour, row 1 loses the literal before the skip run,
+     * row 2 paints the previous index byte (row 1's literal) where the
+     * transparent single sits, and row 4 loses both literals to the repeat.
+     * The default build paints the source exactly. */
+    emit_frame(g_edge_rows, ASPR_H);
+    LL_CHECK_INT("the seam frame holds 24 index bytes", g_nidx, 24);
+    aload(lls);
+    src.left = 4; src.top = 0; src.right = ASPR_W; src.bottom = ASPR_H;
+    dst.x = 0; dst.y = 0;
+    asurf_fill(g_asurf);
+    SoftBlitAnimPlain(lls, &src, &dst);
+    aexpect(g_edge_rows, 0, ASPR_H, 4, ASPR_W, -4);
+#ifdef LL_FAITHFUL
+    g_awant[0 * ASURF_W + 0] = g_apal[0x83];
+    g_awant[1 * ASURF_W + 0] = ASENTINEL;
+    g_awant[2 * ASURF_W + 0] = g_apal[0x95];
+    g_awant[4 * ASURF_W + 0] = g_apal[0xc5];
+    g_awant[4 * ASURF_W + 1] = g_apal[0xc5];
+    acompare("LL_FAITHFUL: a run ending on the left edge merges the singles "
+             "after it into the next run, as shipped (QUIRKS.md Q23)");
+#else
+    acompare("a run ending on the left edge leaves the skip pass: the seam "
+             "paints the source exactly (QUIRKS.md Q23)");
+#endif
 }
