@@ -470,8 +470,15 @@ EM_JS(int, ll_audio_js_music_open, (void), {
     if (!a || !a.ctx) return 0;
     if (a.music) return 1;
     try {
+        /* Into the same master gain as every voice (ll_audio_js_chain), so the
+         * player page's mute (llAudioMute) silences the music too. */
+        if (!a.master) {
+            a.master = a.ctx.createGain();
+            a.master.gain.value = globalThis.__llMuted ? 0 : 1;
+            a.master.connect(a.ctx.destination);
+        }
         var gain = a.ctx.createGain();
-        gain.connect(a.ctx.destination);
+        gain.connect(a.master);
         a.music = { gain: gain, next: 0, queue: [], chunks: 0, frames: 0, underruns: 0 };
     } catch (e) { return 0; }
     return 1;
