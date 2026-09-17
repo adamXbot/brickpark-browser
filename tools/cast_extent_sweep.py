@@ -83,11 +83,11 @@ tools/relocs.py.
 
 Usage:
 
-    python3 portable/tools/cast_extent_sweep.py                   # sweep LEGOLAND/
-    python3 portable/tools/cast_extent_sweep.py --census          # every site
-    python3 portable/tools/cast_extent_sweep.py --baseline FILE   # the ctest gate
-    python3 portable/tools/cast_extent_sweep.py --closure DIR/gen/globals.c
-    python3 portable/tools/cast_extent_sweep.py --selftest
+    python3 tools/cast_extent_sweep.py                   # sweep LEGOLAND/
+    python3 tools/cast_extent_sweep.py --census          # every site
+    python3 tools/cast_extent_sweep.py --baseline FILE   # the ctest gate
+    python3 tools/cast_extent_sweep.py --closure DIR/gen/globals.c
+    python3 tools/cast_extent_sweep.py --selftest
 
 Exit status is the gate: 0 when every row is accepted by the baseline (no
 baseline: when there is no row), 1 otherwise. A baseline row that is no longer

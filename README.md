@@ -1,14 +1,48 @@
-# LEGOLAND portable
+# LEGOLAND browser
 
-The path from the matching decompilation in `../LEGOLAND` to a game that runs
-natively and in the browser, modelled on
+The matching decompilation of **LEGOLAND** (Windows, 2000) running natively and
+in the browser, modelled on
 [isle-portable](https://github.com/isledecomp/isle-portable): the same
 recovered C compiled with a modern compiler, Win32 and DirectX replaced by a
-host shim (SDL3 later), and Emscripten for the web build.
+host shim, and Emscripten for the web build. The front end, all five tutorial
+lessons, free play and campaign levels run, with music.
 
-This directory never touches the VC6 matching build. Every change it needs in
-`../LEGOLAND` sits under `#ifdef LEGOLAND_PORTABLE` (or `#ifndef`), which the
-VC6 gate does not define, so `tools/verify.py` sees the original text.
+The game code comes from
+[legoland-decomp](https://github.com/adamXbot/legoland-decomp), checked out
+here as the `decomp` submodule. Every change the portable build needs there sits
+under `#ifdef LEGOLAND_PORTABLE` (or `#ifndef`), which the VC6 build does not
+define, so its matching gate sees the original text. A short, documented list of
+the shipped game's own bugs is fixed in portable-only code; `-DLL_FAITHFUL=ON`
+builds without those fixes (see
+[decomp/docs/QUIRKS.md](https://github.com/adamXbot/legoland-decomp/blob/main/docs/QUIRKS.md)).
+
+## Quick start
+
+You need your own copy of LEGOLAND. No game data or binaries are in either
+repository.
+
+```bash
+git clone --recurse-submodules https://github.com/adamXbot/legoland-browser.git
+cd legoland-browser
+# original/legoland.exe, and the extracted install under gamedata/main and gamedata/disc
+# (see the decomp README: python3 decomp/tools/iscab.py extract ...)
+emcmake cmake -S . -B build-wasm -G Ninja -DCMAKE_BUILD_TYPE=Release -DLL_ILP32=ON
+ninja -C build-wasm legoland_browser        # the instrumented developer page
+ninja -C build-wasm legoland_web            # the player page (build-wasm/web/)
+cd build-wasm && python3 -m http.server 8968   # open http://localhost:8968/legoland.html
+```
+
+The developer page's `version` cell shows the commits the build was made from,
+with links to both repositories.
+
+**Do not publish a built browser bundle.** The build packs files from your local
+game data into `legoland.data` and the player page's data pack. Run it locally;
+never host or share a build directory.
+
+LEGO and LEGOLAND are trademarks of the LEGO Group. This project is not
+affiliated with or endorsed by the LEGO Group, LEGO Media, or Krisalis Software.
+
+The rest of this file is the development log of the port, lane by lane.
 
 ## Status: merged to main, census refreshed (2026-09-11)
 
@@ -38,13 +72,13 @@ FMV), MSACM32 6 (ADPCM), WINMM 5 (MIDI out, timers), VERSION 3, ole32 2
 ## Build
 
 ```bash
-cmake -S portable -B portable/build -G Ninja -DPython3_EXECUTABLE=$HOME/.venvs/legoland/bin/python
-ninja -C portable/build                      # liblegoland_core.a: every game source
-ninja -C portable/build legoland_linkcheck   # generate the closure and link the whole archive
-python3 portable/tools/linkreport.py portable/build/CMakeFiles/legoland_core.dir --out portable/build/linkreport.md
+cmake -S . -B build -G Ninja -DPython3_EXECUTABLE=$HOME/.venvs/legoland/bin/python
+ninja -C build                      # liblegoland_core.a: every game source
+ninja -C build legoland_linkcheck   # generate the closure and link the whole archive
+python3 tools/linkreport.py build/CMakeFiles/legoland_core.dir --out build/linkreport.md
 ```
 
-`gen_link.py` reads the original binary at `../original/legoland.exe` to
+`gen_link.py` reads the original binary at `original/legoland.exe` to
 initialise data (the path is the `LL_EXE` cache variable). Without it the
 globals are zero-filled and the link still closes.
 
@@ -103,7 +137,7 @@ to a non-x86 compiler, so each site has a C fallback:
   title screen draw. Their shared decode -- the rotating 2-bit control-stream
   reader (`LLRleCtl`, `ll_rle_open`, `ll_rle_code`, `LL_RLE_HI`/`LL_RLE_LO`)
   and the run hit test `ll_rle_hit_run` -- lives in
-  `portable/hostwin/include/ll_portable.h` next to `ll_blit8`/`ll_blit16`, so
+  `hostwin/include/ll_portable.h` next to `ll_blit8`/`ll_blit16`, so
   all ten spell the decode once. Five of the ten mishandle primary code 1 in
   their top-skip pass and the two recolouring ones have three hit-test
   divergences of their own; all of that is REPRODUCED, not fixed, and
@@ -129,7 +163,7 @@ the function body, never between a `// FUNCTION:` marker and its signature.
 
 ## Headless behaviour tests (scope PORT-C)
 
-`portable/tests/` plus `portable/cmake/tests.cmake` build `legoland_tests`, one
+`tests/` plus `cmake/tests.cmake` build `legoland_tests`, one
 executable with a subcommand per test, linked the way `legoland_linkcheck` is
 (whole-archive `legoland_core` + the generated closure). Each test drives real
 recovered entry points over the real `gamedata/` and compares against a
@@ -138,10 +172,10 @@ from the game's assets is committed: the oracles generate their expectations
 into `<build>/gen-tests/` at build time.
 
 ```bash
-ninja -C portable/build legoland_tests
-ctest --test-dir portable/build --output-on-failure       # the ILP32-safe tests
-ninja -C portable/build-wasm legoland_tests               # needs the wasm32 closure
-ctest --test-dir portable/build-wasm --output-on-failure  # run under node
+ninja -C build legoland_tests
+ctest --test-dir build --output-on-failure       # the ILP32-safe tests
+ninja -C build-wasm legoland_tests               # needs the wasm32 closure
+ctest --test-dir build-wasm --output-on-failure  # run under node
 ```
 
 | test | what it drives | oracle | where it runs |
@@ -177,7 +211,7 @@ or `RES_OpenFile` never returns, and `RES_LowSeek` / `RES_LowRead` are
 six DLLs the *graphics and input* half of the game imports; `src/browser/` is
 the Emscripten page around it and `cmake/browser.cmake` its targets. Full notes,
 including the vtable slot table with the source line that pins each slot, are in
-[`docs/lanes/scope-port-b.md`](../docs/lanes/scope-port-b.md).
+[`docs/lanes/scope-port-b.md`](decomp/docs/lanes/scope-port-b.md).
 
 **The main loop is `-sASYNCIFY`.** The recovered game has no one-frame function:
 every frame is produced inside synchronous spin loops (`FlipPrimary`'s 28 ms
@@ -199,10 +233,10 @@ pump, not a JS timer).
 | `legoland_browser` | wasm32 | the game itself. Wired and complete; **blocked** on `gen_link.py`, which does not compile on wasm32 (the 12 `globals.c` redeclarations, plus `aliases.c`'s `__attribute__((alias))` on an incomplete array type off Apple) |
 
 ```bash
-emcmake cmake -S portable -B portable/build-wasm -G Ninja -DLL_ILP32=ON \
+emcmake cmake -S . -B build-wasm -G Ninja -DLL_ILP32=ON \
     -DPython3_EXECUTABLE=$HOME/.venvs/legoland/bin/python
-ninja -C portable/build-wasm legoland_shimtest
-cd portable/build-wasm && python3 -m http.server 8791   # /shimtest.html
+ninja -C build-wasm legoland_shimtest
+cd build-wasm && python3 -m http.server 8791   # /shimtest.html
 ```
 
 Assets are `--preload-file`d: `gamedata/main` at `/gamedata`, and (option
@@ -217,7 +251,7 @@ was on this list until PORT-B2 — see below.)
 
 ## GDI text, node safety and the instrumented page (scope PORT-B2)
 
-Full notes: [`docs/lanes/scope-port-b2.md`](../docs/lanes/scope-port-b2.md).
+Full notes: [`docs/lanes/scope-port-b2.md`](decomp/docs/lanes/scope-port-b2.md).
 Everything the *first front-end frame and the first click* need, written ahead of
 the loader landing.
 
@@ -261,7 +295,7 @@ build time**, so the headless probe has to be lazy and go through `globalThis`, 
 the browser page runs headless and paints nothing.
 
 ```bash
-node portable/build-wasm/shimtest.js --frames 300   # prints PASS, exit 0
+node build-wasm/shimtest.js --frames 300   # prints PASS, exit 0
 ```
 
 **The page** (`?trace=1` still works) shows the frame count and fps, the last
@@ -273,17 +307,17 @@ produces a trace ending at the last `ReadFile`.
 ## wasm32: the link closes and the startup spine runs (scope PORT-A, 2026-09-11)
 
 ```bash
-emcmake cmake -S portable -B portable/build-wasm -G Ninja -DLL_ILP32=ON \
+emcmake cmake -S . -B build-wasm -G Ninja -DLL_ILP32=ON \
         -DPython3_EXECUTABLE=$HOME/.venvs/legoland/bin/python
-ninja -C portable/build-wasm legoland_linkcheck
-node portable/build-wasm/legoland_linkcheck.js          # every symbol resolved
+ninja -C build-wasm legoland_linkcheck
+node build-wasm/legoland_linkcheck.js          # every symbol resolved
 
-ninja -C portable/build-wasm legoland_headless
+ninja -C build-wasm legoland_headless
 LL_HOST_TRACE=1 LL_DATA_DIR=$PWD/gamedata/main \
-        node portable/build-wasm/legoland_headless.js   # the game's own WinMain
+        node build-wasm/legoland_headless.js   # the game's own WinMain
 ```
 
-`legoland_headless` (`portable/src/headless/`, `portable/cmake/headless.cmake`)
+`legoland_headless` (`src/headless/`, `cmake/headless.cmake`)
 calls `WinMain(NULL, NULL, "-nointro -nomusic WINDEBUG", 1)` with `-sNODERAWFS=1`,
 so `gamedata/` is read straight from disk — `$LL_DATA_DIR` is the `chdir` the
 loaders' relative paths need. It gets as far as:
@@ -310,10 +344,10 @@ read out of the objects for every stub and forwarder, because a mismatched
 signature is silently replaced by wasm-ld with a trapping stub. Details and the
 before/after census: `docs/lanes/scope-port-a.md`.
 
-`portable/src/hostwin/kernel32.c` implements all 56 KERNEL32/ADVAPI32/VERSION
+`src/hostwin/kernel32.c` implements all 56 KERNEL32/ADVAPI32/VERSION
 imports the game references (single-threaded waits, POSIX files, one monotonic
 clock, `Sleep` as a no-op with the `ll_host_yield` hook PORT-B sets), declared
-in the new host ABI header `portable/hostwin/include/ll_host.h`. Host API stubs:
+in the new host ABI header `hostwin/include/ll_host.h`. Host API stubs:
 149 → 95.
 
 The 12 symbols the census files as "CRT-range wrappers filed as game-fn" are
@@ -331,11 +365,11 @@ a runtime trap on wasm.
 ## The loaders run: pointer tables, install paths, the spine to the sprite loader (scope PORT-A2, 2026-09-11)
 
 ```bash
-ninja -C portable/build-wasm legoland_headless
+ninja -C build-wasm legoland_headless
 LL_HOST_TRACE=1 LL_CD_DIR=$PWD/gamedata/disc LL_DATA_DIR=$PWD/gamedata/main \
-        node portable/build-wasm/legoland_headless.js --resmount   # mount + list members
+        node build-wasm/legoland_headless.js --resmount   # mount + list members
 LL_HOST_TRACE=1 LL_CD_DIR=$PWD/gamedata/disc LL_DATA_DIR=$PWD/gamedata/main \
-        node portable/build-wasm/legoland_headless.js --stages     # InitSession, step by step
+        node build-wasm/legoland_headless.js --stages     # InitSession, step by step
 ```
 
 **Pointers INTO a rebuilt global, not only AT one.** `gen_link.py --ilp32`
@@ -383,13 +417,13 @@ declare `extern void RES_CloseFile(void*)` while sweep4.c defines
 `TRAP`. Three of the 542 prototype conflicts are now proved live on paths the
 game takes. See `docs/lanes/scope-port-a2.md` §4.
 
-Census after this lane (`linkreport.py portable/build-wasm/CMakeFiles/legoland_core.dir`):
+Census after this lane (`linkreport.py build-wasm/CMakeFiles/legoland_core.dir`):
 game-fn 12 (all CRT thunks, forwarded), game-data 2612, alias 228, host 95,
 crt 43, unknown 86, duplicates 0, asm stubs 26, prototype conflicts 542.
 
 ## One block per object, naming a trap, and the spine as a test (scope PORT-A3)
 
-Full notes: [`docs/lanes/scope-port-a3.md`](../docs/lanes/scope-port-a3.md).
+Full notes: [`docs/lanes/scope-port-a3.md`](decomp/docs/lanes/scope-port-a3.md).
 
 **`gen_link.py` emits ONE block per object.** Sizing every rebuilt global by the
 gap to the next NAMED address is what lets a pointer be re-pointed into the
@@ -426,10 +460,10 @@ COMMON symbol under `-fcommon` and the assembler cannot resolve
 zero-filled host block gets an explicit `= {0}`.
 
 ```bash
-ninja -C portable/build legoland_tests && ctest --test-dir portable/build -R keystate
+ninja -C build legoland_tests && ctest --test-dir build -R keystate
 ```
 
-`portable/tests/test_keystate.c` (29 checks, both toolchains) is the proof: the
+`tests/test_keystate.c` (29 checks, both toolchains) is the proof: the
 four DIK offsets, a 256-byte write that must not reach the next object, the
 game's own `IsLShiftDown`/`IsRShiftDown`, eight offsets of the GPU block, and
 `CheckHostSystemGPU`'s memset really clearing all of it. It is the one test with
@@ -438,8 +472,8 @@ no oracle — its expectation is the original's own layout.
 **Naming a trap is one command now.**
 
 ```bash
-python3 portable/tools/name_trap.py              # the whole WinMain spine
-python3 portable/tools/name_trap.py -- --stages   # InitSession step by step
+python3 tools/name_trap.py              # the whole WinMain spine
+python3 tools/name_trap.py -- --stages   # InitSession step by step
 ```
 
 It builds `legoland_headless_debug`, runs it under node, and prints the host-call
@@ -467,8 +501,8 @@ them, are in the notes; `wasm-ld` warns about 133 candidates out of the census's
 542.
 
 ```bash
-ninja -C portable/build-wasm legoland_headless legoland_pathtest
-ctest --test-dir portable/build-wasm -R 'headless_spine|install_paths'
+ninja -C build-wasm legoland_headless legoland_pathtest
+ctest --test-dir build-wasm -R 'headless_spine|install_paths'
 ```
 
 * **`headless_spine`** runs `legoland_headless --stages loadsprite,rungame` and
@@ -561,14 +595,14 @@ The workflow:
 
 ```bash
 # 1. the trap, named automatically (the -O0 link is what keeps the frame)
-python3 portable/tools/name_trap.py -- --stages
+python3 tools/name_trap.py -- --stages
 
 # 2. or explain one call site by hand, from a frame you already have
 #    (a browser trap, someone else's report, a page that died in a tab)
-python3 portable/tools/name_trap.py --at 0x266ea
+python3 tools/name_trap.py --at 0x266ea
 
 # 3. what the table can hold at all: every signature and how many slots
-python3 portable/tools/name_trap.py --table
+python3 tools/name_trap.py --table
 ```
 
 and what it prints:
@@ -643,7 +677,7 @@ change it, and it is **pinned** in `cmake/headless.cmake` as
 design; if the change was intended, run
 
 ```bash
-node portable/build-wasm/legoland_headless.js --stages rungame
+node build-wasm/legoland_headless.js --stages rungame
 ```
 
 and put the checksum it prints in `LL_TITLE_FRAME_SUM` in the same commit.
@@ -725,7 +759,7 @@ unchanged.
 
 ## The front end comes up: sound, the frame loop, and where input stops (scope PORT-B4)
 
-Full notes: [`docs/lanes/scope-port-b4.md`](../docs/lanes/scope-port-b4.md).
+Full notes: [`docs/lanes/scope-port-b4.md`](decomp/docs/lanes/scope-port-b4.md).
 
 **The game reaches its first front-end menu.** `PLAYER DETAILS`, the eight-slot
 profile screen, renders complete — backdrop, artwork, the eight `EMPTY` captions
@@ -841,7 +875,7 @@ which is pure address arithmetic and is what found the bug:
 
 ```
 LL_CD_DIR=$PWD/gamedata/disc LL_DATA_DIR=$PWD/gamedata/main \
-  node portable/build-wasm/legoland_headless.js --probe-input
+  node build-wasm/legoland_headless.js --probe-input
 
   g_gfx_point +0x4  expected +0x4  OK    ... the record is ONE object
   after UpdateController   controller x=440 y=300 dx=120 dy=60 buttons=0x201
@@ -910,7 +944,7 @@ are not defined and no game source calls them.
 longer needs `?trapcontinue=1`: every Win32 import the program names now has a
 real body, and the six AVIFIL32 traps PORT-A5 left are gone.
 
-`portable/src/hostwin/avifil32.c` — all sixteen AVIFile entry points.
+`src/hostwin/avifil32.c` — all sixteen AVIFile entry points.
 `AVIFileOpenA` reports `AVIERR_FILEOPEN`, which is the path movie.c and
 advisor.c are *written* for: `OpenMovie` returns 0 and `PlayMovie` retries the
 second prefix and returns without entering the player at all, and the advisor
@@ -920,7 +954,7 @@ zero-length stream) is argued in the file's header. Every entry point is
 pointer-blind, because `StartAdvisorClip(NULL)` reaches two of them with a word
 read out of a null struct.
 
-`portable/src/hostwin/msacm32.c` — the ACM, and **not** a stub: `data2.c`'s
+`src/hostwin/msacm32.c` — the ACM, and **not** a stub: `data2.c`'s
 `CreateSampleFromWAV` runs every sample in the archives through
 `ConvertWAVToPCM` and drops the ones that fail, so a shim that refused
 everything would break the sample loader rather than silence it. PCM to 16-bit
@@ -977,7 +1011,7 @@ new-profile name editor is never called.
 ## Object extents computed from the sources (scope PORT-A6)
 
 The extent of a global is `sizeof` of the type the game's own source declares
-it with, and `portable/tools/cdecl.py` computes it: a C declaration parser over
+it with, and `tools/cdecl.py` computes it: a C declaration parser over
 `LEGOLAND/*.c` and `*.h` that reads the `typedef struct` definitions (nested,
 anonymous, unions, arrays of them, function pointers) and lays them out as MSVC
 does on x86 — `#pragma pack` honoured at each member's own line, ILP32 sizes,
@@ -1030,7 +1064,7 @@ identifier outside any parameter list or array bound, handles `extern int
 5301 -> 5354 with **zero** names changing address or class, and the census's
 unclassified count stays at 4 — all four the toolchain's own.
 
-`python3 portable/tools/cdecl.py --overlaps` is PORT-A3's optimiser-hazard
+`python3 tools/cdecl.py --overlaps` is PORT-A3's optimiser-hazard
 sweep as a command: the pairs one translation unit declares whose storage
 overlaps, with the functions that touch both and the direction of each access.
 372 pairs, 167 of them written through by a single function, 61 in a front-end
@@ -1076,7 +1110,7 @@ ASYNCIFY-resumed loop now reaches the TRAP banner**: it used to be swallowed, so
 a dead module looked exactly like a live one that ignored input — and that
 misreading has now cost three lanes an hour each.
 
-`legoland_browser_named` (`ninja -C portable/build-wasm legoland_browser_named`)
+`legoland_browser_named` (`ninja -C build-wasm legoland_browser_named`)
 is the same optimised link plus `-g2`, so the module carries a name section and
 `name_trap.py` can name the CALLERS of an indirect-call type mismatch.
 `legoland_headless_debug` cannot stand in for it: these are only reachable by a
@@ -1386,7 +1420,7 @@ was wrong and nothing about what:
   `rows still waiting for a verdict: 0 raw + 0 rejected`, and a future row with
   no verdict says `OPEN` in its own table instead of hiding inside a count.
 
-### 3. `portable/tools/extern_sweep.py` — a class no byte gate can see
+### 3. `tools/extern_sweep.py` — a class no byte gate can see
 
 PORT-M6 §1f. One `extern` statement, several declarators, several addresses in
 its one trailing comment:
@@ -1409,15 +1443,15 @@ declaration may legitimately cite a sibling's address) and **a ctest**, because
 the only way to keep the class closed is to sweep for the shape:
 
 ```
-python3 portable/tools/extern_sweep.py            # 0 statements -- closed
-python3 portable/tools/extern_sweep.py --selftest
+python3 tools/extern_sweep.py            # 0 statements -- closed
+python3 tools/extern_sweep.py --selftest
 ```
 
 Exit status is the gate: 0 closed, 1 on any hit. Sources only — no gamedata, no
 image, no build products — so it runs in CI beside `cdecl_extents`. Currently
 **0 tree-wide**.
 
-### 4. `portable/tools/slot_sweep.py` — who CALLS a vtable slot
+### 4. `tools/slot_sweep.py` — who CALLS a vtable slot
 
 PORT-M8's two scratch sweeps, promoted and merged into one pass. A slot's real
 type is whatever its call site pushes, and the call site may be in a file that
@@ -1458,9 +1492,9 @@ Validated against PORT-M8's whole known set, reproducing its addresses:
 | `+0x8c` | **0** | no caller in the shipped binary — M8-5 confirmed independently |
 
 ```
-python3 portable/tools/slot_sweep.py 0xb0            # both forms
-python3 portable/tools/slot_sweep.py 0xa0 --form load
-python3 portable/tools/slot_sweep.py --selftest      # no image needed
+python3 tools/slot_sweep.py 0xb0            # both forms
+python3 tools/slot_sweep.py 0xa0 --form load
+python3 tools/slot_sweep.py --selftest      # no image needed
 ```
 
 Hits are grouped under the `// FUNCTION:` marker that owns them, with
@@ -1489,8 +1523,8 @@ that traps, so the index at the call site is an `i32.load`; `--va-literals`
 therefore sweeps the whole module for the class and names every one:
 
 ```
-python3 portable/tools/name_trap.py --va-literals
-python3 portable/tools/name_trap.py --at 0x929af --kind table
+python3 tools/name_trap.py --va-literals
+python3 tools/name_trap.py --at 0x929af --kind table
 ```
 
 Two things make that sweep sharp rather than useless, and both cost a wrong
@@ -1606,7 +1640,7 @@ twice: *our metrics are not the game's metrics*. But the font is right there,
 77,012 bytes of real sfnt, and gpu.c's `InitHostSystemGPU` hands it to
 `AddFontResourceA` before anything draws.
 
-`portable/src/hostwin/ll_ttf.c` reads it — sfnt directory, `head`, `hhea`/`hmtx`,
+`src/hostwin/ll_ttf.c` reads it — sfnt directory, `head`, `hhea`/`hmtx`,
 `maxp`, `loca`, `glyf` simple and composite, `cmap` formats 4 and 0, `OS/2`
 v0..v5 — flattens the outlines and fills them non-zero-winding at 5 sub-rows per
 pixel with exact horizontal coverage. Written here, not vendored: no
@@ -1647,7 +1681,7 @@ in `gamedata/disc/Speech` are**. The shim converted 134 of 155 and no speech at
 all; it now converts **155 of 155 and 1,266 of 1,266**, byte-identical to an
 independent reference on every one of the 1,266.
 
-`portable/src/hostwin/ll_audio.c` is the Web Audio back end. `dsound.c` keeps
+`src/hostwin/ll_audio.c` is the Web Audio back end. `dsound.c` keeps
 every DirectSound semantic PORT-B4 established — the wall-clock cursor, the
 refcount `Release` returns, the status a finished one-shot reports, the volume
 `GetVolume` round-trips — and gains a voice per buffer. Volume stays in
@@ -1777,7 +1811,7 @@ table swallowed by an unbounded `NearOffset[]`, and 6 are false positives with a
 reason (a BGR cursor colour that happens to equal `g_front`'s address; UTF-16 at
 an odd byte phase inside the interface-name pool). Every row names the
 declaration that would fix it. The ctest `raw_words` gates the list against
-`portable/tests/rawwords_baseline.txt`: a new row or a row that grew fails, a row
+`tests/rawwords_baseline.txt`: a new row or a row that grew fails, a row
 that shrinks prints `SHRUNK` and passes, so a bound landing in the game sources
 tightens the baseline instead of fighting it.
 
@@ -1822,7 +1856,7 @@ four from words the extent rule above recovered. `probe_audio` is a local
 (asset-needing) ctest with 4 as a **floor**: the other 21 names are bounds the
 game sources owe, and when they land the probe asks for the floor to be raised.
 
-### `portable/tools/bvstruct_sweep.py`: M10's sweep as a gate, and 13 more sites
+### `tools/bvstruct_sweep.py`: M10's sweep as a gate, and 13 more sites
 
 Promoted with `--selftest` and two ctests. Two changes to the sweep itself, both
 of which change its answers:
@@ -1852,14 +1886,14 @@ one member       identical on both -- passed direct, safe
 
 so a toolchain that stopped disagreeing fails the test instead of turning every
 row into a phantom. All 15 ruled-on addresses are in
-`portable/tests/bvstruct_accepted.txt` with their direction, citations and M10's
+`tests/bvstruct_accepted.txt` with their direction, citations and M10's
 recipe; any other silent site fails the build. Notes:
 `docs/lanes/scope-port-a9.md`.
 
 
 ## One name, two addresses — and a hidden tab that stalls (scope PORT-A10)
 
-### `portable/tools/addr_sweep.py` — the sibling of `extern_sweep`
+### `tools/addr_sweep.py` — the sibling of `extern_sweep`
 
 `extern int g_view_left;  /* 0x004b95f4 */` in `scrolltick.c` and
 `extern int g_view_left;  /* 0x008299ac */` in `coaster3d.c` were two different
@@ -1880,9 +1914,9 @@ STATEMENT with several declarators and several addresses; this one catches one
 NAME with several addresses across FILES, which no single statement reveals.
 
 ```bash
-python3 portable/tools/addr_sweep.py                    # sweep LEGOLAND/
-python3 portable/tools/addr_sweep.py --selftest         # shapes, no sources
-python3 portable/tools/addr_sweep.py --names-only       # the cheap half
+python3 tools/addr_sweep.py                    # sweep LEGOLAND/
+python3 tools/addr_sweep.py --selftest         # shapes, no sources
+python3 tools/addr_sweep.py --names-only       # the cheap half
 ```
 
 Two checks: **NAME** (one name, several addresses — data declarations, function
@@ -1897,7 +1931,7 @@ It finds **18** names, not PORT-P3's 17. The extra one is a *function*:
 second its own symbol with `#define Track_Update Track_Update_427b20`. The row
 is kept so the gate notices if that mitigation is ever dropped.
 
-`portable/tests/addr_collisions.txt` holds all 23 rows with a reason each, and
+`tests/addr_collisions.txt` holds all 23 rows with a reason each, and
 the ctest `addr_sweep` gates them: a row not in the file, or a row that grew an
 address or changed a size, fails; a row that is no longer reported prints `FIXED`
 and passes. That last rule is what lets the baseline hold PORT-P3's open
@@ -1979,7 +2013,7 @@ is, and the screen is now reachable.
 ### It is not the keyboard, at any of the three layers
 
 Measured in a running free-play park while `llType('ABCDEFGHIJKLMNOP')` runs
-(`portable/src/browser/replays/b12-01-*.js`):
+(`src/browser/replays/b12-01-*.js`):
 
 | layer | measurement | result |
 | --- | --- | --- |
@@ -2158,7 +2192,7 @@ clamps to ~1 Hz. `?awake=1` was only ever waking the GAME. With the clamp
 installed explicitly, one `llClick` goes **3024 ms -> 818 ms** and one `llType`
 of 20 characters **48101 ms -> 5645 ms**, with the game at 35.7 fps throughout;
 unclamped it costs nothing (5605 vs 5641 ms). Replay
-`portable/src/browser/replays/b13-01-the-gdi-object-table-leaks-memory-dcs.js`,
+`src/browser/replays/b13-01-the-gdi-object-table-leaks-memory-dcs.js`,
 notes `docs/lanes/scope-port-b13.md`.
 
 ## A variadic callee declared non-variadic (scope PORT-A11)
@@ -2187,7 +2221,7 @@ dword for the third argument, so `audit.py`, `relocs.py`, `match.py` and
 Spider Ride's riders to it: `sprintf` read the seat number as the address of a
 `va_list`, so every `"%02d"` came out `00` and every rider asked for path `…00`.
 
-`portable/tools/variadic_sweep.py` is the gate. It reads every prototype in
+`tools/variadic_sweep.py` is the gate. It reads every prototype in
 `LEGOLAND/*.c` and `*.h` — `extern` statements at any depth, **and** file-scope
 declarations and definitions, because six files spell `int sprintf(char*, const
 char*, ...);` with no `extern` and because the definition is the group's truth —
@@ -2195,10 +2229,10 @@ groups them by the address the comment cites, and requires every live declaratio
 to agree with the callee about being variadic and about where the `...` starts.
 
 ```bash
-python3 portable/tools/variadic_sweep.py             # the gate: 0 conflicts
-python3 portable/tools/variadic_sweep.py --census    # all 10 variadic functions
-python3 portable/tools/variadic_sweep.py --markdown  # the manifest section
-python3 portable/tools/variadic_sweep.py --selftest  # 18 shapes, no sources
+python3 tools/variadic_sweep.py             # the gate: 0 conflicts
+python3 tools/variadic_sweep.py --census    # all 10 variadic functions
+python3 tools/variadic_sweep.py --markdown  # the manifest section
+python3 tools/variadic_sweep.py --selftest  # 18 shapes, no sources
 ```
 
 Four ways to disagree, and the report names which: `VA-SLOT` (a non-variadic
@@ -2249,7 +2283,7 @@ ffmpeg's `indeo5` decoder reads all six advisor clips the exe names (`AD_Blink`,
 `AD_LR`, `AD_Phone`, `AD_PhoneGesture`, `AD_PhoneDown`, `AD_Wobble`; 112x96, 64
 frames at 30/1), so nothing is invented:
 
-* `portable/tools/advisor_frames.py` decodes them at build time into
+* `tools/advisor_frames.py` decodes them at build time into
   `advisor/<stem>.llv` -- a 20-byte header, then bottom-up X1R5G5B5 frames, the
   DIB Video for Windows returns for `InitAdvisorBmi`'s 112x96x16 BI_RGB request.
   `browser.cmake` runs it when ffmpeg and `gamedata/main` are present and
@@ -2408,9 +2442,9 @@ timeline, measure-aligned transitions including the last-bar abort, and with a
 DLS collection an audible, finite render of the theme.
 
 ```
-ninja -C portable/build-wasm legoland_dmusic
-node portable/build-wasm/legoland_dmusic.js render --dir gamedata/main \
-    --dls portable/build-wasm/dls/gm.dls --repeats 1 --out theme.wav \
+ninja -C build-wasm legoland_dmusic
+node build-wasm/legoland_dmusic.js render --dir gamedata/main \
+    --dls build-wasm/dls/gm.dls --repeats 1 --out theme.wav \
     gamedata/main/Segtheme1.sgt
 ```
 
@@ -2441,8 +2475,8 @@ gets the game's files into the browser once, runs the game, manages the saves, a
 somewhere to go when the park closes.
 
 ```
-ninja -C portable/build-wasm legoland_web
-python3 -m http.server -d portable/build-wasm/web 8080
+ninja -C build-wasm legoland_web
+python3 -m http.server -d build-wasm/web 8080
 ```
 
 `build-wasm/web/` is the whole site: static files, no server logic, no COOP/COEP (the
@@ -2450,7 +2484,7 @@ module is single-threaded ASYNCIFY).
 
 | path | what |
 | --- | --- |
-| `index.html`, `launcher.css`, `js/*.js` | the launcher, copied from `portable/src/web` |
+| `index.html`, `launcher.css`, `js/*.js` | the launcher, copied from `src/web` |
 | `legoland.js`, `legoland.wasm` | the game: the same objects as `legoland_browser`, linked with `-sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=FS,callMain` and no `--preload-file` |
 | `version.json` | the build id the page appends to the module's URLs, so a rebuilt module is never served from cache |
 | `data/` | the data pack, built when `gamedata/` is present and `-DLL_WEB_DATA=ON` (the default): `manifest.json`, `core.tar` (install files and advisor frames, 22 MB), `speech.tar` (58 MB) and `volumes/*.res` (157 MB, hard links). These are **the game's own files**: deploy `data/` only where you have the right to. Without it the page offers the disc import only. |
@@ -2479,7 +2513,7 @@ keeps working through kernel32.c's flattening fallback; the player page does not
   `tools/iscab.py` and `tools/blast.py`. Saves found in an installed folder's `profiles\`
   are offered for import.
 
-`node portable/tools/web_disc_check.mjs [--hash] IMAGE...` runs the same modules under node
+`node tools/web_disc_check.mjs [--hash] IMAGE...` runs the same modules under node
 and compares every byte they would install with `gamedata/`. On the six LEGOLAND images on
 hand:
 
@@ -2556,7 +2590,7 @@ hidden pane stops the page's network, so the 427 MB image never arrived. The mod
 runs are the ones `web_disc_check.mjs` verifies byte for byte under node, and the chunked
 writer is the one the download exercises.
 
-`node portable/tests/web/test_web_libs.mjs` (ctest `web_launcher_libs`, asset-free, 19
+`node tests/web/test_web_libs.mjs` (ctest `web_launcher_libs`, asset-free, 19
 checks) covers the disc reader (cooked and raw), `main.z`, zip (stored and deflated), tar,
 the layout rule and the save-file names.
 
@@ -2599,7 +2633,7 @@ it is played (the ring is primed first), and a Stop lets out the 20 ms the outpu
 the cursor by. The same simulation: **100% of the clip in order, no gaps, no underruns**,
 in all three frame patterns.
 
-`portable/tests/web/test_narration_feed.mjs` (ctest `narration_feed`, asset-free) reads
+`tests/web/test_narration_feed.mjs` (ctest `narration_feed`, asset-free) reads
 `ll_audio_js_feed`, `ll_audio_js_stop` and `ll_audio_js_written` straight out of
 `ll_audio.c`, runs them over a fake AudioContext against a model of the ring writer, and
 checks every sample of a pseudo-random "clip": steady frames, 18-45 ms frames with a
@@ -2672,7 +2706,7 @@ picker.
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
-   `python3 portable/tools/name_trap.py` now names them one at a time in the
+   `python3 tools/name_trap.py` now names them one at a time in the
    order the game hits them. Three are measured live: `InitHostSystemGPU`
    (one word in `LEGOLAND/startup.c:38`, and the only thing between this port
    and the front end), `RES_CloseFile` (13 files) and `InitSoundSystem`;

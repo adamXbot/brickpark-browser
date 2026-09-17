@@ -29,7 +29,7 @@
  *
  * PORT-P5's `p5-04` A/B faked the fix from the outside by writing 0x21 into the
  * mask.  This one is the real thing: the same build, one word of C, and arm B
- * is the tree with that word put back (`ninja -C portable/build-wasm
+ * is the tree with that word put back (`ninja -C build-wasm
  * legoland_browser` after one `sed`).
  *
  * ------------------------------------------------------------------------
@@ -142,7 +142,7 @@ window.M21 = {
    *   sed -i '' 's/g_cursor\.point\.y < 0x20 || g_cursor\.point\.y >= 0x174/\
    *      g_cursor.mouse_a_mask < 0x20 || g_cursor.mouse_a_mask >= 0x174/' \
    *      LEGOLAND/workers2.c
-   *   ninja -C portable/build-wasm legoland_browser
+   *   ninja -C build-wasm legoland_browser
    *
    * and `git checkout LEGOLAND/workers2.c` to get back.  The VC6 gate does not
    * move between the two arms -- that is the other half of this lane's point,

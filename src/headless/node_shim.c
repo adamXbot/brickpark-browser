@@ -1,6 +1,6 @@
 /* LEGOLAND portable build -- the four browser-only symbols, for node.
  *
- * PORT-B's `user32.c` calls into `portable/src/browser/ll_canvas.js` (opened
+ * PORT-B's `user32.c` calls into `src/browser/ll_canvas.js` (opened
  * canvas, RGB565 -> ImageData, DOM events) and yields with `emscripten_sleep`.
  * Under node there is no canvas, no DOM and no ASYNCIFY, and the `--js-library`
  * is not linked, so those five names are undefined -- which is why

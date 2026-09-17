@@ -32,7 +32,7 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
-/* portable/src/browser/ll_canvas.js */
+/* src/browser/ll_canvas.js */
 extern void ll_js_display_open(int w, int h);
 extern void ll_js_present16(const void* pixels, int w, int h, int pitch);
 extern int  ll_js_event_next(int* out4);
@@ -70,7 +70,7 @@ static void ll_js_set_cursor(int visible) { (void)visible; }
 #define VK_CONTROL       0x11
 #define VK_CAPITAL       0x14
 
-/* ---- the MSG the game declares (portable/hostwin/include/windows.h) ----- */
+/* ---- the MSG the game declares (hostwin/include/windows.h) ----- */
 typedef struct LLMsg {
     void*         hwnd;
     unsigned int  message;

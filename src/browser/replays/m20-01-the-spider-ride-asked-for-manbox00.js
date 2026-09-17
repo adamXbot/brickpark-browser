@@ -8,10 +8,10 @@
  * was handed over as a va_list and every "%02d" name the four BNV rides build
  * came out "...00". Fixed in a LEGOLAND_PORTABLE arm.
  *
- * Serve `portable/build-wasm` and open
+ * Serve `build-wasm` and open
  *   legoland.html?args=-nointro+WINDEBUG&awake=1
  * with the pane at >= ~820x760 (P4-4). `replays/` is not created by the build:
- *   ln -sfn <repo>/portable/src/browser/replays portable/build-wasm/replays
+ *   ln -sfn <repo>/src/browser/replays build-wasm/replays
  *
  *   await fetch('replays/p4-00-prelude.js').then(r=>r.text()).then(eval);
  *   await fetch('replays/p4-02-lesson3.js').then(r=>r.text()).then(eval);

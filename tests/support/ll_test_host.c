@@ -2,9 +2,9 @@
  *
  * ====================== READ THIS BEFORE MERGING =========================
  * This file is a STOPGAP owned by PORT-C and it is meant to disappear.
- * PORT-A owns the real shim (`portable/src/hostwin/kernel32.c`, brief
- * deliverable 3, plus the CRT-range wrappers portable/README.md's census
- * files as "game-fn"). portable/cmake/tests.cmake compiles this file ONLY
+ * PORT-A owns the real shim (`src/hostwin/kernel32.c`, brief
+ * deliverable 3, plus the CRT-range wrappers README.md's census
+ * files as "game-fn"). cmake/tests.cmake compiles this file ONLY
  * while that file does not exist:
  *
  *     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/kernel32.c")
@@ -21,7 +21,7 @@
  * gen_link.py decides what to trap by asking which symbols the objects under
  * CMakeFiles/legoland_core.dir define (linkreport.collect_objects with
  * only_game=False), while it collects what is REFERENCED only from the
- * ../LEGOLAND sources. So a file compiled into legoland_core that is not
+ * decomp/LEGOLAND sources. So a file compiled into legoland_core that is not
  * under LEGOLAND/ suppresses the trap for every symbol it defines and adds
  * nothing to the work list -- exactly the mechanism src/hostwin/msvcrt.c
  * already uses. Defining these in the test executable instead would collide
@@ -53,7 +53,7 @@
 extern int stricmp(const char*, const char*);   /* src/hostwin/portable.c */
 
 /* -------------------------------------------------------------------------
- * The CRT-range wrappers (portable/README.md's census calls these 12
+ * The CRT-range wrappers (README.md's census calls these 12
  * "game-fn"; they are libc under another name).
  * ------------------------------------------------------------------------- */
 void* MemAlloc(unsigned int size)            { return malloc(size); }

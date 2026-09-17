@@ -1,5 +1,5 @@
 /* LEGOLAND portable build -- the MSVC CRT file/directory calls the game uses
- * (see portable/hostwin/include/io.h and direct.h), on POSIX. Paths may use
+ * (see hostwin/include/io.h and direct.h), on POSIX. Paths may use
  * backslashes and the install's directory names; they are resolved by
  * ll_host_resolve_path (kernel32.c). Flag values are MSVC's. */
 #include "ll_host.h"

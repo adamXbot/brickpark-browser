@@ -39,7 +39,7 @@
  * pixel face, not the twenty.)
  *
  * "Lego" IS IN THIS TREE: gamedata/main/Lego.TTF, 77,012 bytes, and the
- * browser build preloads it. PORT-B11 added portable/src/hostwin/ll_ttf.c,
+ * browser build preloads it. PORT-B11 added src/hostwin/ll_ttf.c,
  * which reads it, so `ll_font_metrics` now fills an `LLTtfMetrics` alongside
  * the bitmap metrics and every routine below takes the TrueType branch when
  * `m->ttf.ready`. The bitmap face is the FALLBACK, for a build with no mounted

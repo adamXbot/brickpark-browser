@@ -88,7 +88,7 @@
 })();
 
 // ---------------------------------------------------------------------------
-// OWNER: PORT-B first (portable/src/hostwin/dinput.c), then a game-side lane.
+// OWNER: PORT-B first (src/hostwin/dinput.c), then a game-side lane.
 //
 // GetTypedChar (uimisc.c:527, 0x00474130) emits a character only on a RISING
 // edge: `cur = g_key_state[dik]; prev = g_typed_key_prev[i] & 0x80;

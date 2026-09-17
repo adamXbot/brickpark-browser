@@ -4,11 +4,11 @@
  * every class the script has GIVEn, at every step, and lesson 3 finishes all
  * EIGHT of its player objectives — the Spider Ride included.
  *
- * Serve `portable/build-wasm` and open
+ * Serve `build-wasm` and open
  *   legoland.html?args=-nointro+WINDEBUG&awake=1
  * with the pane at >= ~820x760 (P4-4).  `replays/` is not created by the
  * build; link it in first:
- *   ln -sfn <repo>/portable/src/browser/replays portable/build-wasm/replays
+ *   ln -sfn <repo>/src/browser/replays build-wasm/replays
  *
  *   await fetch('replays/p4-00-prelude.js').then(r=>r.text()).then(eval);
  *   await fetch('replays/p4-02-lesson3.js').then(r=>r.text()).then(eval);

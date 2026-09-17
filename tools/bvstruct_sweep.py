@@ -11,7 +11,7 @@ still lower to exactly one `i32` parameter, so
 
 * `wasm-ld` sees the same signature on both sides and warns about nothing;
 * `linkreport.py`'s conflict vote sees no conflict;
-* `portable/tests/test_callback_types.c` type-checks slots, not parameters;
+* `tests/test_callback_types.c` type-checks slots, not parameters;
 * nothing traps -- the callee just reads a stack ADDRESS as its argument.
 
 PORT-M10 found it by hand after PORT-B10 reported that LINK "SPACE TOWER RIDE"
@@ -38,7 +38,7 @@ port_m10_bvstruct_sweep.py`, which this replaces):
   sits next to the VC6 one -- and a gate that reports its own repairs is a gate
   nobody keeps;
 * it is a GATE: exit 1 on any silent hit that is not in an accepted list
-  (`--baseline`, default `portable/tests/bvstruct_accepted.txt`), with the
+  (`--baseline`, default `tests/bvstruct_accepted.txt`), with the
   reason each accepted row is there.
 
 usage:
@@ -48,8 +48,8 @@ usage:
 import os, re, sys, shutil, subprocess, tempfile, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(os.path.dirname(HERE))
-DEFAULT_SRC = os.path.join(ROOT, 'LEGOLAND')
+ROOT = os.path.dirname(HERE)
+DEFAULT_SRC = os.path.join(os.environ.get('LL_DECOMP') or os.path.join(ROOT, 'decomp'), 'LEGOLAND')
 DEFAULT_BASELINE = os.path.join(HERE, '..', 'tests', 'bvstruct_accepted.txt')
 
 SCALAR_WORDS = {

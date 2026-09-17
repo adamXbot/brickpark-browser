@@ -13,7 +13,7 @@
  *
  * Build (no link needed -- the check is the compile):
  *   emcc -c -Wall -Werror=incompatible-function-pointer-types \
- *        portable/tests/test_callback_types.c -o /tmp/cbtypes.o
+ *        tests/test_callback_types.c -o /tmp/cbtypes.o
  *
  * Bodies that do NOT have their slot's type are listed in the comment at
  * the end of each group: those reach the slot through a PORT-M3 adapter

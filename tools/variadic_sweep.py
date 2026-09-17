@@ -87,11 +87,11 @@ read both would report every one of its own repairs.
 
 Usage:
 
-    python3 portable/tools/variadic_sweep.py                  # sweep LEGOLAND/
-    python3 portable/tools/variadic_sweep.py --census         # every group
-    python3 portable/tools/variadic_sweep.py --markdown       # manifest section
-    python3 portable/tools/variadic_sweep.py --selftest       # shapes, no sources
-    python3 portable/tools/variadic_sweep.py --quiet           # status only
+    python3 tools/variadic_sweep.py                  # sweep LEGOLAND/
+    python3 tools/variadic_sweep.py --census         # every group
+    python3 tools/variadic_sweep.py --markdown       # manifest section
+    python3 tools/variadic_sweep.py --selftest       # shapes, no sources
+    python3 tools/variadic_sweep.py --quiet           # status only
 
 Exit status is the gate: 0 when every group agrees, 1 on any conflict. Sources
 only -- no gamedata/, no image, no build products -- so it runs in CI on both
@@ -676,7 +676,7 @@ def census_text(groups, out=sys.stdout):
 def markdown(groups):
     """The `## Variadic declarations` section of gen/manifest.md."""
     bad = [g for g in groups if g.conflicts]
-    md = ['', '## Variadic declarations (portable/tools/variadic_sweep.py)', '',
+    md = ['', '## Variadic declarations (tools/variadic_sweep.py)', '',
           'A variadic callee takes ONE extra wasm parameter -- the pointer to '
           'the buffer clang', 'writes the variable arguments into -- so a fixed '
           '`(char*, const char*, int)`',

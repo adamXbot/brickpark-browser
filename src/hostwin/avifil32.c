@@ -7,8 +7,8 @@
  * clips are Indeo 5 (Ir50_32.dll -- RunGame even LoadLibraryA's it,
  * gamemain.c:398).  There is no Indeo 5 decoder in this port.  So this file is
  * not a decoder: it is the sixteen entry points the import table names
- * (portable/tools/win32_imports.txt), answering for two different kinds of
- * file, told apart by whether portable/tools/advisor_frames.py left decoded
+ * (tools/win32_imports.txt), answering for two different kinds of
+ * file, told apart by whether tools/advisor_frames.py left decoded
  * frames for it in the working directory's advisor/ (browser.cmake runs it over
  * the user's gamedata with ffmpeg and preloads the result at /gamedata/advisor).
  *
@@ -290,7 +290,7 @@ static const char* const k_advisor_stems[] = {
 };
 
 /* An ADVISOR clip with no frames file at all -- the player page's disc import
- * (portable/src/web) has no ffmpeg to decode the Indeo 5 AVIs with -- still
+ * (src/web) has no ffmpeg to decode the Indeo 5 AVIs with -- still
  * opens, because a failed open is PARK-2 again: nothing repaints the in-game
  * panel's advisor window and the cursor and bubble help smear a trail across
  * it. The clip is 64 frames at 30/1 like the real ones, so the pose machine

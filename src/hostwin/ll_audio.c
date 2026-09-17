@@ -14,7 +14,7 @@
  * cursor arithmetic and it has to keep compiling, unchanged in behaviour, on
  * the native 64-bit toolchain where there is no Web Audio at all. Everything
  * browser-specific is therefore here, behind an eight-function C interface
- * whose native implementation is a set of counters. `ninja -C portable/build`
+ * whose native implementation is a set of counters. `ninja -C build`
  * still builds the whole shim and `llAudio()` still reports on a node run; it
  * just reports zero voices.
  *
@@ -356,7 +356,7 @@ EM_JS(int, ll_audio_js_start, (int v, int off, int looping, double rate_mul), {
  * part of it overwritten with next-lap audio first, and the read ran on past
  * the end of the ring once a lap: scored against the decoded clip, about half
  * of every narration line came out spliced, the "robotic, choppy" voice.
- * portable/tests/web/test_narration_feed.mjs runs THIS function against a model
+ * tests/web/test_narration_feed.mjs runs THIS function against a model
  * of the game's writer and checks every sample.
  *
  * So: from the cursor at a (re)start, keep LEAD seconds scheduled past the

@@ -12,7 +12,7 @@ FlipPrimary, a bubble-help box -- stayed on screen for the rest of the session
 the window OWN its pixels (the hand-written hit test after BltAdvisor), so the
 game also read panel pixels as map squares there.
 
-This script runs at BUILD time (portable/cmake/browser.cmake), next to
+This script runs at BUILD time (cmake/browser.cmake), next to
 file_packager, over the user's own gamedata/. Nothing it writes is committed.
 
 OUTPUT. One <out>/<stem, lower-cased>.llv per input clip:

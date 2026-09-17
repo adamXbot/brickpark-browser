@@ -2,7 +2,7 @@
 //
 // Two ways in, one result (store.js's records in discplan.js's layout):
 //
-//   download   the site's data pack (portable/tools/web_datapack.py): core.tar,
+//   download   the site's data pack (tools/web_datapack.py): core.tar,
 //              speech.tar and the three volumes, streamed into IndexedDB with
 //              the manifest's sizes and hashes checked on the way
 //   import     whatever the player hands the page -- a disc image (.iso/.bin),

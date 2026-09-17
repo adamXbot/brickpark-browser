@@ -215,6 +215,8 @@
                 white-space: pre-wrap; background: #0e1014;
                 border: 1px solid #2a2f37; padding: 6px 8px; color: #8fb7d9; }
   #hash { color: #b9a6ff; font-variant-numeric: tabular-nums; }
+  #about a { color: #8fb7d9; text-decoration: none; }
+  #about a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -237,6 +239,10 @@
     <span class="cell" id="audiocell" title="click to enable sound"><span class="k">sound</span> <span id="audio" class="v">&mdash;</span></span>
     <span class="cell"><span class="k">font</span> <span id="font" class="v">&mdash;</span></span>
     <span class="cell"><label><input type="checkbox" id="trace"> host call trace (<code>?trace=1</code>)</label></span>
+    <!-- About this version: the commits the build was made from
+         (tools/build_info.py, passed to emcc as --pre-js) and where the source
+         lives. window.llAbout() returns the same record. -->
+    <span class="cell"><span class="k">version</span> <span id="about" class="v">&mdash;</span></span>
   </div>
   <div id="trap"></div>
   <details id="tracepanel">
@@ -249,6 +255,37 @@
   <div id="log"></div>
 </div>
 <script>
+  // The version cell. build_info.js is emcc's --pre-js, so it runs with the
+  // generated loader further down the page: fill the cell once everything has.
+  window.llAbout = function () { return window.llBuildInfo || null; };
+  window.addEventListener('load', function () {
+    var el = document.getElementById('about');
+    var info = window.llAbout();
+    if (!info || !info.browser) { el.textContent = 'unknown build'; return; }
+    el.textContent = '';
+    function link(name, rec) {
+      var a = document.createElement('a');
+      a.href = rec.repo + '/commit/' + rec.commit;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = name + ' ' + rec.commit.slice(0, 8) + (rec.dirty ? '+' : '');
+      a.title = (rec.date || '').slice(0, 10) + ' ' + (rec.subject || '') +
+                (rec.dirty ? ' (built with uncommitted changes)' : '');
+      return a;
+    }
+    el.appendChild(link('browser', info.browser));
+    if (info.decomp) {
+      el.appendChild(document.createTextNode(' \u00b7 '));
+      el.appendChild(link('decomp', info.decomp));
+    }
+    el.appendChild(document.createTextNode(' \u00b7 '));
+    var src = document.createElement('a');
+    src.href = info.browser.repo;
+    src.target = '_blank';
+    src.rel = 'noopener';
+    src.textContent = 'source';
+    el.appendChild(src);
+  });
   var statusEl = document.getElementById('status');
   var logEl = document.getElementById('log');
   var framesEl = document.getElementById('frames');
@@ -349,7 +386,7 @@
   // NOT what a shipping page should do -- a player who switches tabs expects
   // the game to idle. Hence the switch: `?awake=0` turns it off, and a shipping
   // shell should default it off. It defaults ON here because every replay in
-  // portable/src/browser/replays/ is driven from a pane that is hidden more
+  // src/browser/replays/ is driven from a pane that is hidden more
   // often than not, and a driver cannot tell "the click did nothing" from "the
   // tab was asleep" (PORT-P3 lost ten minutes to exactly that).
   //

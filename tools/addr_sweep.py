@@ -45,10 +45,10 @@ Two checks, because the hazard has two directions:
 
 Usage:
 
-    python3 portable/tools/addr_sweep.py                    # sweep LEGOLAND/
-    python3 portable/tools/addr_sweep.py --baseline FILE    # the ctest gate
-    python3 portable/tools/addr_sweep.py --selftest         # shapes, no sources
-    python3 portable/tools/addr_sweep.py --names-only       # the cheap half
+    python3 tools/addr_sweep.py                    # sweep LEGOLAND/
+    python3 tools/addr_sweep.py --baseline FILE    # the ctest gate
+    python3 tools/addr_sweep.py --selftest         # shapes, no sources
+    python3 tools/addr_sweep.py --names-only       # the cheap half
 
 Exit status is the gate: 0 when every reported row is accepted by the baseline,
 1 on any row that is not (or on any row that GREW past its baseline entry). A

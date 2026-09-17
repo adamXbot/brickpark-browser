@@ -1,6 +1,6 @@
 /* PORT-M18 replay — P1-7, the visitor chain that grows on every load.
  *
- * Paste p1-00-prelude.js first, then this.  Served from portable/build-wasm on
+ * Paste p1-00-prelude.js first, then this.  Served from build-wasm on
  * a port of your own, legoland.html?args=-nointro+WINDEBUG&awake=1, own tab,
  * virgin IDBFS:
  *     for (const d of await indexedDB.databases()) indexedDB.deleteDatabase(d.name);

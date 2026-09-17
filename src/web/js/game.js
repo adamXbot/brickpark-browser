@@ -51,7 +51,7 @@ function isFatal(err) {
 
 // While the tab is hidden, deliver the game's 0-1 ms yields as MessageChannel
 // messages instead of timers, which background tabs throttle to about once a
-// second (the developer page's llAwake, portable/src/browser/index.html). Only
+// second (the developer page's llAwake, src/browser/index.html). Only
 // when the player asked for it: it keeps a hidden tab using a full core.
 function installBackgroundRunning() {
   if (typeof MessageChannel !== 'function') return;

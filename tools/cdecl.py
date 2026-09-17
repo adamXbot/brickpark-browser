@@ -55,8 +55,8 @@ object as it was. Nothing here guesses.
 
 Run it directly for the table:
 
-    python3 portable/tools/cdecl.py              # every struct-typed extern
-    python3 portable/tools/cdecl.py --selftest   # the layout rules
+    python3 tools/cdecl.py              # every struct-typed extern
+    python3 tools/cdecl.py --selftest   # the layout rules
 """
 import argparse
 import collections
@@ -65,8 +65,8 @@ import os
 import re
 import sys
 
-SRC = os.path.join(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))), 'LEGOLAND')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from linkreport import SRC  # noqa: E402  (decomp/LEGOLAND, or $LL_DECOMP)
 
 # ILP32 / MSVC x86. `long` is 4 here and that is the premise of the whole
 # target: the image was built by VC6 for i386.

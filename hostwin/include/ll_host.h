@@ -1,5 +1,5 @@
 /* LEGOLAND portable build -- the host ABI: every Win32 entry point the shim
- * in portable/src/hostwin/ implements, grouped by the DLL the original
+ * in src/hostwin/ implements, grouped by the DLL the original
  * imported it from.
  *
  * This header is for the SHIM sources, not for the game: the game's sources
@@ -13,7 +13,7 @@
  *     declaring `int CreateFileA(...)` in one file and `void* CreateFileA(...)`
  *     in another is not a problem for either of them. On wasm the signature
  *     (i32 count and result) must still match exactly, or wasm-ld replaces
- *     the call with a trapping stub -- see portable/tools/gen_link.py.
+ *     the call with a trapping stub -- see tools/gen_link.py.
  *
  * Ownership (docs/SCOPE_PORT_WAVE.md): PORT-A created this header and owns
  * the KERNEL32 / ADVAPI32 / VERSION block; PORT-B adds the DDRAW, USER32,
@@ -91,7 +91,7 @@ typedef struct _MEMORY_BASIC_INFORMATION {  /* 28 bytes */
 #define LL_INVALID_SET_FILE_POINTER 0xfffffffful
 
 /* ======================================================================== */
-/* KERNEL32 -- portable/src/hostwin/kernel32.c (PORT-A)                      */
+/* KERNEL32 -- src/hostwin/kernel32.c (PORT-A)                      */
 /* ======================================================================== */
 
 /* Single-threaded waitable objects: a mutex is always free, an event keeps a
@@ -225,7 +225,7 @@ BOOL  VerQueryValueA(const void* block, LPCSTR sub_block, void** buffer, UINT* l
 
 /* ======================================================================== */
 /* DDRAW / USER32 / GDI32 / DINPUT / WINMM / DSOUND -- PORT-B                 */
-/* (portable/src/hostwin/{ddraw,user32,gdi32,dinput,winmm,dsound}.c)         */
+/* (src/hostwin/{ddraw,user32,gdi32,dinput,winmm,dsound}.c)         */
 /* ======================================================================== */
 /* The host core below (ll_host_*) is PORT-B's: the browser page sets
  * `ll_host_sleep_hook = ll_host_yield;` before WinMain so KERNEL32's Sleep
@@ -241,7 +241,7 @@ typedef long           LL_HRESULT;
 typedef struct LLRect { long left, top, right, bottom; } LLRect;
 typedef struct LLPoint { long x, y; } LLPoint;
 
-/* ---- host core (PORT-B, portable/src/hostwin/user32.c) ------------------ */
+/* ---- host core (PORT-B, src/hostwin/user32.c) ------------------ */
 
 /* THE main-loop primitive. See docs/lanes/scope-port-b.md §1: the game's frame
  * is produced inside synchronous spin loops, so the host yields on its behalf.
@@ -339,7 +339,7 @@ void ll_host_trace(const char* fmt, ...);
 const char* ll_host_last_messagebox(void);
 int         ll_host_last_messagebox_answer(void);
 
-/* ---- DDRAW (portable/src/hostwin/ddraw.c) ------------------------------- */
+/* ---- DDRAW (src/hostwin/ddraw.c) ------------------------------- */
 /* The one exported entry; everything else is reached through the C vtables it
  * hands back. Returns DD_OK (0) and a fully populated IDirectDraw. */
 long DirectDrawCreate(void* guid, void** out, void* outer);
@@ -356,7 +356,7 @@ int ll_host_frames_presented(void);
 int ll_host_surface_pixels(void* hdc, unsigned short** bits,
                            int* w, int* h, int* pitch);
 
-/* ---- USER32 (portable/src/hostwin/user32.c) ----------------------------- */
+/* ---- USER32 (src/hostwin/user32.c) ----------------------------- */
 /* Rect maths: real implementations, Win32 semantics (exclusive right/bottom).
  * These are load-bearing for the renderer's clipping, not stubs. */
 int   IntersectRect(LLRect* dst, const LLRect* a, const LLRect* b);
@@ -412,7 +412,7 @@ int   FillRect(void* hdc, const LLRect* rc, void* brush);
 int   DrawTextA(void* hdc, const char* text, int len, LLRect* rc,
                 unsigned int format);
 
-/* ---- Web Audio (portable/src/hostwin/ll_audio.c, PORT-B11) -------------- */
+/* ---- Web Audio (src/hostwin/ll_audio.c, PORT-B11) -------------- */
 /* The back end behind PORT-B4's silent IDirectSound. dsound.c keeps every
  * DirectSound semantic; this layer knows only PCM blocks, gains and time, and
  * on a non-Emscripten toolchain it is a set of counters so the shim still
@@ -469,7 +469,7 @@ int    ll_audio_music_push(const float* left, const float* right, int frames, do
 void   ll_audio_music_gain(double gain);
 void   ll_audio_music_stop(void);
 
-/* ---- the TrueType face (portable/src/hostwin/ll_ttf.c, PORT-B11) -------- */
+/* ---- the TrueType face (src/hostwin/ll_ttf.c, PORT-B11) -------- */
 /* The game SHIPS its typeface: gamedata/main/Lego.TTF, handed to
  * AddFontResourceA by gpu.c's InitHostSystemGPU before anything draws. With the
  * face loaded, ll_font.c measures and draws through these entry points and the
@@ -515,7 +515,7 @@ int  ll_ttf_face_info(int* upem, int* glyphs, int* win_asc, int* win_desc,
  * CreateFontIndirectA; a no-op off Emscripten. */
 void ll_ttf_report_font(int lf_height, int lf_weight, const LLTtfMetrics* m);
 
-/* ---- the bitmap font (portable/src/hostwin/ll_font.c, PORT-B2) ---------- */
+/* ---- the bitmap font (src/hostwin/ll_font.c, PORT-B2) ---------- */
 /* GDI text is the game's only text: text.c's Print* routines borrow a DC from
  * the DirectDraw draw surface and let GDI draw into it, and eleven DrawTextA
  * call sites MEASURE with DT_CALCRECT and lay out around the answer. So one
@@ -568,7 +568,7 @@ int  ll_font_draw_text(const LLFontTarget* t, const LLFontMetrics* m,
 unsigned short ll_font_colorref_to_565(unsigned long colorref);
 
 
-/* ---- GDI32 (portable/src/hostwin/gdi32.c) ------------------------------- */
+/* ---- GDI32 (src/hostwin/gdi32.c) ------------------------------- */
 /* Handle factories hand back distinct non-null cookies; the drawing calls are
  * no-ops that report success; printing reports failure so the print path
  * aborts at its first check. Nothing here traps. */
@@ -681,11 +681,11 @@ int   StartPage(void* hdc);
 int   EndPage(void* hdc);
 int   EndDoc(void* hdc);
 
-/* ---- DINPUT (portable/src/hostwin/dinput.c) ----------------------------- */
+/* ---- DINPUT (src/hostwin/dinput.c) ----------------------------- */
 long  DirectInputCreateA(void* inst, unsigned long version, void** out,
                          void* outer);
 
-/* ---- WINMM (portable/src/hostwin/winmm.c) ------------------------------- */
+/* ---- WINMM (src/hostwin/winmm.c) ------------------------------- */
 /* timeGetTime is real and is the second yield point (§1): it yields whenever
  * 4 ms has passed since the last yield, which bounds every wall-clock spin in
  * the game. The MIDI calls return MMSYSERR_NOTSUPPORTED (8). */
@@ -702,7 +702,7 @@ unsigned int midiOutClose(void* handle);
 unsigned int midiOutShortMsg(void* handle, unsigned long msg);
 unsigned int midiOutReset(void* handle);
 
-/* ---- DSOUND (portable/src/hostwin/dsound.c) ---------------------------- */
+/* ---- DSOUND (src/hostwin/dsound.c) ---------------------------- */
 /* PORT-B4: this SUCCEEDS now, returning a silent IDirectSound with the full
  * IDirectSoundBuffer vtable and a play cursor driven by wall clock.
  *
@@ -719,7 +719,7 @@ long  DirectSoundCreate(void* guid, void** out, void* outer);
  * UpdateSoundVols applies it to DirectMusic's port buffer. */
 long  ll_dsound_buffer_volume(void* buffer);
 
-/* ---- ole32 (portable/src/hostwin/dsound.c) ------------------------------ */
+/* ---- ole32 (src/hostwin/dsound.c) ------------------------------ */
 /* The program's only two COM imports, both DirectMusic's, both called only by
  * MusicThread (musicthread.c 0x00492db0). CoInitialize reports success (its
  * result is discarded at the one call site). CoCreateInstance hands out
@@ -731,7 +731,7 @@ long  CoInitialize(void* reserved);
 long  CoCreateInstance(const void* clsid, void* outer, unsigned long context,
                        const void* iid, void** out);
 
-/* ---- DirectMusic (portable/src/hostwin/ll_dmusic.c) ---------------------- */
+/* ---- DirectMusic (src/hostwin/ll_dmusic.c) ---------------------- */
 /* REGDB_E_CLASSNOTREG unless Web Audio, the imusic data and a DLS collection
  * are all there (and the page did not say ?music=0). */
 long  ll_dmusic_create(const void* clsid, const void* iid, void** out);
@@ -739,7 +739,7 @@ long  ll_dmusic_create(const void* clsid, const void* iid, void** out);
  * main stack before every yield; it does nothing inside a thread's fiber. */
 void  ll_dmusic_pump(void);
 
-/* ---- AVIFIL32 (portable/src/hostwin/avifil32.c) -------------------------- */
+/* ---- AVIFIL32 (src/hostwin/avifil32.c) -------------------------- */
 /* Video for Windows' AVIFile API: the FMV player (movie.c, movie2.c) and the
  * on-screen advisor (advisor.c, screens3.c). There is no Indeo 5 decoder in
  * this port, so AVIFileOpenA reports AVIERR_FILEOPEN (0x8004406F) and every
@@ -769,7 +769,7 @@ long          AVIStreamRead(void* pavi, long start, long samples, void* buf,
                             long buflen, long* bytes, long* nsamples);
 long          AVIStreamReadFormat(void* pavi, long pos, void* fmt, long* size);
 
-/* ---- MSACM32 (portable/src/hostwin/msacm32.c) --------------------------- */
+/* ---- MSACM32 (src/hostwin/msacm32.c) --------------------------- */
 /* The Audio Compression Manager. NOT a stub: data2.c's CreateSampleFromWAV
  * runs EVERY sample in the archives through resaudio2.c's ConvertWAVToPCM and
  * drops the sample when it fails, so refusing everything would break the

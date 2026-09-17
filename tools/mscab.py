@@ -15,7 +15,7 @@ CFDATA" and leaves a file of zeros, though all 476 of its data blocks carry
 good checksums (measured 2026-09-17), hence this reader: the stdlib's zlib does
 MSZIP.
 
-This script runs at BUILD time (portable/cmake/browser.cmake) over the user's
+This script runs at BUILD time (cmake/browser.cmake) over the user's
 own disc files. Nothing it writes is committed.
 
 FORMAT (MS-CAB). CFHEADER, then one CFFOLDER per folder and one CFFILE per

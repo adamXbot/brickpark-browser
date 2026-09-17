@@ -24,9 +24,9 @@ PORT-M6 wrote it as a scratch script, PORT-M8 rewrote it as a scratch script to
 re-run the gate (§6, still 0), and it is promoted here so the ctest can hold
 the line instead of a lane remembering to look.
 
-    python3 portable/tools/extern_sweep.py            # sweep LEGOLAND/
-    python3 portable/tools/extern_sweep.py --selftest # the shapes, no sources
-    python3 portable/tools/extern_sweep.py --quiet     # exit status only
+    python3 tools/extern_sweep.py            # sweep LEGOLAND/
+    python3 tools/extern_sweep.py --selftest # the shapes, no sources
+    python3 tools/extern_sweep.py --quiet     # exit status only
 
 Exit status is 0 when the class is closed and 1 on any hit, so it wires
 straight into ctest. It needs no game assets and no build -- only the sources --

@@ -1,5 +1,5 @@
 /* LEGOLAND portable build -- helpers force-included into every LEGOLAND/*.c
- * (see portable/CMakeLists.txt). Only active when LEGOLAND_PORTABLE is
+ * (see CMakeLists.txt). Only active when LEGOLAND_PORTABLE is
  * defined; the VC6 matching build never sees this file.
  *
  * Rules: this header must NOT include any libc header. Many game sources
@@ -66,7 +66,7 @@ static inline int ll_fistp_d(double d)
 #define LL_DEBUGBREAK() __builtin_trap()
 
 /* An asm body that has not been ported yet. Aborts loudly; the list of
- * these is part of portable/tools/linkreport.py's output. */
+ * these is part of tools/linkreport.py's output. */
 void ll_unported_asm(const char* file, int line, const char* func);
 #define LL_UNPORTED_ASM() ll_unported_asm(__FILE__, __LINE__, __func__)
 

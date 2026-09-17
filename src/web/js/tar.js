@@ -1,4 +1,4 @@
-// LEGOLAND portable -- reading the data packs portable/tools/web_datapack.py
+// LEGOLAND portable -- reading the data packs tools/web_datapack.py
 // writes. They are plain POSIX ustar files, so `tar -tvf` can inspect them and
 // Python's tarfile can write them; this reader only needs regular files.
 

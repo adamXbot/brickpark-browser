@@ -1,12 +1,12 @@
-# portable/cmake/browser.cmake -- owned by scope PORT-B (docs/SCOPE_PORT_WAVE.md).
-# Included from portable/CMakeLists.txt; add this lane's targets here, not there.
+# cmake/browser.cmake -- owned by scope PORT-B (docs/SCOPE_PORT_WAVE.md).
+# Included from CMakeLists.txt; add this lane's targets here, not there.
 #
 # Three things live here:
 #
 #   legoland_hostwin   the host shim itself (DDRAW / USER32 / GDI32 / DINPUT /
 #                      WINMM / DSOUND). Part of the default build on EVERY
 #                      toolchain, including the native 64-bit one, so a syntax
-#                      or signature error shows up in `ninja -C portable/build`
+#                      or signature error shows up in `ninja -C build`
 #                      rather than only in the wasm build.
 #   legoland_shimtest  wasm32 only. A page that drives the shim through the
 #                      exact sequence the game's startup spine drives it
@@ -179,7 +179,7 @@ add_custom_command(
   # object scanner, its source scanner, its classifier and its wasm signature
   # reader from it, so a change there changes the generated closure. Without
   # this line an edit to linkreport.py leaves gen-browser stale, which cost an
-  # afternoon once (PORT-A2). portable/CMakeLists.txt's own `gen` command has
+  # afternoon once (PORT-A2). CMakeLists.txt's own `gen` command has
   # the same gap; nobody but the integrator may edit that file.
   DEPENDS legoland_core legoland_hostwin
           "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_link.py"
@@ -251,7 +251,7 @@ endif()
 # frames the cursor and every bubble drawn over that window stay on screen
 # (docs/lanes/scope-port-b11.md §4). The clips are Indeo 5, which no browser
 # decodes; ffmpeg's indeo5 decoder is the only new dependency and
-# portable/tools/advisor_frames.py has the file format. Without ffmpeg or
+# tools/advisor_frames.py has the file format. Without ffmpeg or
 # gamedata/ the page builds as before and the window is a hole again.
 # The six names are advisor.c's kAdBlink..kAdWobble, the only advisor clips the
 # exe names; gamedata/main spells some in lower case, so the match is by
@@ -343,6 +343,19 @@ endif()
 # are link inputs.
 set(LL_BROWSER_LINK_DEPENDS ${LL_WASM_LINK_DEPENDS} ${LL_ADVISOR_FRAMES} ${LL_MUSIC_LINK_DEPENDS})
 
+# The page's "version" cell: the commits this build was made from, linked to
+# their repositories. build_info.py runs on every build and rewrites the file
+# only when a commit changes, so an unchanged tree does not relink.
+set(LL_BUILD_INFO_JS "${CMAKE_BINARY_DIR}/build_info.js")
+add_custom_target(legoland_build_info
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/build_info.py"
+          --root "${CMAKE_CURRENT_SOURCE_DIR}" --decomp "${LL_DECOMP}"
+          --out "${LL_BUILD_INFO_JS}"
+  BYPRODUCTS "${LL_BUILD_INFO_JS}"
+  COMMENT "build_info.py: the commits for the page's version cell"
+  VERBATIM)
+list(APPEND LL_BROWSER_LINK_DEPENDS "${LL_BUILD_INFO_JS}")
+
 add_executable(legoland_browser EXCLUDE_FROM_ALL
   "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/main.c")
 target_link_libraries(legoland_browser PRIVATE
@@ -353,6 +366,7 @@ target_compile_options(legoland_browser PRIVATE -w)
 target_link_options(legoland_browser PRIVATE
   ${LL_WASM_COMMON_LINK}
   ${LL_PRELOAD}
+  "SHELL:--pre-js ${LL_BUILD_INFO_JS}"
   # The closure closes, so an undefined symbol is a build failure again
   # (PORT-A2; it was 0 while PORT-A's --ilp32 work was in flight). Turning it
   # on changes nothing else: the link is clean, and the page still runs the
@@ -369,6 +383,7 @@ target_link_options(legoland_browser PRIVATE
 set_target_properties(legoland_browser PROPERTIES
   SUFFIX ".html" OUTPUT_NAME "legoland"
   LINK_DEPENDS "${LL_BROWSER_LINK_DEPENDS}")
+add_dependencies(legoland_browser legoland_build_info)
 if(TARGET legoland_advisor_frames)
   add_dependencies(legoland_browser legoland_advisor_frames)
 endif()
@@ -392,9 +407,9 @@ endif()
 # wasm-opt. Same code, same behaviour, ~4 MB larger; served as legoland_dbg.html
 # beside the real page, and only when someone asks for it (EXCLUDE_FROM_ALL).
 #
-#   ninja -C portable/build-wasm legoland_browser_named
+#   ninja -C build-wasm legoland_browser_named
 #   # drive legoland_dbg.html, then:
-#   python3 portable/tools/name_trap.py --wasm portable/build-wasm/legoland_dbg.wasm \
+#   python3 tools/name_trap.py --wasm build-wasm/legoland_dbg.wasm \
 #           --at 0x<offset from the innermost frame>
 add_executable(legoland_browser_named EXCLUDE_FROM_ALL
   "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/main.c")
@@ -404,11 +419,13 @@ target_link_libraries(legoland_browser_named PRIVATE
   "$<LINK_LIBRARY:WHOLE_ARCHIVE,legoland_gen_browser>")
 target_compile_options(legoland_browser_named PRIVATE -w)
 target_link_options(legoland_browser_named PRIVATE
-  ${LL_WASM_COMMON_LINK} ${LL_PRELOAD} -g2 -sERROR_ON_UNDEFINED_SYMBOLS=1
+  ${LL_WASM_COMMON_LINK} ${LL_PRELOAD} "SHELL:--pre-js ${LL_BUILD_INFO_JS}"
+  -g2 -sERROR_ON_UNDEFINED_SYMBOLS=1
   -lidbfs.js)
 set_target_properties(legoland_browser_named PROPERTIES
   SUFFIX ".html" OUTPUT_NAME "legoland_dbg"
   LINK_DEPENDS "${LL_BROWSER_LINK_DEPENDS}")
+add_dependencies(legoland_browser_named legoland_build_info)
 if(TARGET legoland_advisor_frames)
   add_dependencies(legoland_browser_named legoland_advisor_frames)
 endif()
@@ -422,7 +439,7 @@ endif()
 # installs the game's files into the browser -- downloaded from the site's data
 # pack, or read out of the player's own disc image or install folder -- manages
 # the saves, runs the same game module, and has somewhere to go when the game
-# exits. portable/README.md, "The player page", has the whole story.
+# exits. README.md, "The player page", has the whole story.
 #
 # It is one static directory that any web server can host, build-wasm/web/:
 #
@@ -439,8 +456,8 @@ endif()
 #                                       It is the game's own files: host it only
 #                                       where you have the right to.
 #
-#   ninja -C portable/build-wasm legoland_web
-#   python3 -m http.server -d portable/build-wasm/web 8080
+#   ninja -C build-wasm legoland_web
+#   python3 -m http.server -d build-wasm/web 8080
 option(LL_WEB_DATA "Build the player page's downloadable data pack from gamedata/" ON)
 set(LL_WEB_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/web")
 set(LL_WEB_OUT "${CMAKE_BINARY_DIR}/web")
@@ -487,12 +504,14 @@ target_link_options(legoland_web PRIVATE
   ${LL_WASM_BASE_LINK}
   -sINVOKE_RUN=0
   -sEXPORTED_RUNTIME_METHODS=FS,callMain
+  "SHELL:--pre-js ${LL_BUILD_INFO_JS}"
   -sERROR_ON_UNDEFINED_SYMBOLS=1
   -lidbfs.js)
 set_target_properties(legoland_web PROPERTIES
   SUFFIX ".js" OUTPUT_NAME "legoland"
   RUNTIME_OUTPUT_DIRECTORY "${LL_WEB_OUT}"
-  LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/ll_canvas.js")
+  LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/ll_canvas.js;${LL_BUILD_INFO_JS}")
+add_dependencies(legoland_web legoland_build_info)
 add_custom_command(TARGET legoland_web POST_BUILD
   COMMAND "${Python3_EXECUTABLE}" "${LL_WEB_TOOL}" stamp --out "${LL_WEB_OUT}"
   VERBATIM)

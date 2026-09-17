@@ -111,7 +111,7 @@
 //     note that bigscreens.c:1001 also keeps `g_western_icon` (0x00668e3c) as
 //     a SECOND name for the same icon pointer.
 //   * PORT-M — a by-value or K&R declaration on one of the icon-flag helpers:
-//     run `$PY portable/tools/bvstruct_sweep.py` and
+//     run `$PY tools/bvstruct_sweep.py` and
 //     `$PY tools/port_m10_bvstruct_sweep.py` over bigscreens.c, screens3.c,
 //     eventgoalprim.c, fpui4.c and popupmisc.c.
 //

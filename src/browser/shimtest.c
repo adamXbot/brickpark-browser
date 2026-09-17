@@ -34,7 +34,7 @@
 
 #include "ll_host.h"
 
-/* portable/src/browser/ll_canvas.js -- the two counters a headless run reports.
+/* src/browser/ll_canvas.js -- the two counters a headless run reports.
  * Declared here rather than in ll_host.h because the native build of the shim
  * has no JS library and defines its own static no-ops for the ll_js_* family. */
 extern int ll_js_frames(void);

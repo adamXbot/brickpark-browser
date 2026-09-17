@@ -26,10 +26,10 @@ The push count before the call is a HINT, not proof: it counts pushes since the
 previous call, so unrelated spills inflate it. It is there to rank candidates --
 confirm the arity against the C at the reported `// FUNCTION:` marker.
 
-    python3 portable/tools/slot_sweep.py 0xb0          # who calls [reg+0xb0]
-    python3 portable/tools/slot_sweep.py 0xb0 --form direct
-    python3 portable/tools/slot_sweep.py 0x8c          # PORT-M8: no caller
-    python3 portable/tools/slot_sweep.py --selftest     # no image needed
+    python3 tools/slot_sweep.py 0xb0          # who calls [reg+0xb0]
+    python3 tools/slot_sweep.py 0xb0 --form direct
+    python3 tools/slot_sweep.py 0x8c          # PORT-M8: no caller
+    python3 tools/slot_sweep.py --selftest     # no image needed
 
 Needs `original/legoland.exe` and capstone, so it is NOT part of the asset-free
 ctest set (`extern_sweep.py` is). `--selftest` runs on hand-assembled bytes and
@@ -44,9 +44,9 @@ import struct
 import sys
 
 IMAGE_BASE = 0x400000
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_EXE = os.path.join(ROOT, 'original', 'legoland.exe')
-SRC = os.path.join(ROOT, 'LEGOLAND')
+SRC = os.path.join(os.environ.get('LL_DECOMP') or os.path.join(ROOT, 'decomp'), 'LEGOLAND')
 
 # The registers a slot base can live in. ESP is excluded: `[esp + 0xb0]` is a
 # stack slot, not a structure field, and it is the one false positive that would

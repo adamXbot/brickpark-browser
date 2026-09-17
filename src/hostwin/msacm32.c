@@ -1,7 +1,7 @@
 /* LEGOLAND portable build -- the MSACM32 host shim (scope PORT-B): the Audio
  * Compression Manager, as much of it as the game actually needs.
  *
- * WHY THIS IS NOT A STUB.  Six MSACM32 imports (portable/tools/win32_imports.txt)
+ * WHY THIS IS NOT A STUB.  Six MSACM32 imports (tools/win32_imports.txt)
  * and three callers, and one of the three is on the path of EVERY sound the
  * game loads:
  *

@@ -7,7 +7,7 @@
  *
  *     TRAP <dll> <symbol> from <the sources that reference it>
  *
- * and exits 70 (portable/tools/gen_link.py), so one run = one missing piece,
+ * and exits 70 (tools/gen_link.py), so one run = one missing piece,
  * named. PORT-A walks that list turning KERNEL32-family traps into real calls
  * until the spine reaches the first DirectDraw/USER32/DirectInput call, which
  * is PORT-B's (docs/SCOPE_PORT_WAVE.md).
@@ -16,7 +16,7 @@
  * for you (gamedata/ is a symlink in a worktree, so cd-ing there leaves the
  * checkout):
  *
- *     LL_DATA_DIR=$PWD/gamedata/main node portable/build-wasm/legoland_headless.js
+ *     LL_DATA_DIR=$PWD/gamedata/main node build-wasm/legoland_headless.js
  *
  * -sNODERAWFS=1 means the emscripten FS calls go straight to the real
  * filesystem, so nothing has to be packaged; the relative paths the loaders
@@ -62,7 +62,7 @@ extern const char* g_volume_names[3];                 /* 0x004bcba4 */
 extern char  g_res_path[];                            /* 0x00813b04 */
 
 /* The mounted-volume records, as LEGOLAND/resaudio2.c declares them (the same
- * layout portable/tests/test_res_archive.c checks field by field). Walking
+ * layout tests/test_res_archive.c checks field by field). Walking
  * them is how the probe proves the directory really was parsed: a volume whose
  * name table was still full of raw x86 addresses opened a file called ".res"
  * and produced no members at all. */
@@ -160,7 +160,7 @@ extern int ll_node_first_frame(int* w, int* h, unsigned* nonblack,
  * picture", and anything that regresses them collapses the count to a handful of
  * pixels or to zero, never to 40%. The checksum is the identity of the frame and
  * is printed, not asserted, unless --frame-sum says what to expect -- see
- * portable/cmake/headless.cmake for how the ctest pins it. */
+ * cmake/headless.cmake for how the ctest pins it. */
 #define LL_TITLE_MIN_NONBLACK_PCT 40
 
 static unsigned ll_expect_sum;      /* --frame-sum 0x...: 0 means "just print" */
@@ -192,7 +192,7 @@ static int ll_first_present(void)
         fprintf(stderr, "legoland_headless: FAIL frame checksum 0x%08x,"
                         " expected 0x%08x -- something changed what the title"
                         " screen looks like. If the change was intended, update"
-                        " the expected value in portable/cmake/headless.cmake\n",
+                        " the expected value in cmake/headless.cmake\n",
                 sum, ll_expect_sum);
         return 1;
     }
@@ -410,7 +410,7 @@ extern void ReadGameButtons(void);                         /* 0x00452460 */
 
 static int ll_resmount_ex(int keep);   /* below */
 
-/* portable/hostwin/include/ll_host.h (PORT-B's input injection). */
+/* hostwin/include/ll_host.h (PORT-B's input injection). */
 extern void ll_host_key_set(int dik, int down);
 extern void ll_host_mouse_move(int dx, int dy);
 extern void ll_host_mouse_button(int button, int down);
@@ -646,13 +646,13 @@ static int ll_probe_audio(int want)
                         " `.name` word is still a raw x86 address, which is a"
                         " missing bound on its declaration"
                         " (docs/lanes/scope-port-b11.md §3, and the row in"
-                        " portable/tests/rawwords_baseline.txt)\n",
+                        " tests/rawwords_baseline.txt)\n",
                 want, ll_ds_buffers);
         return 1;
     }
     if (ll_ds_buffers > want && want > 0)
         fprintf(stderr, "legoland_headless: the floor is %d and %d loaded --"
-                        " raise LL_AUDIO_BUFFERS in portable/cmake/"
+                        " raise LL_AUDIO_BUFFERS in cmake/"
                         "headless.cmake in the commit that fixed it\n",
                 want, ll_ds_buffers);
     return 0;

@@ -16,7 +16,7 @@
  * -----------
  * The 48-byte record itself holds no pointer, but LoadPos reaches it through
  * RES_OpenFile, and RES_LoadDirectory stores pointers in `int` fields
- * (see portable/tests/test_res_archive.c for the detail). So the whole RES path
+ * (see tests/test_res_archive.c for the detail). So the whole RES path
  * is ILP32-only and so is this test.
  *
  * RUN DIRECTORY: gamedata/disc.
@@ -65,7 +65,7 @@ typedef struct TPosTable {
 } TPosTable;
 
 /* The RES records, only as far as this test walks them (same layout as
- * portable/tests/test_res_archive.c). */
+ * tests/test_res_archive.c). */
 typedef struct TRDir2 { struct TRDir2* next; void* files; char* name; } TRDir2;
 typedef struct TRDirEnt2 {
     struct TRDirEnt2* anext;

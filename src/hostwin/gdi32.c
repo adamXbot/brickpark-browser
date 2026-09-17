@@ -10,7 +10,7 @@
  *
  * What that takes, and why each part is needed:
  *
- *   1. A FACE. portable/src/hostwin/ll_font.c: a 6x7 bitmap face scaled to the
+ *   1. A FACE. src/hostwin/ll_font.c: a 6x7 bitmap face scaled to the
  *      requested lfHeight, plus the DrawText layout engine. Its header explains
  *      the metrics and why they are the metrics.
  *   2. DC STATE. SetTextColor / SetBkColor / SetBkMode / SetTextAlign have to be

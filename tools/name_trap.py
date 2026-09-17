@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Name the first trap the headless harness hits, in one command.
 
-    python3 portable/tools/name_trap.py                 # the whole WinMain spine
-    python3 portable/tools/name_trap.py -- --stages      # InitSession step by step
-    python3 portable/tools/name_trap.py --resmount       # (-- is optional)
-    python3 portable/tools/name_trap.py --table          # what the table holds
-    python3 portable/tools/name_trap.py --at 0x2e9f1c    # explain one call site
-    python3 portable/tools/name_trap.py --at 0x929af --kind table
-    python3 portable/tools/name_trap.py --va-literals    # the B9-4 class, swept
-    python3 portable/tools/name_trap.py --continue       # EVERY blocker, one run
+    python3 tools/name_trap.py                 # the whole WinMain spine
+    python3 tools/name_trap.py -- --stages      # InitSession step by step
+    python3 tools/name_trap.py --resmount       # (-- is optional)
+    python3 tools/name_trap.py --table          # what the table holds
+    python3 tools/name_trap.py --at 0x2e9f1c    # explain one call site
+    python3 tools/name_trap.py --at 0x929af --kind table
+    python3 tools/name_trap.py --va-literals    # the B9-4 class, swept
+    python3 tools/name_trap.py --continue       # EVERY blocker, one run
 
 `--continue` is the "find every blocker in one run" mode: it sets
 `LL_TRAP_CONTINUE=1`, which makes `gen_link.py`'s trap helper print each distinct
@@ -78,7 +78,7 @@ The port has six ways of dying and only one of them says so by itself:
   mismatch stub, and none of the messages above.
 
 Telling these apart is the whole job, and it needs a link that
-wasm-opt did not touch: `legoland_headless_debug` (portable/cmake/headless.cmake)
+wasm-opt did not touch: `legoland_headless_debug` (cmake/headless.cmake)
 is `legoland_headless` with `-O0 -g2` at LINK time only, so the stub survives as
 a real function with its name. The game objects are shared with the optimised
 harness, so building it costs one link.
@@ -103,7 +103,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(os.path.dirname(HERE))
+ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import linkreport as lr  # noqa: E402
 
@@ -484,7 +484,7 @@ def markers():
     mre = re.compile(r'^// (?:WIP-)?FUNCTION: LEGOLAND (0x[0-9a-fA-F]+)')
     sig = re.compile(r'^[A-Za-z_][\w \t*]*?\**\s*\**([A-Za-z_]\w*)\s*\(')
     import glob
-    for path in sorted(glob.glob(os.path.join(ROOT, 'LEGOLAND', '*.c'))):
+    for path in sorted(glob.glob(os.path.join(lr.SRC, '*.c'))):
         base = os.path.basename(path)
         lines = open(path, encoding='utf-8', errors='replace').read().split('\n')
         for i, line in enumerate(lines):
@@ -995,7 +995,7 @@ def table_census(wasm, build_dir):
 def build(build_dir, target, quiet):
     if not os.path.isdir(build_dir):
         print(f'name_trap: no build directory {build_dir}\n'
-              f'  emcmake cmake -S portable -B {build_dir} -G Ninja '
+              f'  emcmake cmake -S . -B {build_dir} -G Ninja '
               f'-DCMAKE_BUILD_TYPE=Release -DLL_ILP32=ON', file=sys.stderr)
         return False
     r = subprocess.run(['ninja', '-C', build_dir, target],
@@ -1188,7 +1188,7 @@ def report(stdout, stderr, status, trace_tail, trap_continue=False):
 def main():
     ap = argparse.ArgumentParser(
         description='name the first trap the headless harness hits')
-    ap.add_argument('--build', default=os.path.join(ROOT, 'portable', 'build-wasm'),
+    ap.add_argument('--build', default=os.path.join(ROOT, 'build-wasm'),
                     help='the Emscripten build directory')
     ap.add_argument('--target', default='legoland_headless_debug',
                     help='the harness to run (must be linked -O0, or no frame '

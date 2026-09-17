@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Build the player page's static directory (portable/cmake/browser.cmake,
+"""Build the player page's static directory (cmake/browser.cmake,
 target legoland_web). Three subcommands:
 
-  static --src portable/src/web --out build-wasm/web
+  static --src src/web --out build-wasm/web
       Copy the page's HTML, CSS and scripts, rewriting only what changed.
 
   data --gamedata gamedata --advisor build-wasm/advisor --out build-wasm/web/data
       The downloadable data pack: core.tar (the install files in the shipped
       install's layout, plus the host-decoded advisor frames), speech.tar (the
       narration) and volumes/*.res, described by manifest.json. The layout rule
-      is portable/src/web/js/discplan.js's installPath, mirrored below; the disc
+      is src/web/js/discplan.js's installPath, mirrored below; the disc
       import and the download must install the SAME tree, and
-      `node portable/tools/web_disc_check.mjs --pack build-wasm/web/data IMAGE`
+      `node tools/web_disc_check.mjs --pack build-wasm/web/data IMAGE`
       compares the two.
 
   stamp --out build-wasm/web

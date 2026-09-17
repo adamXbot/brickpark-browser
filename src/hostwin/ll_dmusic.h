@@ -13,7 +13,7 @@
  * ll_dmusic.c wraps all three in the COM objects musicthread.c calls through
  * vtable offsets, and feeds the rendered PCM to ll_audio.c. Nothing in these
  * three files knows about COM, Win32 or Emscripten, so the same code builds
- * into the native render tool (portable/src/tools/dmusic_tool.c) and its
+ * into the native render tool (src/tools/dmusic_tool.c) and its
  * selftest.
  *
  * Music time is DirectMusic's: 768 ticks to a quarter note (DMUS_PPQ).

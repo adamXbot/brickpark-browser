@@ -509,7 +509,7 @@ void test_rle_paint(void)
 #ifdef LL_RLE_NO_ASSETS
 /* gamedata/ is absent, so tools/oracle_rlepaint.py could not read Graphics1.res
  * and there are no digests to compare against. The nine synthetic cases above
- * are the test in that build (portable/cmake/tests.cmake wrote the stub header,
+ * are the test in that build (cmake/tests.cmake wrote the stub header,
  * see docs/lanes/scope-port-a4.md §4); this one says so instead of passing
  * quietly or failing on a missing file. */
 static void real_sprite(void)

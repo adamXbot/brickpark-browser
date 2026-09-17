@@ -4,7 +4,7 @@
 gen_link.py (PORT-A) scans ONE object directory and emits a trapping stub for
 every Win32 import and every unresolved name that directory's objects do not
 define. The browser target adds a second object directory -- the host shim
-(portable/src/hostwin/{ddraw,user32,gdi32,dinput,winmm,dsound}.c) -- whose
+(src/hostwin/{ddraw,user32,gdi32,dinput,winmm,dsound}.c) -- whose
 definitions gen_link.py cannot see, so its `host_stubs.c` and `stubs.c` would
 collide with the shim at link time.
 

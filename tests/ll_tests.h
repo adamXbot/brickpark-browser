@@ -1,6 +1,6 @@
 /* PORT-C headless test harness (docs/SCOPE_PORT_WAVE.md, docs/lanes/scope-port-c.md).
  *
- * Tiny check/report harness shared by portable/tests/test_*.c. One executable
+ * Tiny check/report harness shared by tests/test_*.c. One executable
  * with subcommands: `legoland_tests <name>` runs one test and exits 0 only if
  * every check passed. Every check prints one line, so a ctest failure log is
  * the diagnosis.
@@ -24,7 +24,7 @@ void ll_fail(const char* what, const char* fmt, ...);
 void ll_note(const char* what, const char* fmt, ...);
 /* A check that could not be made, with the reason. NOT a pass and NOT a
  * failure: `LL_TESTS_NO_GAMEDATA` builds (CI has no game assets, see
- * portable/cmake/tests.cmake) run the synthetic cases of a test and skip the
+ * cmake/tests.cmake) run the synthetic cases of a test and skip the
  * ones that read a shipped file, and a skip has to be visible in the log or the
  * test silently claims coverage it does not have. */
 void ll_skip(const char* what, const char* why);

@@ -1,5 +1,5 @@
-# portable/cmake/headless.cmake -- owned by scope PORT-A (docs/SCOPE_PORT_WAVE.md).
-# Included from portable/CMakeLists.txt; add this lane's targets here, not there.
+# cmake/headless.cmake -- owned by scope PORT-A (docs/SCOPE_PORT_WAVE.md).
+# Included from CMakeLists.txt; add this lane's targets here, not there.
 #
 # Two things live here:
 #
@@ -106,14 +106,14 @@ set_tests_properties(slot_sweep_selftest PROPERTIES
 # Tower's map tile as (114, 10), so LINK never satisfied and the tower drew as a
 # squat block (PARK-1 and PARK-3 in one defect).
 #
-# The gate is the accepted list: `portable/tests/bvstruct_accepted.txt` holds the
+# The gate is the accepted list: `tests/bvstruct_accepted.txt` holds the
 # 15 addresses a lane has ruled on, each with its reason, and any OTHER silent
 # site fails. Sources only -- no gamedata/, no image, no build products -- so it
 # runs in CI on both toolchains, like extern_sweep.
 add_test(NAME bvstruct_sweep
          COMMAND "${Python3_EXECUTABLE}"
                  "${CMAKE_CURRENT_SOURCE_DIR}/tools/bvstruct_sweep.py"
-                 "${LL_ROOT}/LEGOLAND"
+                 "${LL_DECOMP}/LEGOLAND"
                  --baseline "${CMAKE_CURRENT_SOURCE_DIR}/tests/bvstruct_accepted.txt")
 set_tests_properties(bvstruct_sweep PROPERTIES
   PASS_REGULAR_EXPRESSION "0 unaccepted silent site"
@@ -149,7 +149,7 @@ set_tests_properties(bvstruct_sweep_selftest PROPERTIES
 # `gen/rawwords.md` asks the image instead: every 4-byte word of every emitted
 # object whose value lands in the original .rdata/.data, with the inline-text
 # vetoes A2 measured. The residue is not zero yet (most of it is bounds PORT-M11
-# owes), so the gate is a BASELINE -- `portable/tests/rawwords_baseline.txt`
+# owes), so the gate is a BASELINE -- `tests/rawwords_baseline.txt`
 # lists the accepted rows with a reason each. A NEW row or a row that GREW
 # fails; a row that shrinks prints SHRUNK and passes, so a game-side fix tightens
 # the file instead of fighting it.
@@ -189,7 +189,7 @@ set_tests_properties(raw_words PROPERTIES
 # The bytes are identical either way, so audit.py, relocs.py, match.py and
 # verify.py cannot see this state or the fixed one.
 #
-# The gate is the baseline `portable/tests/addr_collisions.txt`: 18 NAME rows and
+# The gate is the baseline `tests/addr_collisions.txt`: 18 NAME rows and
 # 5 ADDR rows, each with a reason. A row not there, or a row that grew an address
 # or changed a size, FAILS; a row that is no longer reported prints FIXED and
 # passes, which is what lets the file hold PORT-P3's open findings today and go
@@ -200,7 +200,7 @@ set_tests_properties(raw_words PROPERTIES
 add_test(NAME addr_sweep
          COMMAND "${Python3_EXECUTABLE}"
                  "${CMAKE_CURRENT_SOURCE_DIR}/tools/addr_sweep.py" --quiet
-                 --src "${LL_ROOT}/LEGOLAND"
+                 --src "${LL_DECOMP}/LEGOLAND"
                  --baseline "${CMAKE_CURRENT_SOURCE_DIR}/tests/addr_collisions.txt")
 set_tests_properties(addr_sweep PROPERTIES
   PASS_REGULAR_EXPRESSION "addr_sweep gate: 0 failure"
@@ -254,7 +254,7 @@ set_tests_properties(addr_sweep_selftest PROPERTIES
 add_test(NAME variadic_sweep
          COMMAND "${Python3_EXECUTABLE}"
                  "${CMAKE_CURRENT_SOURCE_DIR}/tools/variadic_sweep.py"
-                 --src "${LL_ROOT}/LEGOLAND")
+                 --src "${LL_DECOMP}/LEGOLAND")
 set_tests_properties(variadic_sweep PROPERTIES
   PASS_REGULAR_EXPRESSION "variadic_sweep gate: 0 conflict"
   FAIL_REGULAR_EXPRESSION "FIX:"
@@ -303,7 +303,7 @@ set_tests_properties(variadic_sweep_selftest PROPERTIES
 add_test(NAME cast_extent_sweep
          COMMAND "${Python3_EXECUTABLE}"
                  "${CMAKE_CURRENT_SOURCE_DIR}/tools/cast_extent_sweep.py" --quiet
-                 --src "${LL_ROOT}/LEGOLAND")
+                 --src "${LL_DECOMP}/LEGOLAND")
 set_tests_properties(cast_extent_sweep PROPERTIES
   PASS_REGULAR_EXPRESSION "cast_extent_sweep gate: 0 failure"
   FAIL_REGULAR_EXPRESSION "FAIL"
@@ -393,12 +393,12 @@ if(EMSCRIPTEN)
   # reconfiguring and without rebuilding legoland_core (the game objects are
   # shared, and it is the LINK that creates the stub).
   #
-  #   ninja -C portable/build-wasm legoland_headless_debug
-  #   python3 portable/tools/name_trap.py            # builds it if need be
+  #   ninja -C build-wasm legoland_headless_debug
+  #   python3 tools/name_trap.py            # builds it if need be
   #
   # ASYNCIFY is what makes this cheap: the browser target cannot be linked at
   # -O0 (unoptimised ASYNCIFY of RunAppraisalScreen exceeds wasm's per-function
-  # local limit, see portable/README.md), and the headless harness has no
+  # local limit, see README.md), and the headless harness has no
   # ASYNCIFY at all.
   ll_headless_target(legoland_headless_debug)
   target_link_options(legoland_headless_debug PRIVATE -O0 -g2)
@@ -486,7 +486,7 @@ if(EMSCRIPTEN)
     # extent rule recovered on its own: g_game_fx entries 0 and 1 (Flowers.wav,
     # RabOld\Drill.wav) and both money effects. The other 21 names are still raw
     # and are bounds the game sources owe (PORT-M11, and the rows in
-    # portable/tests/rawwords_baseline.txt); when they land this number should
+    # tests/rawwords_baseline.txt); when they land this number should
     # reach 25 and the probe prints a line asking for the floor to be raised.
     set(LL_AUDIO_BUFFERS 24)
     add_test(NAME probe_audio

@@ -112,7 +112,7 @@
  *
  * ole32: CoInitialize / CoCreateInstance live here too (PORT-B4). They are
  * DirectMusic's door and nothing else in the program uses COM
- * (portable/tools/win32_imports.txt lists exactly these two ole32 imports), so
+ * (tools/win32_imports.txt lists exactly these two ole32 imports), so
  * they belong with the audio shim rather than in a file of their own. See the
  * block at the bottom for what the game does with the failure, and
  * docs/lanes/scope-port-b4.md for why MusicThread does not run at all yet.

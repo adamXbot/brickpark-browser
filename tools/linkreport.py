@@ -21,7 +21,7 @@ undefined symbols with `nm`, and sorts the undefined ones into:
 It also lists symbols defined more than once (duplicate bodies) and the
 inline-asm bodies that are still LL_UNPORTED_ASM stubs.
 
-    python3 portable/tools/linkreport.py portable/build [--out report.md]
+    python3 tools/linkreport.py build [--out report.md]
 
 gen_link.py imports the helpers below.
 """
@@ -35,8 +35,10 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
-SRC = os.path.join(ROOT, 'LEGOLAND')
+ROOT = os.path.abspath(os.path.join(HERE, '..'))
+# The matching decompilation is the decomp submodule (LL_DECOMP overrides).
+DECOMP = os.environ.get('LL_DECOMP') or os.path.join(ROOT, 'decomp')
+SRC = os.path.join(DECOMP, 'LEGOLAND')
 
 CRT = set('''
 abs atan atan2 atof atoi atol ceil cos exp fabs floor fmod log log10 pow sin

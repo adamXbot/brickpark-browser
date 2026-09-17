@@ -3,7 +3,7 @@
  *   await fetch('replays/p4-00-prelude.js').then(r=>r.text()).then(eval);
  *   await P4.toLesson(2);        // cold load -> the lesson-2 park
  *
- * Serve `portable/build-wasm` and open
+ * Serve `build-wasm` and open
  *   legoland.html?args=-nointro+WINDEBUG&awake=1
  * `awake=1` is not optional: a hidden pane throttles the chained setTimeout
  * the port yields through and the whole game runs at 0.3-0.5 fps, which is how

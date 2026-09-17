@@ -4,7 +4,7 @@
  * working bodies rather than the traps gen_link.py generates for everything
  * the shim does not define yet (it stops generating a trap for a symbol as
  * soon as an object in the build defines it, which is why this file is
- * compiled into legoland_core -- see portable/cmake/headless.cmake).
+ * compiled into legoland_core -- see cmake/headless.cmake).
  *
  * The shape of the port this assumes, and why each decision is safe:
  *
@@ -32,7 +32,7 @@
  *     no-op with a hook PORT-B points at its yield.
  *
  * Ownership: PORT-A (docs/SCOPE_PORT_WAVE.md). Declarations:
- * portable/hostwin/include/ll_host.h.
+ * hostwin/include/ll_host.h.
  */
 #include "ll_host.h"
 
@@ -573,7 +573,7 @@ static void ll_thread_deadlock(const char* what)
     if (g_thread_depth > 0) {
         fprintf(stderr, "HOST CreateThread: %s -- nothing else runs, so the"
                         " inline thread is unwound here (see the threads note in"
-                        " portable/src/hostwin/kernel32.c)\n", what);
+                        " src/hostwin/kernel32.c)\n", what);
         fflush(stderr);
         g_thread_escaped = 1;
         longjmp(g_thread_escape, 1);

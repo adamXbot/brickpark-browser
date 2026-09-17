@@ -25,7 +25,7 @@
 // receives anything, and NOTHING throws. A ReferenceError in here would abort
 // the wasm call that triggered it, which in a test harness reads as a mysterious
 // failure deep inside the game rather than as "there is no DOM".
-//   Proof: `node portable/build-wasm/shimtest.js --frames 300`.
+//   Proof: `node build-wasm/shimtest.js --frames 300`.
 
 var LibraryLLCanvas = {
   $LL: {
@@ -195,7 +195,7 @@ var LibraryLLCanvas = {
       LL.events.push(t, a | 0, b | 0, c | 0);
     },
 
-    // The player page (portable/src/web) sets Module.llAbsoluteMouse: the
+    // The player page (src/web) sets Module.llAbsoluteMouse: the
     // pointer is sent as a POSITION in game pixels and dinput.c works out the
     // delta against the game's own cursor at the poll (see its
     // ll_host_mouse_moveto). The developer page leaves it unset and keeps the

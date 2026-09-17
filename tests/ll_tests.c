@@ -89,7 +89,7 @@ static const struct entry entries[] = {
       "BeginMeasuredBlock/EndMeasuredBlock/SaveGameWrite/SaveGameRead/FindeIneList" },
 #ifndef LL_TESTS_NO_GAMEDATA
     /* The four whose oracles read the shipped volumes. Without gamedata/ their
-     * sources are not compiled at all (portable/cmake/tests.cmake, PORT-A4), so
+     * sources are not compiled at all (cmake/tests.cmake, PORT-A4), so
      * the driver's usage listing shows exactly what this build can run. */
     { "tile_geometry", test_tile_geometry,
       "GetTileCentre/GetTileBounds/GetTileDimensions/OverNewTile/CrossTileCentre" },

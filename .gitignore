@@ -1,0 +1,13 @@
+# No copyrighted game data or binaries ever live in the repo.
+original
+gamedata
+*.res
+*.iso
+*.z
+
+# Build trees: a browser build packs local game data into legoland.data. Never publish one.
+build*/
+
+__pycache__/
+*.pyc
+.DS_Store

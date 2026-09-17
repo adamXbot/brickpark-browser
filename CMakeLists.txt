@@ -1,8 +1,8 @@
 # LEGOLAND portable build.
 #
-# Compiles the matching decompilation in ../LEGOLAND with a modern compiler
+# Compiles the matching decompilation in decomp/LEGOLAND with a modern compiler
 # (clang, gcc or emcc) into one static library. Nothing links into a program
-# yet: run `python3 portable/tools/linkreport.py <build dir>` on the objects
+# yet: run `python3 tools/linkreport.py <build dir>` on the objects
 # to get the authoritative list of what is still missing (unwritten game
 # functions, Win32/DirectX host API, unported asm bodies).
 #
@@ -13,8 +13,15 @@
 cmake_minimum_required(VERSION 3.20)
 project(legoland_portable C)
 
-set(LL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
-file(GLOB LL_CORE_SOURCES CONFIGURE_DEPENDS "${LL_ROOT}/LEGOLAND/*.c")
+set(LL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+# The matching decompilation (LEGOLAND/, tools/, docs/) is the `decomp` submodule:
+# https://github.com/adamXbot/legoland-decomp. original/ and gamedata/ stay here.
+set(LL_DECOMP "${LL_ROOT}/decomp" CACHE PATH "Checkout of legoland-decomp")
+if(NOT EXISTS "${LL_DECOMP}/LEGOLAND")
+  message(FATAL_ERROR "${LL_DECOMP}/LEGOLAND is missing: run `git submodule update --init`, "
+                      "or pass -DLL_DECOMP=<path to a legoland-decomp checkout>")
+endif()
+file(GLOB LL_CORE_SOURCES CONFIGURE_DEPENDS "${LL_DECOMP}/LEGOLAND/*.c")
 
 add_library(legoland_core STATIC
   ${LL_CORE_SOURCES}
@@ -23,7 +30,7 @@ add_library(legoland_core STATIC
 )
 target_include_directories(legoland_core PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/hostwin/include"
-  "${LL_ROOT}/LEGOLAND"
+  "${LL_DECOMP}/LEGOLAND"
 )
 target_compile_definitions(legoland_core PUBLIC LEGOLAND_PORTABLE=1)
 

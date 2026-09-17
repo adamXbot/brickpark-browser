@@ -4,8 +4,8 @@
  * that only RenderAdvisorIcon (screens3.c) ever paints, from
  * `dib = AVIStreamGetFrame(...)`; with every AVI open failing it was never
  * painted, and the cursor and bubble help drawn over it stayed on screen
- * (docs/lanes/scope-port-b11.md §4). portable/src/hostwin/avifil32.c now opens
- * a clip whose frames portable/tools/advisor_frames.py decoded at build time.
+ * (docs/lanes/scope-port-b11.md §4). src/hostwin/avifil32.c now opens
+ * a clip whose frames tools/advisor_frames.py decoded at build time.
  *
  * What this pins, with synthetic frames files the test writes itself (so no
  * gamedata/, and nothing lands in the page's own advisor/ directory -- ctest

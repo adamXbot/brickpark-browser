@@ -1,7 +1,7 @@
 /* PORT-B13 replay 01 — P4-3: the three text boxes that fill solid black, and
  * why. Also the two harness findings, P4-4 and P4-5, measured on the same page.
  *
- *   Serve portable/build-wasm and open
+ *   Serve build-wasm and open
  *     legoland.html?args=-nointro+WINDEBUG&awake=1
  *   await fetch('replays/p4-00-prelude.js').then(r=>r.text()).then(eval);
  *   await fetch('replays/b13-01-the-gdi-object-table-leaks-memory-dcs.js')

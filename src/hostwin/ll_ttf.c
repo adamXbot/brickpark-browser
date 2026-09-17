@@ -329,7 +329,7 @@ int ll_ttf_load_file(const char* path)
 }
 
 /* The places the face can be. The browser build preloads `gamedata/main` at
- * `/gamedata` (portable/cmake/browser.cmake:158), which is where the first of
+ * `/gamedata` (cmake/browser.cmake:158), which is where the first of
  * these hits; the rest let a native or node run that happens to sit in the
  * right directory find it too. MEMFS path resolution is case-insensitive
  * (PORT-A3), so on the page the `.TTF` and `.ttf` spellings are the same file;

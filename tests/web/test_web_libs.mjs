@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Asset-free tests of the player page's data libraries (portable/src/web/js).
+// Asset-free tests of the player page's data libraries (src/web/js).
 //
-//   node portable/tests/web/test_web_libs.mjs
+//   node tests/web/test_web_libs.mjs
 //
 // Every input is synthesised here, so CI runs it with no gamedata. The same
-// libraries against the REAL discs are portable/tools/web_disc_check.mjs.
+// libraries against the REAL discs are tools/web_disc_check.mjs.
 
 import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';

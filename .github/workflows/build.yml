@@ -1,0 +1,138 @@
+name: Portable build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # The native build: every game source compiles with clang and the whole
+  # archive links against the generated closure (README.md). The original
+  # binary is not available in CI, so globals are zero-initialised.
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          # decomp/ is a separate repository. While it is private the default
+          # token cannot read it: store a read-only token for it as the
+          # DECOMP_TOKEN secret. Once it is public the default token is enough.
+          token: ${{ secrets.DECOMP_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang ninja-build cmake
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Release
+      - name: Compile every game source
+        run: ninja -C build
+      - name: Link the whole archive
+        run: |
+          ninja -C build legoland_linkcheck
+          ./build/legoland_linkcheck
+      - name: Link census
+        run: python3 tools/linkreport.py build/CMakeFiles/legoland_core.dir --out build/linkreport.md | head -14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-linkreport
+          path: build/linkreport.md
+
+  # The wasm32 tree, which is the one that can actually RUN the game: wasm32 is
+  # the only ILP32 target available, and every serialised layout in the
+  # recovered code assumes 4-byte pointers and longs (README.md, "ILP32 is the
+  # real target"). This job links the closure the browser and the headless
+  # harness use, and runs the tests that need no game data.
+  #
+  # Neither gamedata/ nor original/legoland.exe is in the repository, so:
+  #   * gen_link.py zero-fills every rebuilt global instead of initialising it
+  #     from the exe's .data;
+  #   * the asset-reading tests are not built and the oracles that decode a
+  #     volume are not run (cmake/tests.cmake decides this from
+  #     gamedata/disc/Legoland.res, and says which tests it registered and why).
+  # So what this job gates is: every source compiles for wasm32, the whole
+  # archive links against the generated closure for all five targets, the
+  # closure resolves every symbol under node, and the asset-free behaviour
+  # tests pass. A wasm-ld signature mismatch or a binaryen validation failure
+  # breaks the build here.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          # decomp/ is a separate repository. While it is private the default
+          # token cannot read it: store a read-only token for it as the
+          # DECOMP_TOKEN secret. Once it is public the default token is enough.
+          token: ${{ secrets.DECOMP_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake
+      # Pinned to the emsdk the tree is developed against. A different emsdk can
+      # change the libc signatures gen_link.py's CRT_PROTOS table is matched
+      # against, and that is exactly the class of breakage this job catches.
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 6.0.9
+          actions-cache-folder: emsdk-cache
+      - name: Check the toolchain
+        run: emcc --version
+      # legoland_browser preloads $LL_GAMEDATA/main unconditionally, and emcc's
+      # file_packager fails on a directory that does not exist. An empty tree with
+      # the RES preload off links the real target against an empty .data file:
+      # the page cannot run from it, but the link (ASYNCIFY, binaryen's
+      # directize) is what catches an invalid module.
+      - name: An empty asset tree, so the browser target can link
+        run: |
+          mkdir -p "${{ github.workspace }}/ci-gamedata/main"
+          : > "${{ github.workspace }}/ci-gamedata/main/stab.str"
+      - name: Configure wasm32 (ILP32)
+        run: |
+          emcmake cmake -S . -B build-wasm -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DLL_ILP32=ON \
+            -DLL_GAMEDATA="${{ github.workspace }}/ci-gamedata" \
+            -DLL_PRELOAD_RES=OFF
+      - name: Compile every game source for wasm32
+        run: ninja -C build-wasm
+      # wasm-ld prints a signature mismatch as a WARNING, so the link succeeds
+      # and only the log says the module has a poisoned call site. The grep is
+      # the gate.
+      - name: Link every wasm32 target
+        run: |
+          ninja -C build-wasm legoland_linkcheck legoland_headless \
+                legoland_tests legoland_pathtest legoland_browser \
+                2>&1 | tee /tmp/ll-wasm-link.log
+      - name: No wasm-ld signature mismatches
+        run: |
+          if grep -n 'function signature mismatch' /tmp/ll-wasm-link.log; then
+            echo "::error::wasm-ld reported a function signature mismatch:"
+            echo "a call site is typed unlike the body it resolves to, and every"
+            echo "call through it is a trapping stub."
+            exit 1
+          fi
+          echo "no signature mismatches"
+      - name: The closure resolves every symbol
+        run: node build-wasm/legoland_linkcheck.js
+      - name: Run the tests that need no game data
+        run: ctest --test-dir build-wasm --output-on-failure
+      - name: Link census (wasm32)
+        run: |
+          python3 tools/linkreport.py \
+            build-wasm/CMakeFiles/legoland_core.dir \
+            --out build-wasm/linkreport.md | head -14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-linkreport
+          path: |
+            build-wasm/linkreport.md
+            build-wasm/gen/manifest.md

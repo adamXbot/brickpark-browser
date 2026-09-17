@@ -2,9 +2,9 @@
 // Run the player page's disc importer on real disc images, under node, and say
 // whether what it would install is what the game needs.
 //
-//   node portable/tools/web_disc_check.mjs [--gamedata DIR] [--hash] IMAGE...
+//   node tools/web_disc_check.mjs [--gamedata DIR] [--hash] IMAGE...
 //
-// For each image: open it with portable/src/web/js/iso9660.js (the same file the
+// For each image: open it with src/web/js/iso9660.js (the same file the
 // page runs), classify it with discplan.js, expand main.z with installshield.js,
 // and compare every byte that would be installed with the extraction in
 // gamedata/ (gamedata/main is tools/iscab.py's output; gamedata/disc holds the

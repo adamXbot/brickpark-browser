@@ -5,7 +5,7 @@
 // archive, signature 0x8C655D13, every member compressed with PKWARE DCL
 // implode. This is a line-for-line port of tools/iscab.py and tools/blast.py,
 // whose format notes are docs/INSTALLSHIELD_Z.md; read those for the WHY. The
-// two must stay in step: portable/tools/web_disc_check.mjs extracts every
+// two must stay in step: tools/web_disc_check.mjs extracts every
 // member with this file and compares it with the Python extraction in
 // gamedata/main.
 

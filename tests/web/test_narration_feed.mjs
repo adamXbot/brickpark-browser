@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // The narration stream, sample for sample, through the REAL scheduler code.
 //
-//   node portable/tests/web/test_narration_feed.mjs [--source path/to/ll_audio.c]
+//   node tests/web/test_narration_feed.mjs [--source path/to/ll_audio.c]
 //
 // ll_audio_js_feed, ll_audio_js_stop and ll_audio_js_written are read out of
-// portable/src/hostwin/ll_audio.c (their EM_JS bodies are plain JavaScript) and
+// src/hostwin/ll_audio.c (their EM_JS bodies are plain JavaScript) and
 // run over a fake AudioContext whose clock the test owns. Around them, a
 // line-for-line model of the three things they sit between:
 //

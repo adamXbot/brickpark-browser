@@ -1,6 +1,6 @@
 // PORT-P1 replay 01 — the FREE PLAY route, cold load to a running park.
 //
-// Serve portable/build-wasm and open
+// Serve build-wasm and open
 //   legoland.html?args=-nointro+WINDEBUG&beat=1000
 // then paste this whole file into the page console. It is one async IIFE and
 // returns the table of (step, hash, llPark()) it walked.

@@ -1,6 +1,6 @@
 /* install_paths -- ll_host_resolve_path over a PRELOADED MEMFS.  Scope PORT-A3.
  *
- * `ll_host_resolve_path` (portable/src/hostwin/kernel32.c) is what makes the
+ * `ll_host_resolve_path` (src/hostwin/kernel32.c) is what makes the
  * paths the game wrote for a 1999 Windows install resolve on a modern host: the
  * emulated `D:` drive, backslashes, each component matched case-insensitively,
  * and -- when a directory component does not exist at all -- the last component

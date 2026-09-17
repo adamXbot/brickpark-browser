@@ -42,7 +42,7 @@ int strnicmp(const char* a, const char* b, size_t n)
     return 0;
 }
 
-/* Reached through a generated stub (portable/tools/gen_link.py). */
+/* Reached through a generated stub (tools/gen_link.py). */
 void ll_unwritten(const char* name, unsigned int address)
 {
     if (address)
