@@ -270,11 +270,15 @@ class Object:
 class TU:
     """One translation unit: the file's own types, then `legoland.h`'s."""
 
-    def __init__(self, path, shared=None):
+    def __init__(self, path, shared=None, text=None):
+        """`text` stands in for the file's contents: `cast_extent_sweep.py`
+        parses the arm of `#ifndef LEGOLAND_PORTABLE` the portable build
+        compiles, with the other arm's lines blanked."""
         self.path = path
         self.file = os.path.basename(path)
-        self.tk = Tokens(open(path, encoding='utf-8', errors='replace').read(),
-                         path)
+        if text is None:
+            text = open(path, encoding='utf-8', errors='replace').read()
+        self.tk = Tokens(text, path)
         self.toks = self.tk.toks
         self.i = 0
         self.tags = {}             # ('struct'|'union'|'enum', tag) -> Type

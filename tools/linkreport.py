@@ -661,7 +661,7 @@ def _declarator_name(toks):
     return (last, kind)
 
 
-def scan_sources():
+def scan_sources(src=SRC):
     """Returns (externs, defined_at, stubs):
     externs   name -> (address, 'fn' | 'data') from `extern ... /* 0x... */`,
               read a STATEMENT at a time, from LEGOLAND/*.c AND *.h
@@ -672,8 +672,8 @@ def scan_sources():
     marker_re = re.compile(r'^// (FUNCTION|WIP-FUNCTION): LEGOLAND (0x[0-9a-fA-F]+)')
     sig_re = re.compile(r'^[A-Za-z_][A-Za-z0-9_ *]*?\**\s*\**([A-Za-z_][A-Za-z0-9_]*)\s*\(')
     stubs = []
-    paths = sorted(glob.glob(os.path.join(SRC, '*.c'))) + \
-        sorted(glob.glob(os.path.join(SRC, '*.h')))
+    paths = sorted(glob.glob(os.path.join(src, '*.c'))) + \
+        sorted(glob.glob(os.path.join(src, '*.h')))
     for path in paths:
         base = os.path.basename(path)
         text = open(path, encoding='utf-8', errors='replace').read()

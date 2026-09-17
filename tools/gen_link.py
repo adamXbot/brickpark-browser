@@ -526,7 +526,7 @@ def elem_size(typ):
     return PRIM_SIZES.get(t)
 
 
-def scan_pointer_decls():
+def scan_pointer_decls(src=None):
     """name -> [(address, pointer depth, element count or None, byte extent or
     None)] for every `extern` data declaration that carries an address comment.
 
@@ -535,7 +535,7 @@ def scan_pointer_decls():
     `ptr_slot_count`). The byte extent is count * element size, and is None
     whenever either factor is unknown."""
     out = {}
-    for path in sorted(glob.glob(os.path.join(lr.SRC, '*.c'))):
+    for path in sorted(glob.glob(os.path.join(src or lr.SRC, '*.c'))):
         for line in open(path, encoding='utf-8', errors='replace'):
             m = DECL_RE.match(line)
             if not m:
@@ -556,6 +556,137 @@ def scan_pointer_decls():
                 (int(m.group('addr'), 16), m.group('type').count('*'), count,
                  None if count is None or esz is None else count * esz))
     return out
+
+
+# ---- the object layout: which block a data address lands in ----------------
+# main() plans globals.c with exactly these four functions, in this order. They
+# are module-level for the one other consumer that has to agree with the
+# generator about how far an object reaches: `cast_extent_sweep.py`, which asks
+# whether a `(Pos*)&g_entrance_x` read runs past the block emitted for that
+# address. A copy of the rules in the sweep would drift the first time this file
+# changed them; a call cannot. Nothing here reads a build product -- `defined`
+# and `missing_data` are the caller's.
+
+def address_map(externs, defined_at):
+    """(data_names, known, next_addr): address -> the extern-only data names
+    at it, every address any symbol is known at (plus the section bounds), and
+    each known address's successor -- the ruler the gap tiling sizes by."""
+    data_names = {}           # addr -> [names] (extern-only data)
+    for n, (addr, kind) in externs.items():
+        if kind == 'data':
+            data_names.setdefault(addr, []).append(n)
+    known = set(data_names) | set(defined_at) | {a for a, _ in [(x[0], 0) for x in externs.values()]}
+    for _, start, end in lr.SECTIONS:
+        known.add(start)
+        known.add(end)
+    known = sorted(known)
+    next_addr = {a: known[i + 1] for i, a in enumerate(known[:-1])}
+    return data_names, known, next_addr
+
+
+def declared_extent_at(addr, src_ext, decls, data_names):
+    """The byte extent the game's own declarations give the object at
+    `addr`, or 0 when no declaration there has a computable size.
+
+    Three sources, widest wins: the computed `sizeof` of the declared type
+    (cdecl.py -- structs, unions, arrays of them, per TU), the array bounds
+    the pointer scan already reads, and STRUCT_EXTENTS, which is now a
+    REGRESSION FIXTURE rather than the mechanism (see check_hand_table)."""
+    best = STRUCT_EXTENTS.get(addr, (0, ''))[0]
+    e = src_ext.get(addr)
+    if e is not None:
+        best = max(best, e.size)
+    for nm in data_names.get(addr, ()):
+        for daddr, _depth, _count, nbytes in decls.get(nm, []):
+            if daddr == addr and nbytes:
+                best = max(best, nbytes)
+    return best
+
+
+def merge_interiors(data_names, known, next_addr, declared_extent, defined,
+                    missing_data, extent_cite=lambda addr: ''):
+    """(absorbed, interiors, host_end, split_log) -- see "ONE object per
+    object" in main(). `absorbed` maps an address to the host whose block
+    contains it, `interiors` a host to its [(name, offset)] aliases,
+    `host_end` a host to the end address its block must cover, and
+    `split_log` is gen/extents.md's rows."""
+    absorbed = {}             # absorbed addr -> host addr
+    interiors = {}            # host addr -> [(name, offset)]
+    host_end = {}             # host addr -> end address the merge must cover
+    split_log = []            # every object the tiling would have split
+    for addr in sorted(data_names):
+        if addr in absorbed:
+            continue
+        ext = declared_extent(addr)
+        if ext <= 1:
+            continue
+        tiled = next_addr.get(addr, addr + 4) - addr
+        log = None
+        if ext > tiled:
+            # The object is wider than its tile, so the tiling WOULD have split
+            # it: one block per named field. Every one of these is a row of
+            # gen/extents.md whatever happens next.
+            log = {'addr': addr, 'ext': ext, 'tiled': tiled, 'state': '',
+                   'names': sorted(data_names[addr]), 'taken': [],
+                   'end': addr + ext, 'cite': extent_cite(addr)}
+            split_log.append(log)
+        names = sorted(data_names[addr])
+        if any(n in defined for n in names) or \
+                not [n for n in names if n in missing_data and c_ident_ok(n)]:
+            if log:
+                log['state'] = 'no block here (a game object defines it)'
+            continue          # no block is emitted here, so it can host nothing
+        taken, end = [], addr + ext
+        clamped = None
+        i = bisect.bisect_right(known, addr)
+        while i < len(known) and known[i] < end:
+            k = known[i]
+            if k not in data_names or any(n in defined for n in data_names[k]):
+                end = k       # not ours: clamp the extent here
+                clamped = k
+                break
+            taken.append(k)
+            end = max(end, next_addr.get(k, k + 4))
+            i += 1
+        if log:
+            log['taken'] = taken
+            log['end'] = end
+            log['state'] = ('merged' if taken else 'nothing named inside it') + \
+                (f' (clamped at 0x{clamped:08x})' if clamped else '')
+        if not taken:
+            continue
+        for k in taken:
+            absorbed[k] = addr
+            interiors.setdefault(addr, []).extend(
+                (n, k - addr) for n in sorted(data_names[k])
+                if n in missing_data and c_ident_ok(n))
+        host_end[addr] = end
+    return absorbed, interiors, host_end, split_log
+
+
+def planned_blocks(data_names, absorbed, host_end, next_addr, defined,
+                   missing_data):
+    """([(addr, primary, size, rest)], [(addr, [alias], real)]): every block
+    globals.c defines, in address order, and the addresses whose storage a
+    game object already provides under another name. An absorbed address has
+    no block of its own -- its storage is the host's."""
+    blocks, cross = [], []
+    for addr in sorted(data_names):
+        if addr in absorbed:
+            continue          # storage comes from the object that contains it
+        names = sorted(data_names[addr])
+        want = [n for n in names if n in missing_data and c_ident_ok(n)]
+        if not want:
+            continue
+        existing = [n for n in names if n in defined]
+        if existing:
+            cross.append((addr, want, existing[0]))
+            continue
+        size = max(next_addr.get(addr, 4), host_end.get(addr, 0)) - addr
+        if size <= 0:
+            size = 4
+        blocks.append((addr, want[0], size, want[1:]))
+    return blocks, cross
 
 
 def sig_decl(sig):
@@ -952,16 +1083,7 @@ def main():
         return wasm_defs is not None and name in wasm_defs
 
     # Every address we know a symbol for: sizes come from the gaps.
-    data_names = {}           # addr -> [names] (extern-only data)
-    for n, (addr, kind) in externs.items():
-        if kind == 'data':
-            data_names.setdefault(addr, []).append(n)
-    known = set(data_names) | set(defined_at) | {a for a, _ in [(x[0], 0) for x in externs.values()]}
-    for _, start, end in lr.SECTIONS:
-        known.add(start)
-        known.add(end)
-    known = sorted(known)
-    next_addr = {a: known[i + 1] for i, a in enumerate(known[:-1])}
+    data_names, known, next_addr = address_map(externs, defined_at)
 
     missing_data = {n for n, _, _ in cats['game-data']}
     symbol_at = {}            # addr -> a symbol name that exists after generation
@@ -1188,22 +1310,8 @@ def main():
                             cdecl.field_name_at(ty, o), cite))
 
     def declared_extent(addr):
-        """The byte extent the game's own declarations give the object at
-        `addr`, or 0 when no declaration there has a computable size.
-
-        Three sources, widest wins: the computed `sizeof` of the declared type
-        (cdecl.py -- structs, unions, arrays of them, per TU), the array bounds
-        the pointer scan already reads, and STRUCT_EXTENTS, which is now a
-        REGRESSION FIXTURE rather than the mechanism (see check_hand_table)."""
-        best = STRUCT_EXTENTS.get(addr, (0, ''))[0]
-        e = src_ext.get(addr)
-        if e is not None:
-            best = max(best, e.size)
-        for nm in data_names.get(addr, ()):
-            for daddr, _depth, _count, nbytes in decls.get(nm, []):
-                if daddr == addr and nbytes:
-                    best = max(best, nbytes)
-        return best
+        """`declared_extent_at` over this run's parse (see there)."""
+        return declared_extent_at(addr, src_ext, decls, data_names)
 
     def extent_cite(addr):
         """file:line of the declaration and of the struct definition behind the
@@ -1228,57 +1336,9 @@ def main():
     # at any address that is NOT an extern-only data name -- a function, or data
     # a game object defines -- and clamps the extent there rather than claiming
     # storage somebody else owns.
-    absorbed = {}             # absorbed addr -> host addr
-    interiors = {}            # host addr -> [(name, offset)]
-    host_end = {}             # host addr -> end address the merge must cover
-    split_log = []            # every object the tiling would have split
-    for addr in sorted(data_names):
-        if addr in absorbed:
-            continue
-        ext = declared_extent(addr)
-        if ext <= 1:
-            continue
-        tiled = next_addr.get(addr, addr + 4) - addr
-        log = None
-        if ext > tiled:
-            # The object is wider than its tile, so the tiling WOULD have split
-            # it: one block per named field. Every one of these is a row of
-            # gen/extents.md whatever happens next.
-            log = {'addr': addr, 'ext': ext, 'tiled': tiled, 'state': '',
-                   'names': sorted(data_names[addr]), 'taken': [],
-                   'end': addr + ext, 'cite': extent_cite(addr)}
-            split_log.append(log)
-        names = sorted(data_names[addr])
-        if any(n in defined for n in names) or \
-                not [n for n in names if n in missing_data and c_ident_ok(n)]:
-            if log:
-                log['state'] = 'no block here (a game object defines it)'
-            continue          # no block is emitted here, so it can host nothing
-        taken, end = [], addr + ext
-        clamped = None
-        i = bisect.bisect_right(known, addr)
-        while i < len(known) and known[i] < end:
-            k = known[i]
-            if k not in data_names or any(n in defined for n in data_names[k]):
-                end = k       # not ours: clamp the extent here
-                clamped = k
-                break
-            taken.append(k)
-            end = max(end, next_addr.get(k, k + 4))
-            i += 1
-        if log:
-            log['taken'] = taken
-            log['end'] = end
-            log['state'] = ('merged' if taken else 'nothing named inside it') + \
-                (f' (clamped at 0x{clamped:08x})' if clamped else '')
-        if not taken:
-            continue
-        for k in taken:
-            absorbed[k] = addr
-            interiors.setdefault(addr, []).extend(
-                (n, k - addr) for n in sorted(data_names[k])
-                if n in missing_data and c_ident_ok(n))
-        host_end[addr] = end
+    absorbed, interiors, host_end, split_log = merge_interiors(
+        data_names, known, next_addr, declared_extent, defined, missing_data,
+        extent_cite)
 
     # ---- globals: plan everything before emitting anything ----------------
     # A re-pointed global is `unsigned int[N]`, a plain one `unsigned char[N]`,
@@ -1287,22 +1347,12 @@ def main():
     # declarations can use the types the definitions actually have.
     plan = []                 # (addr, primary, size, data, rest, mode, interior)
     cross_tu_alias = []       # (alias, real): the game defines the real name
-    for addr in sorted(data_names):
-        if addr in absorbed:
-            continue          # storage comes from the object that contains it
-        names = sorted(data_names[addr])
-        want = [n for n in names if n in missing_data and c_ident_ok(n)]
-        if not want:
-            continue
-        existing = [n for n in names if n in defined]
-        if existing:
-            cross_tu_alias += [(n, existing[0]) for n in want]
-            symbol_at.setdefault(addr, existing[0])
-            continue
-        primary, rest = want[0], want[1:]
-        size = max(next_addr.get(addr, 4), host_end.get(addr, 0)) - addr
-        if size <= 0:
-            size = 4
+    blocks_planned, cross = planned_blocks(data_names, absorbed, host_end,
+                                           next_addr, defined, missing_data)
+    for addr, want, real in cross:
+        cross_tu_alias += [(n, real) for n in want]
+        symbol_at.setdefault(addr, real)
+    for addr, primary, size, rest in blocks_planned:
         data = read(addr, size) if read else None
         words = bool(args.ilp32 and data is not None and size % 4 == 0 and addr % 4 == 0)
         plan.append((addr, primary, size, data, rest, words, interiors.get(addr, [])))

@@ -278,6 +278,53 @@ set_tests_properties(variadic_sweep_selftest PROPERTIES
   FAIL_REGULAR_EXPRESSION "FAIL"
   TIMEOUT 300)
 
+# ---- a global read through a pointer wider than its block (2026-09-15) -------
+# gen_link sizes every extern-only global by the extent its DECLARATIONS give it
+# and emits each block aligned(16), so a read through a pointer wider than any
+# declaration runs off the end of its block. goalstate.c declared
+# `extern int g_entrance_x` while BlokeAction_LeavePark routed every leaving
+# visitor with `SuggestNextMove(&b->world, (Pos*)&g_entrance_x, &out)`: the
+# closure emitted two 4-byte blocks, `to->y` read padding, and every leaver
+# walked to map row 0 before turning back for the gate (a88d0c2e).
+#
+# No byte gate can see it -- VC6 emits the same code for either declaration --
+# and cdecl.py reads declarations, not casts. The sweep follows every `&global`
+# into the reads made through it: casts, locals, globals it is parked in, and the
+# DEFINITIONS of the callees it is passed to -- which is why coaster.c's
+# `(TrackNode*)&g_track_desc_flat`, whose readers only touch the descriptor, is
+# not a row. Each read is laid against the block gen_link's own layout functions
+# emit (the sources layout agrees with a built globals.c on every site). It reads
+# the portable arm of every `#ifndef LEGOLAND_PORTABLE` and expands the macros
+# those arms define (misc3.c/fpui3.c `g_query_block`).
+#
+# No baseline: every row has a declaration-only fix. Sources only -- no
+# gamedata/, no image, no build products -- so it runs in CI on both toolchains,
+# like extern_sweep, addr_sweep and variadic_sweep.
+add_test(NAME cast_extent_sweep
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/cast_extent_sweep.py" --quiet
+                 --src "${LL_ROOT}/LEGOLAND")
+set_tests_properties(cast_extent_sweep PROPERTIES
+  PASS_REGULAR_EXPRESSION "cast_extent_sweep gate: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
+
+# The sweep's own shapes: goalstate.c before and after a88d0c2e; coaster.c's
+# wide cast with and without the callee bodies that make it safe; addresses into
+# a pointer's target; `(&g_x)[k]`, `*(&g_x + k)`, an uncast `&g_x` to a `T*`
+# prototype and a local; a LEGOLAND_PORTABLE macro arm beside a VC6-only body; a
+# pointer parked in a global; the baseline's verdicts and the globals.c reader.
+# Then the real tree: the named negatives must be examined and found inside, and
+# goalstate.c with its old declaration put back must be a row -- a reader that
+# quietly stops working is a gate that always passes.
+add_test(NAME cast_extent_sweep_selftest
+         COMMAND "${Python3_EXECUTABLE}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/cast_extent_sweep.py" --selftest)
+set_tests_properties(cast_extent_sweep_selftest PROPERTIES
+  PASS_REGULAR_EXPRESSION "cast_extent_sweep selftest: 0 failure"
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
+
 if(EMSCRIPTEN)
   # Two harnesses from the same sources: `legoland_headless` is the one to run,
   # and `legoland_headless_debug` is the one that NAMES a trap. See
