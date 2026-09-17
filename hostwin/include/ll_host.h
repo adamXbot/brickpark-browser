@@ -106,14 +106,17 @@ DWORD  WaitForSingleObject(HANDLE h, DWORD ms);
 DWORD  WaitForMultipleObjects(DWORD count, HANDLE* handles, BOOL wait_all, DWORD ms);
 BOOL   CloseHandle(HANDLE h);
 
-/* Threads: the port is single-threaded. CreateThread refuses (returns 0) so
- * the game takes its "no helper thread" path, and the three controls are
- * no-ops. */
+/* Threads: the one thread the game starts (MusicThread) runs on an Emscripten
+ * fiber in the browser -- its waits swap back to the main stack and SetEvent
+ * resumes it -- and inline to completion everywhere else. kernel32.c's threads
+ * note has both. */
 HANDLE CreateThread(SECURITY_ATTRIBUTES* sa, DWORD stack, void* start, void* param,
                     DWORD flags, DWORD* id);
 DWORD  ResumeThread(HANDLE h);
 DWORD  SuspendThread(HANDLE h);
 BOOL   TerminateThread(HANDLE h, DWORD exit_code);
+/* 1 while a thread's routine is running (on its fiber, or inline). */
+int    ll_host_in_thread(void);
 
 /* Time. GetTickCount and QueryPerformanceCounter come from the same
  * monotonic clock (emscripten_get_now under emcc, clock_gettime elsewhere). */
@@ -440,6 +443,17 @@ int  ll_audio_feed_stream(int voice, const void* pcm, unsigned int bytes,
                           unsigned int rate, int channels, int bits,
                           double rate_mul);
 
+/* The music stream (the DirectMusic lane): planar float chunks at the
+ * context's own rate, scheduled back to back on one gain. `lead` is how many
+ * seconds are already scheduled ahead of the context's clock, -1 when nothing
+ * can play (no context, or still suspended by the autoplay policy). */
+double ll_audio_music_rate(void);
+int    ll_audio_music_open(void);
+double ll_audio_music_lead(void);
+int    ll_audio_music_push(const float* left, const float* right, int frames, double rate);
+void   ll_audio_music_gain(double gain);
+void   ll_audio_music_stop(void);
+
 /* ---- the TrueType face (portable/src/hostwin/ll_ttf.c, PORT-B11) -------- */
 /* The game SHIPS its typeface: gamedata/main/Lego.TTF, handed to
  * AddFontResourceA by gpu.c's InitHostSystemGPU before anything draws. With the
@@ -686,18 +700,29 @@ unsigned int midiOutReset(void* handle);
  * swept list of call sites, and why the cursor has to move (two loops in the
  * game spin on it). */
 long  DirectSoundCreate(void* guid, void** out, void* outer);
+/* The volume last set on a buffer (hundredths of a dB): the music slider, as
+ * UpdateSoundVols applies it to DirectMusic's port buffer. */
+long  ll_dsound_buffer_volume(void* buffer);
 
 /* ---- ole32 (portable/src/hostwin/dsound.c) ------------------------------ */
 /* The program's only two COM imports, both DirectMusic's, both called only by
  * MusicThread (musicthread.c 0x00492db0). CoInitialize reports success (its
- * result is discarded at the one call site); CoCreateInstance reports
- * REGDB_E_CLASSNOTREG, which takes the thread straight to its `shutdown:` rung
- * -- the designed no-DirectMusic path, and the one that sets g_music_disabled.
- * They live in dsound.c because they are the audio shim's business and nothing
- * else in the program uses COM. */
+ * result is discarded at the one call site). CoCreateInstance hands out
+ * ll_dmusic.c's performance, loader and composer when DirectMusic is available,
+ * and otherwise reports REGDB_E_CLASSNOTREG, which takes the thread straight to
+ * its `shutdown:` rung -- the designed no-DirectMusic path, and the one that
+ * sets g_music_disabled. */
 long  CoInitialize(void* reserved);
 long  CoCreateInstance(const void* clsid, void* outer, unsigned long context,
                        const void* iid, void** out);
+
+/* ---- DirectMusic (portable/src/hostwin/ll_dmusic.c) ---------------------- */
+/* REGDB_E_CLASSNOTREG unless Web Audio, the imusic data and a DLS collection
+ * are all there (and the page did not say ?music=0). */
+long  ll_dmusic_create(const void* clsid, const void* iid, void** out);
+/* Render music until enough is scheduled ahead. ll_host_yield calls it on the
+ * main stack before every yield; it does nothing inside a thread's fiber. */
+void  ll_dmusic_pump(void);
 
 /* ---- AVIFIL32 (portable/src/hostwin/avifil32.c) -------------------------- */
 /* Video for Windows' AVIFile API: the FMV player (movie.c, movie2.c) and the

@@ -271,6 +271,42 @@ ll_add_test(coaster_span  "${CMAKE_BINARY_DIR}"       FALSE)
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test-avifile")
 ll_add_test(avifile       "${CMAKE_BINARY_DIR}/test-avifile" TRUE)
 
+# ---- the DirectMusic lane: the music engine on its own ----------------------
+# legoland_dmusic links only ll_dls.c, ll_dmfile.c and ll_dmperf.c -- no game
+# code, no host shim -- so it builds and runs on both toolchains. `selftest`
+# checks MusicToMIDI against the twelve pitch classes the game's notes use;
+# with the music files it parses all 30 segments and 212 styles, runs a world
+# segment's notification timeline and a measure-aligned transition; with a DLS
+# collection (browser.cmake's LL_MUSIC_DLS_FILE) it renders the theme and
+# checks it is audible. `render` writes WAV:
+#   ninja -C portable/build legoland_dmusic
+#   portable/build/legoland_dmusic render --dir gamedata/main --dls <file.dls> \
+#       --repeats 1 --out theme.wav gamedata/main/Segtheme1.sgt
+add_executable(legoland_dmusic EXCLUDE_FROM_ALL
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/tools/dmusic_tool.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/ll_dls.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/ll_dmfile.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin/ll_dmperf.c")
+target_include_directories(legoland_dmusic PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/hostwin")
+target_compile_options(legoland_dmusic PRIVATE -Wall -Wno-unused-parameter)
+if(EMSCRIPTEN)
+  target_link_options(legoland_dmusic PRIVATE
+    -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1 -sEXIT_RUNTIME=1)
+elseif(NOT APPLE)
+  target_link_libraries(legoland_dmusic PRIVATE m)
+endif()
+set(_ll_dmusic_args selftest)
+if(EXISTS "${LL_ROOT}/gamedata/main/Segtheme1.sgt")
+  list(APPEND _ll_dmusic_args --dir "${LL_ROOT}/gamedata/main")
+  if(LL_MUSIC_DLS_FILE)
+    list(APPEND _ll_dmusic_args --dls "${LL_MUSIC_DLS_FILE}")
+  endif()
+endif()
+add_test(NAME dmusic_selftest COMMAND legoland_dmusic ${_ll_dmusic_args})
+set_tests_properties(dmusic_selftest PROPERTIES
+  FAIL_REGULAR_EXPRESSION "FAIL"
+  TIMEOUT 300)
+
 # ---- PORT-M3: compile-time callback type check (the check IS the compile) --
 # Every callback slot's call-site pointer type against every body registered
 # into it; an initialiser compiles only when the two are the same wasm type.

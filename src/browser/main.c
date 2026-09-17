@@ -6,14 +6,15 @@
  * later browser tick, so there is no main-loop callback here -- see
  * docs/lanes/scope-port-b.md §1.
  *
- * Command line. The default is `-nointro -nomusic`, and both halves matter:
+ * Command line. The default is `-nointro`:
  *   -nointro  sets g_map->no_intro (startup.c 0x0047fd10), skipping the Indeo 5
  *             AVI intros that have no decoder in this port.
- *   -nomusic  makes InitMusicSystem set g_music_disabled itself (sysstubs.c
- *             0x00495a10) instead of starting a music thread. WITHOUT IT,
- *             RunGame's `while (g_music_disabled == 0) { PeekMessageA(...);
- *             Sleep(100); }` (gamemain.c:330) waits for a thread this port does
- *             not create, and the game never leaves that loop.
+ * It used to add `-nomusic`, because RunGame's `while (g_music_disabled == 0)
+ * { PeekMessageA(...); Sleep(100); }` (gamemain.c:370) waited for a music
+ * thread this port did not run. PORT-A5 made CreateThread run it and the
+ * DirectMusic lane gave it DirectMusic and a fiber (kernel32.c, ll_dmusic.c),
+ * so the music plays by default; `?music=0` switches it off, and
+ * `?args=-nointro+-nomusic` still does what it always did.
  * Add `WINDEBUG` for the windowed branch of InitScreen (g_windowed = 1), which
  * skips SetDisplayMode and builds system-memory surfaces instead.
  *
@@ -758,7 +759,11 @@ static void ll_flush_profiles_cb(void* arg)
 /* winmain.c 0x00453d10. __stdcall is ignored off x86. */
 extern int WinMain(void* hinst, void* hprev, char* cmdline, int ncmdshow);
 
-#define LL_DEFAULT_SWITCHES "-nointro -nomusic"
+/* The DirectMusic lane: no -nomusic. MusicThread runs on a fiber and plays
+ * the game's music when the page has its data and a DLS collection; without
+ * them it takes its no-DirectMusic path by itself (ll_dmusic.c). ?music=0
+ * turns it off; ?args=-nointro+-nomusic still does what it always did. */
+#define LL_DEFAULT_SWITCHES "-nointro"
 #define LL_GAMEDATA "/gamedata"
 
 int main(int argc, char** argv)

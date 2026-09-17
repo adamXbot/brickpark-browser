@@ -1163,9 +1163,17 @@ long DirectSoundCreate(void* guid, void** out, void* outer)
 }
 
 /* ======================================================================== */
-/* ole32 -- DirectMusic's door, and why it stays shut                        */
+/* ole32 -- DirectMusic's door                                               */
 /* ======================================================================== */
 /*
+ * The DirectMusic lane opened it: CoCreateInstance now asks ll_dmusic.c first,
+ * which hands out a real performance, loader and composer when the page has
+ * Web Audio, the imusic data and a DLS collection, and answers
+ * REGDB_E_CLASSNOTREG otherwise -- so everything below still describes what the
+ * node harnesses, the native build and a page without the data see.
+ * kernel32.c runs MusicThread on a fiber in the browser, so the CAVEAT at the
+ * end is history (PORT-A5 had already made the thread run).
+ *
  * These are the program's only two COM imports (win32_imports.txt), and the
  * only caller of either is MusicThread (musicthread.c 0x00492db0):
  *
@@ -1210,9 +1218,25 @@ long CoInitialize(void* reserved)
 long CoCreateInstance(const void* clsid, void* outer, unsigned long context,
                       const void* iid, void** out)
 {
-    (void)clsid; (void)outer; (void)context; (void)iid;
+    long rc;
+    (void)outer; (void)context;
+    /* The DirectMusic lane: the performance, loader and composer exist when
+     * ll_dmusic.c finds Web Audio, the imusic data and a DLS collection. When
+     * it does not, the answer is the same failure as before. */
+    rc = ll_dmusic_create(clsid, iid, out);
+    if (rc != REGDB_E_CLASSNOTREG)
+        return rc;
     if (out)
         *out = 0;
     ll_host_trace("CoCreateInstance: REGDB_E_CLASSNOTREG (no DirectMusic)");
     return REGDB_E_CLASSNOTREG;
+}
+
+/* The volume the game last set on a buffer, in hundredths of a dB. ll_dmusic.c
+ * reads the DirectMusic port's buffer through this: UpdateSoundVols
+ * (audio3.c 0x00495a90) is the music slider's only way to the music. */
+long ll_dsound_buffer_volume(void* buffer)
+{
+    LLDSBuffer* b = (LLDSBuffer*)buffer;
+    return b ? b->volume : 0;
 }

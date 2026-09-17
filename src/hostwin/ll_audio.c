@@ -93,13 +93,15 @@
  * The game's PanFromOffset (tinystubs.c:258) is `dx * 4` off the viewport
  * centre, so the values that actually occur are a few thousand at most.
  *
- * WHAT IS NOT HERE
- * -------------------------------------------------------------------------
- * DirectMusic. musicthread.c's port buffer is created through the same
- * CreateSoundBuffer and will arrive here if it is ever reached, but nothing
- * writes PCM into it -- the music is .sgt segments a DirectMusic performance
- * would render -- so it stays silent and stays out of scope (dsound.c's ole32
- * note explains why the whole path is unreachable today).
+ * 3. MUSIC. The DirectMusic lane renders the game's music itself (ll_dmusic.c)
+ *    and hands it over as planar float PCM at the AudioContext's own rate, so no
+ *    chunk is ever resampled on its own and the joins are sample-exact. The
+ *    chunks are scheduled back to back on one gain node, like the streamed
+ *    mode, but the lead is the caller's business: ll_audio_music_lead reports
+ *    how far ahead of the context's clock the music is, and the pump renders
+ *    until it is far enough. MusicThread's port buffer (musicthread.c:540)
+ *    still exists in dsound.c and is never written; its volume -- the music
+ *    slider -- is what ll_dmusic.c applies to this gain.
  *
  * Ownership: PORT-B (docs/SCOPE_PORT_WAVE.md). Declarations: ll_host.h.
  */
@@ -387,6 +389,77 @@ EM_JS(void, ll_audio_js_rate, (int v, double rate_mul), {
     if (st.src && rate_mul > 0) { try { st.src.playbackRate.value = rate_mul; } catch (e) {} }
 });
 
+/* ---- music (the DirectMusic lane) ---------------------------------------- */
+
+EM_JS(double, ll_audio_js_music_rate, (void), {
+    var a = globalThis.__llAudio;
+    return (a && a.ctx) ? a.ctx.sampleRate : 0;
+});
+
+EM_JS(int, ll_audio_js_music_open, (void), {
+    var a = globalThis.__llAudio;
+    if (!a || !a.ctx) return 0;
+    if (a.music) return 1;
+    try {
+        var gain = a.ctx.createGain();
+        gain.connect(a.ctx.destination);
+        a.music = { gain: gain, next: 0, queue: [], chunks: 0, frames: 0, underruns: 0 };
+    } catch (e) { return 0; }
+    return 1;
+});
+
+/* Seconds scheduled ahead of the context's clock; -1 when nothing can play. */
+EM_JS(double, ll_audio_js_music_lead, (void), {
+    var a = globalThis.__llAudio;
+    if (!a || !a.ctx || !a.music || a.ctx.state !== 'running') return -1;
+    var m = a.music;
+    return m.next ? Math.max(0, m.next - a.ctx.currentTime) : 0;
+});
+
+EM_JS(int, ll_audio_js_music_push, (int lptr, int rptr, int frames, double rate), {
+    var a = globalThis.__llAudio;
+    if (!a || !a.ctx || !a.music || a.ctx.state !== 'running' || frames <= 0) return 0;
+    var m = a.music, buf, src;
+    try { buf = a.ctx.createBuffer(2, frames, rate); } catch (e) { return 0; }
+    buf.copyToChannel(HEAPF32.subarray(lptr >> 2, (lptr >> 2) + frames), 0);
+    buf.copyToChannel(HEAPF32.subarray(rptr >> 2, (rptr >> 2) + frames), 1);
+    var now = a.ctx.currentTime;
+    if (!m.next || m.next < now + 0.005) {
+        if (m.next) m.underruns++;
+        m.next = now + 0.05;           /* (re)prime a little ahead */
+    }
+    try {
+        src = a.ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(m.gain);
+        src.start(m.next);
+    } catch (e) { return 0; }
+    m.queue.push(src);
+    if (m.queue.length > 64) m.queue.shift();
+    m.next += frames / rate;
+    m.chunks++;
+    m.frames += frames;
+    return 1;
+});
+
+EM_JS(void, ll_audio_js_music_gain, (double g), {
+    var a = globalThis.__llAudio;
+    if (!a || !a.music) return;
+    try { a.music.gain.gain.value = g; } catch (e) {}
+});
+
+EM_JS(void, ll_audio_js_music_stop, (void), {
+    var a = globalThis.__llAudio;
+    if (!a || !a.music) return;
+    var m = a.music;
+    for (var i = 0; i < m.queue.length; i++) {
+        try { m.queue[i].stop(); } catch (e) {}
+        try { m.queue[i].disconnect(); } catch (e) {}
+    }
+    m.queue = [];
+    m.next = 0;
+});
+
 #else  /* ---- not Emscripten: the counters, and nothing else --------------- */
 
 static int g_na_voices, g_na_plays, g_na_feeds;
@@ -407,6 +480,13 @@ static int  ll_audio_js_feed(int v, int ptr, int bytes, int cursor, int chunk,
 { (void)v; (void)ptr; (void)bytes; (void)cursor; (void)chunk; (void)rate;
   (void)ch; (void)bits; (void)rate_mul; g_na_feeds++; return 0; }
 static void ll_audio_js_rate(int v, double rate_mul) { (void)v; (void)rate_mul; }
+static double ll_audio_js_music_rate(void) { return 0.0; }
+static int    ll_audio_js_music_open(void) { return 0; }
+static double ll_audio_js_music_lead(void) { return -1.0; }
+static int    ll_audio_js_music_push(int l, int r, int frames, double rate)
+{ (void)l; (void)r; (void)frames; (void)rate; return 0; }
+static void   ll_audio_js_music_gain(double g) { (void)g; }
+static void   ll_audio_js_music_stop(void) {}
 
 #endif
 
@@ -517,4 +597,46 @@ int ll_audio_feed_stream(int voice, const void* pcm, unsigned int bytes,
         return 0;
     return ll_audio_js_feed(voice, (int)(long)pcm, (int)bytes, (int)cursor,
                             (int)chunk, (int)rate, channels, bits, rate_mul);
+}
+
+/* ---- music (the DirectMusic lane) ---------------------------------------- */
+
+double ll_audio_music_rate(void)
+{
+    if (!ll_audio_enabled())
+        return 0.0;
+    return ll_audio_js_music_rate();
+}
+
+int ll_audio_music_open(void)
+{
+    if (!ll_audio_enabled())
+        return 0;
+    return ll_audio_js_music_open();
+}
+
+double ll_audio_music_lead(void)
+{
+    if (!g_audio_live)
+        return -1.0;
+    return ll_audio_js_music_lead();
+}
+
+int ll_audio_music_push(const float* left, const float* right, int frames, double rate)
+{
+    if (!g_audio_live || !left || !right)
+        return 0;
+    return ll_audio_js_music_push((int)(long)left, (int)(long)right, frames, rate);
+}
+
+void ll_audio_music_gain(double gain)
+{
+    if (g_audio_live)
+        ll_audio_js_music_gain(gain);
+}
+
+void ll_audio_music_stop(void)
+{
+    if (g_audio_live)
+        ll_audio_js_music_stop();
 }

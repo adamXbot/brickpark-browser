@@ -10,9 +10,10 @@
  *
  *   - **Single-threaded.** The original starts one helper thread -- the
  *     DirectMusic pump (musicthread.c), which resaudio2.c suspends and resumes
- *     -- and this shim runs its start routine INLINE to completion instead of
- *     concurrently. See the threads section for why that is right for this one
- *     routine and where it stops being right. Mutexes are therefore always
+ *     -- and this shim runs its start routine on a FIBER in the browser (it
+ *     waits by swapping back to the main stack and SetEvent resumes it) and
+ *     INLINE to completion everywhere else. See the threads section for both.
+ *     Mutexes are therefore always
  *     free and a wait on one returns immediately, which is exactly what
  *     startup.c's one-instance check wants
  *     (`WaitForSingleObject(mutex, 0) == WAIT_TIMEOUT` means "already
@@ -49,6 +50,7 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#include <emscripten/fiber.h>     /* MusicThread's fiber, see CreateThread */
 #endif
 
 /* ---- tracing -------------------------------------------------------------
@@ -269,10 +271,11 @@ void ll_host_resolve_path(char* out, unsigned int cap, const char* in, int creat
 enum { LL_H_NONE = 0, LL_H_FILE, LL_H_EVENT, LL_H_MUTEX, LL_H_THREAD };
 
 typedef struct LLHandle {
-    int kind;
-    int fd;            /* LL_H_FILE */
-    int signalled;     /* LL_H_EVENT */
-    int manual;        /* LL_H_EVENT: manual-reset */
+    int              kind;
+    int              fd;         /* LL_H_FILE */
+    int              signalled;  /* LL_H_EVENT */
+    int              manual;     /* LL_H_EVENT: manual-reset */
+    struct LLThread* thread;     /* LL_H_THREAD running on a fiber */
 } LLHandle;
 
 #define LL_MAX_HANDLES 256
@@ -301,6 +304,32 @@ static HANDLE ll_handle_new(int kind)
     return 0;
 }
 
+/* ---- the fiber a thread runs on (browser builds with ASYNCIFY) ------------
+ * The declarations the waits need; the rest is with CreateThread. */
+#ifdef __EMSCRIPTEN__
+#define LL_FIBER_WAITS 8
+enum { LL_T_NEW = 0, LL_T_RUNNING, LL_T_WAITING, LL_T_DONE, LL_T_DEAD };
+
+typedef struct LLThread {
+    emscripten_fiber_t fiber;
+    void*              c_stack;
+    void*              a_stack;
+    unsigned long    (*routine)(void*);
+    void*              param;
+    HANDLE             handle;
+    int                state;
+    int                suspended;
+    HANDLE             waits[LL_FIBER_WAITS];
+    int                nwaits;
+    unsigned long      exit_code;
+} LLThread;
+
+static LLThread* g_current;          /* the fiber running now; 0 on the main stack */
+static int       g_nthreads;
+static void      ll_fiber_block(HANDLE* handles, DWORD count);
+static void      ll_fiber_wake(void);
+#endif
+
 /* ---- waitable objects ---------------------------------------------------- */
 
 HANDLE CreateMutexA(SECURITY_ATTRIBUTES* sa, BOOL initial_owner, LPCSTR name)
@@ -326,12 +355,19 @@ HANDLE CreateEventA(SECURITY_ATTRIBUTES* sa, BOOL manual_reset, BOOL initial, LP
     return h;
 }
 
+/* On the main stack, posting an event a fiber is waiting on runs that fiber
+ * now, until it waits again: the same order a higher-priority thread woken on
+ * Win32 would give. From inside a fiber it only marks the event. */
 BOOL SetEvent(HANDLE h)
 {
     LLHandle* e = ll_handle(h);
     if (!e)
         return 0;
     e->signalled = 1;
+#ifdef __EMSCRIPTEN__
+    if (!g_current && g_nthreads)
+        ll_fiber_wake();
+#endif
     return 1;
 }
 
@@ -358,23 +394,36 @@ BOOL ResetEvent(HANDLE h)
  * Win32). The only game caller of WaitForSingleObject outside MusicThread is
  * startup.c:239, and its handle is the mutex.
  *
- * A wait on an unsignalled event with a REAL timeout cannot be satisfied at all:
- * nothing else runs to post it. Inside an inline thread that is a deadlock and
- * ll_thread_deadlock unwinds the routine (see CreateThread); on the main thread
- * it would be a hang, so it is reported and answered WAIT_TIMEOUT -- no game
- * code does it. */
+ * A wait on an unsignalled event with a REAL timeout is where a thread blocks.
+ * On a fiber it does exactly that: the fiber swaps back to the main stack and
+ * SetEvent/ResumeThread run it again (see CreateThread); a finite timeout is
+ * treated as INFINITE, since the only such wait in the game is MusicThread's
+ * INFINITE one. Anywhere else nothing can post the event: inside an inline
+ * thread that is a deadlock and ll_thread_deadlock unwinds the routine; on the
+ * main thread it would be a hang, so it is reported and answered WAIT_TIMEOUT
+ * -- no game code does it. */
 static void ll_thread_deadlock(const char* what);   /* below, with CreateThread */
 
-static DWORD ll_wait_event(LLHandle* o, DWORD ms, const char* what)
+static DWORD ll_wait_event(LLHandle* o, HANDLE h, DWORD ms, const char* what)
 {
-    if (o->signalled) {
-        if (!o->manual)
-            o->signalled = 0;
-        return LL_WAIT_OBJECT_0;
-    }
-    if (ms != 0)
+    for (;;) {
+        if (o->signalled) {
+            if (!o->manual)
+                o->signalled = 0;
+            return LL_WAIT_OBJECT_0;
+        }
+        if (ms == 0)
+            return LL_WAIT_TIMEOUT;
+#ifdef __EMSCRIPTEN__
+        if (g_current) {
+            ll_fiber_block(&h, 1);
+            continue;
+        }
+#endif
+        (void)h;
         ll_thread_deadlock(what);
-    return LL_WAIT_TIMEOUT;
+        return LL_WAIT_TIMEOUT;
+    }
 }
 
 DWORD WaitForSingleObject(HANDLE h, DWORD ms)
@@ -384,35 +433,44 @@ DWORD WaitForSingleObject(HANDLE h, DWORD ms)
     if (!o)
         return LL_WAIT_FAILED;
     if (o->kind == LL_H_EVENT)
-        return ll_wait_event(o, ms, "WaitForSingleObject on an unposted event");
+        return ll_wait_event(o, h, ms, "WaitForSingleObject on an unposted event");
     return LL_WAIT_OBJECT_0;
 }
 
 DWORD WaitForMultipleObjects(DWORD count, HANDLE* handles, BOOL wait_all, DWORD ms)
 {
     DWORD i;
-    int   events = 0;
+    int   events;
     LL_TRACE("WaitForMultipleObjects(%u)", (unsigned)count);
     if (!count || !handles)
         return LL_WAIT_FAILED;
-    for (i = 0; i < count; i++) {
-        LLHandle* o = ll_handle(handles[i]);
-        if (o && o->kind == LL_H_EVENT) {
-            events++;
-            if (!wait_all && o->signalled) {
-                if (!o->manual)
-                    o->signalled = 0;
-                return LL_WAIT_OBJECT_0 + i;
+    for (;;) {
+        events = 0;
+        for (i = 0; i < count; i++) {
+            LLHandle* o = ll_handle(handles[i]);
+            if (o && o->kind == LL_H_EVENT) {
+                events++;
+                if (!wait_all && o->signalled) {
+                    if (!o->manual)
+                        o->signalled = 0;
+                    return LL_WAIT_OBJECT_0 + i;
+                }
             }
         }
-    }
-    /* Every handle is an unposted event and none can be posted from here. */
-    if (events == (int)count) {
-        if (ms != 0)
-            ll_thread_deadlock("WaitForMultipleObjects on unposted events only");
+        if (events != (int)count)
+            return LL_WAIT_OBJECT_0;
+        /* Every handle is an unposted event. */
+        if (ms == 0)
+            return LL_WAIT_TIMEOUT;
+#ifdef __EMSCRIPTEN__
+        if (g_current) {
+            ll_fiber_block(handles, count);
+            continue;
+        }
+#endif
+        ll_thread_deadlock("WaitForMultipleObjects on unposted events only");
         return LL_WAIT_TIMEOUT;
     }
-    return LL_WAIT_OBJECT_0;
 }
 
 BOOL CloseHandle(HANDLE h)
@@ -486,6 +544,24 @@ BOOL CloseHandle(HANDLE h)
  * but never played -- no command the game posts afterwards is ever handled. That
  * is the point at which the loop needs a fiber, and the diagnostic is how you
  * find out you reached it. It cannot happen silently.
+ *
+ * THE FIBER (the DirectMusic lane): DirectMusic is real now (ll_dmusic.c), so
+ * in a build with ASYNCIFY -- the browser page -- the start routine runs on an
+ * Emscripten fiber with its own C stack. CreateThread swaps into it at once, so
+ * MusicThread's whole start-up (COM, 212 styles, 30 segments, g_music_disabled)
+ * still happens before CreateThread returns, exactly as inline. At its message
+ * loop the INFINITE wait swaps back instead of deadlocking. After that:
+ *   - SetEvent on the main stack runs the fiber until it waits again -- the
+ *     game's theme commands (sysmisc2.c, tinystubs.c) and the performance's
+ *     notifications (ll_dmusic.c, called from the pump) both arrive this way;
+ *   - SuspendThread/ResumeThread count, and a suspended fiber is not run
+ *     (RunGame suspends it around the title screen; it catches up on resume);
+ *   - TerminateThread (KillMusicSystem) retires it and frees its stacks.
+ * A fiber swap unwinds the main stack through ASYNCIFY like any
+ * emscripten_sleep, so it is only ever done from C on the main stack, never
+ * from a JS callback. Builds without ASYNCIFY (the node harnesses) have no
+ * DirectMusic -- no Web Audio -- and keep the inline path above, which is
+ * detected at run time because the fiber API aborts there.
  */
 
 static jmp_buf g_thread_escape;      /* valid while g_thread_depth > 0 */
@@ -510,6 +586,124 @@ static void ll_thread_deadlock(const char* what)
         fprintf(stderr, "HOST %s on the main thread: answered WAIT_TIMEOUT\n", what);
         fflush(stderr);
     }
+}
+
+#ifdef __EMSCRIPTEN__
+#define LL_FIBER_C_STACK (512u * 1024u)
+#define LL_FIBER_A_STACK (256u * 1024u)
+#define LL_MAIN_A_STACK  (1024u * 1024u)
+
+EM_JS(int, ll_js_can_fiber, (void), {
+    return (typeof Asyncify !== 'undefined' && Asyncify) ? 1 : 0;
+});
+
+static emscripten_fiber_t g_main_fiber;
+static void*              g_main_astack;
+static int                g_main_ready;
+static LLThread*          g_threads[4];
+
+static void ll_fiber_entry(void* arg)
+{
+    LLThread* t = (LLThread*)arg;
+    LLHandle* h;
+    t->exit_code = t->routine(t->param);
+    t->state = LL_T_DONE;
+    h = ll_handle(t->handle);
+    if (h)
+        h->signalled = 1;            /* a finished thread is signalled */
+    LL_TRACE("CreateThread: the fiber's routine returned %lu", t->exit_code);
+    g_current = 0;
+    emscripten_fiber_swap(&t->fiber, &g_main_fiber);   /* never resumed */
+}
+
+/* Main stack only: run `t` until it waits or finishes. */
+static void ll_fiber_run(LLThread* t)
+{
+    if (g_current || t->state == LL_T_DONE || t->state == LL_T_DEAD)
+        return;
+    g_current = t;
+    t->state = LL_T_RUNNING;
+    emscripten_fiber_swap(&g_main_fiber, &t->fiber);
+    g_current = 0;
+    if (t->state == LL_T_DONE) {
+        free(t->c_stack);            /* nothing will rewind it now */
+        free(t->a_stack);
+        t->c_stack = t->a_stack = 0;
+    }
+}
+
+/* Inside the fiber: remember what it waits on and give the main stack back. */
+static void ll_fiber_block(HANDLE* handles, DWORD count)
+{
+    LLThread* t = g_current;
+    DWORD     i;
+    t->nwaits = count > LL_FIBER_WAITS ? LL_FIBER_WAITS : (int)count;
+    for (i = 0; i < (DWORD)t->nwaits; i++)
+        t->waits[i] = handles[i];
+    t->state = LL_T_WAITING;
+    g_current = 0;
+    emscripten_fiber_swap(&t->fiber, &g_main_fiber);
+    /* ll_fiber_run has made this fiber current again. */
+    t->nwaits = 0;
+}
+
+static int ll_fiber_ready(const LLThread* t)
+{
+    int i;
+    if (t->state != LL_T_WAITING || t->suspended > 0)
+        return 0;
+    for (i = 0; i < t->nwaits; i++) {
+        LLHandle* o = ll_handle(t->waits[i]);
+        if (o && o->signalled)
+            return 1;
+    }
+    return 0;
+}
+
+static void ll_fiber_wake(void)
+{
+    int i, again = 1, guard = 0;
+    while (!g_current && again && guard++ < 64) {
+        again = 0;
+        for (i = 0; i < g_nthreads; i++) {
+            if (ll_fiber_ready(g_threads[i])) {
+                ll_fiber_run(g_threads[i]);
+                again = 1;
+            }
+        }
+    }
+}
+
+static LLThread* ll_thread_of(HANDLE h)
+{
+    LLHandle* o = ll_handle(h);
+    return o && o->kind == LL_H_THREAD ? o->thread : 0;
+}
+#endif
+
+/* The inline path, in a function of its own. setjmp makes Emscripten route the
+ * calls of the function that holds it through JS `invoke_*` wrappers, and
+ * ASYNCIFY cannot unwind a fiber swap through a JS frame -- so it is kept out
+ * of CreateThread (noinline), whose fiber path must hold no setjmp. */
+static __attribute__((noinline)) unsigned long
+ll_thread_run_inline(unsigned long (*routine)(void*), void* param)
+{
+    volatile unsigned long rc = 0;
+    g_thread_depth++;
+    g_thread_escaped = 0;
+    if (setjmp(g_thread_escape) == 0)
+        rc = routine(param);
+    g_thread_depth--;
+    return rc;
+}
+
+int ll_host_in_thread(void)
+{
+#ifdef __EMSCRIPTEN__
+    if (g_current)
+        return 1;
+#endif
+    return g_thread_depth > 0;
 }
 
 HANDLE CreateThread(SECURITY_ATTRIBUTES* sa, DWORD stack, void* start, void* param,
@@ -548,12 +742,44 @@ HANDLE CreateThread(SECURITY_ATTRIBUTES* sa, DWORD stack, void* start, void* par
      * and ignored rather than half-implemented. */
     if (flags & 4)
         LL_TRACE("CreateThread: CREATE_SUSPENDED ignored, the routine runs now");
+#ifdef __EMSCRIPTEN__
+    if (!g_current && g_thread_depth == 0 &&
+        g_nthreads < (int)(sizeof g_threads / sizeof g_threads[0]) && ll_js_can_fiber()) {
+        LLThread* th = (LLThread*)calloc(1, sizeof *th);
+        if (th) {
+            th->c_stack = aligned_alloc(16, LL_FIBER_C_STACK);
+            th->a_stack = aligned_alloc(16, LL_FIBER_A_STACK);
+        }
+        if (!g_main_astack)
+            g_main_astack = aligned_alloc(16, LL_MAIN_A_STACK);
+        if (th && th->c_stack && th->a_stack && g_main_astack) {
+            if (!g_main_ready) {
+                emscripten_fiber_init_from_current_context(&g_main_fiber, g_main_astack,
+                                                           LL_MAIN_A_STACK);
+                g_main_ready = 1;
+            }
+            th->routine = routine;
+            th->param = param;
+            th->handle = h;
+            emscripten_fiber_init(&th->fiber, ll_fiber_entry, th, th->c_stack,
+                                  LL_FIBER_C_STACK, th->a_stack, LL_FIBER_A_STACK);
+            ll_handle(h)->thread = th;
+            g_threads[g_nthreads++] = th;
+            LL_TRACE("CreateThread: running the start routine on a fiber");
+            ll_fiber_run(th);
+            LL_TRACE("CreateThread: the fiber %s",
+                     th->state == LL_T_WAITING ? "is waiting" : "has finished");
+            return h;
+        }
+        if (th) {
+            free(th->c_stack);
+            free(th->a_stack);
+            free(th);
+        }
+    }
+#endif
     LL_TRACE("CreateThread: running the start routine inline");
-    g_thread_depth++;
-    g_thread_escaped = 0;
-    if (setjmp(g_thread_escape) == 0)
-        rc = routine(param);
-    g_thread_depth--;
+    rc = ll_thread_run_inline(routine, param);
     t = ll_handle(h);
     if (t)
         t->signalled = 1;            /* a finished thread is signalled */
@@ -564,11 +790,37 @@ HANDLE CreateThread(SECURITY_ATTRIBUTES* sa, DWORD stack, void* start, void* par
     return h;
 }
 
-/* Suspend/Resume are resaudio2.c's volume ducking around the music thread. The
- * routine has already run, so there is nothing to stop or start; Win32 returns
- * the previous suspend count, and 0 ("it was running") is the truthful one. */
-DWORD ResumeThread(HANDLE h)  { (void)h; return 0; }
-DWORD SuspendThread(HANDLE h) { (void)h; return 0; }
+/* Suspend/Resume are resaudio2.c's SuspendMusicThread/ResumeMusicThread, which
+ * RunGame wraps around the title screen. A fiber keeps a real count and is not
+ * run while suspended; an inline routine has already run, so there is nothing
+ * to stop or start and 0 ("it was running") is the truthful previous count. */
+DWORD ResumeThread(HANDLE h)
+{
+#ifdef __EMSCRIPTEN__
+    LLThread* t = ll_thread_of(h);
+    if (t) {
+        DWORD prev = (DWORD)t->suspended;
+        if (t->suspended > 0)
+            t->suspended--;
+        if (!t->suspended && !g_current)
+            ll_fiber_wake();
+        return prev;
+    }
+#endif
+    (void)h;
+    return 0;
+}
+
+DWORD SuspendThread(HANDLE h)
+{
+#ifdef __EMSCRIPTEN__
+    LLThread* t = ll_thread_of(h);
+    if (t)
+        return (DWORD)t->suspended++;
+#endif
+    (void)h;
+    return 0;
+}
 
 BOOL TerminateThread(HANDLE h, DWORD exit_code)
 {
@@ -576,6 +828,17 @@ BOOL TerminateThread(HANDLE h, DWORD exit_code)
     (void)exit_code;
     if (!t)
         return 0;
+#ifdef __EMSCRIPTEN__
+    if (t->thread && t->thread != g_current && t->thread->state != LL_T_DONE &&
+        t->thread->state != LL_T_DEAD) {
+        /* KillMusicSystem: the fiber is parked in its wait and never resumes. */
+        t->thread->state = LL_T_DEAD;
+        t->thread->exit_code = exit_code;
+        free(t->thread->c_stack);
+        free(t->thread->a_stack);
+        t->thread->c_stack = t->thread->a_stack = 0;
+    }
+#endif
     t->signalled = 1;
     return 1;
 }

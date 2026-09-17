@@ -2276,6 +2276,139 @@ layouts, the DIB, the open rules and the handle registry against synthetic frame
 files it writes into `build-wasm/test-avifile`. Serve a rebuilt page on a new
 port or cache-bust it: the browser keeps the previous `legoland.data`.
 
+## The game's music plays: DirectMusic in the page (the DirectMusic lane)
+
+Until now the page had the game's sound effects and narration (PORT-B11) and no
+music. The music is not audio: `imusic\` holds DirectMusic segments and styles,
+`MusicThread` (musicthread.c, 3,161 instructions) plays them through COM, and
+ole32's `CoCreateInstance` here answered `REGDB_E_CLASSNOTREG` -- the failure
+PORT-B4 kept the game alive on, and the reason the page's default command line
+said `-nomusic`. It no longer does: the page now plays the LEGOLAND theme from
+the loading screen on, and the world music and transitions the game's
+`:THEME`, `:EGYPT`, `:INCA`, `:CASTLE` and `:WEST` cheats ask for (SetTheme has
+no other caller). No `LEGOLAND/*.c` file changed, so the byte gates cannot have
+moved.
+
+**What the music is.** A census of all 243 files, whose totals the selftest
+pins: 30 segments (five worlds -- theme, Egypt, Inca, castle, west -- two
+segments each, and 19 transition segments), 212 styles, one band. Every segment
+carries the same five tracks -- a chord track (a C major key header, then no
+chord or one "M" triad), a command track (groove 1), a tempo track (60 BPM), a
+style track that changes style every bar, and a band track of GM/GS programs --
+and SegEgypt2 adds a mute track. The styles hold 475 patterns (groove ranges 1,
+2, 3 and 1-100; most bars have two groove-1 patterns and a groove-2 "t1"
+lead-in), 3,002 parts and 57,798 notes, 48,805 of them chord-relative music
+values, plus pitch-bend, CC7 and channel-pressure curves. The game ships no
+instruments: its bands name programs of the Roland GS Sound Set that Windows
+kept in `drivers\gm.dls`.
+
+**The engine**, four host files (`ll_dmusic.h` is their shared interface):
+
+| file | what it is |
+| --- | --- |
+| `ll_dls.c` | a DLS Level 1 collection and the software synth that plays it -- DirectX 6's synth was DLS1: 32 voices, EG1/EG2, LFO, the concave velocity and CC7/CC11 curves, GS variations falling back to the capital tone, exclusive key groups |
+| `ll_dmfile.c` | the DirectX 6 RIFF forms: segments, styles, bands, every array read by its stored element size |
+| `ll_dmperf.c` | the performance: segment states and loops, measure-aligned queueing, the style engine (style per bar, pattern by groove, variations, music values, curves, bands, mutes) and the SEGMENT / MEASUREANDBEAT notifications |
+| `ll_dmusic.c` | the COM objects MusicThread calls -- every slot typed from the game's own declarations, since a mismatched `call_indirect` traps on wasm32 -- the availability gate and the output pump |
+
+**The rules the tunes depend on**, each checked against the data or measured:
+
+1. *MusicToMIDI past the chord's last tone walks the scale*, `2 * position +
+   scale step` from the root, as GothicKit's dmusic (MIT) recovered the routine.
+   So chord position 3 on the segments' "M" triad is B -- the major seventh the
+   notes were written against: under C major 7 the twelve (position, step,
+   accidental) triples in the data spell the twelve pitch classes exactly once.
+   A segment with no chord plays against C major 7 on the track header's key.
+2. *No pattern at the groove: the nearest range plays.* MusicThread raises the
+   groove to 2 while a world change is pending, and the transition styles only
+   have groove-1 patterns.
+3. *"Almost end" is the end minus the prepare time* (1 s, 768 ticks at 60 BPM),
+   so the next segment MusicThread queues on it lands on the last bar line.
+4. *A segment replaced exactly at its own end is ABORTED, not ended* -- found in
+   the tab: MusicThread leaves state 6 only on SEGABORT, and a world change asked
+   for in a segment's last bar left the thread stranded and the music silent
+   after the transition. The selftest pins it.
+5. *The game's wide strings are UTF-32 here*: L"imusic" is compiled with the
+   toolchain's 4-byte `wchar_t`, so the loader reads either width. Read as
+   UTF-16 it was "i", no segment was built, and MusicThread's unguarded download
+   loop read a vtable through a null pointer (the page's first trap).
+
+**The thread.** `kernel32.c` runs MusicThread on an Emscripten fiber when the
+build has ASYNCIFY. CreateThread swaps into it at once, so its whole start-up
+still happens before CreateThread returns; its INFINITE wait swaps back;
+`SetEvent` on the main stack resumes it (the game's theme commands and the
+performance's notifications both arrive that way); Suspend/ResumeThread count;
+TerminateThread retires it. The old inline path is kept, in its own `noinline`
+function, for builds without ASYNCIFY (the node harnesses, which have no
+DirectMusic anyway): its `setjmp` makes Emscripten route a function's calls
+through JS `invoke_*` wrappers, which a fiber swap cannot unwind through.
+
+**Output.** `ll_host_yield` calls `ll_dmusic_pump` on the main stack before
+every browser yield. The performance renders at the AudioContext's own rate (no
+per-chunk resampling, so the joins are sample-exact) and keeps 250 ms scheduled
+ahead of the context's clock; notifications fire as the render head passes them.
+The music gain is the DirectMusic port's DirectSound buffer volume, which is
+what `UpdateSoundVols` sets from the music slider.
+
+**Instruments.** `LL_MUSIC_DLS` names the DLS collection; left empty,
+browser.cmake uses `gamedata/dls/gm.dls`, then the GS collection macOS ships in
+`CoreAudio.component` (235 instruments, 495 waves -- the same GS set lineage as
+`gm.dls`). It is preloaded at `/gamedata/dls/gm.dls` with the music files at
+`/gamedata/imusic` (+4.6 MB of `legoland.data`; the engine adds 87 KB of wasm).
+Either instrument file is somebody else's copyright, exactly like `gamedata/`:
+**a page built with one is for this machine, never for publishing.** Without a
+collection or the music files the page builds and runs as before, silently.
+
+**On the page.** `?music=0` switches the music off (MusicThread then takes its
+no-DirectMusic path); `?args=-nointro+-nomusic` still does what it always did.
+`llMusic()` reports availability (and why not), the segment, bar, beat, groove
+and modifier, style and pattern names, notes played, voices sounding, chunks,
+underruns and the scheduled lead.
+
+**Measured in the tab** (2026-09-17, in-app browser, 48 kHz): the theme starts
+with the front end and plays bar by bar as authored (the intro returns to
+LLbar1 at bar 13); 19-22 voices; 0 underruns over several minutes with a steady
+0.25 s lead, the pane hidden or not; 35.7 fps with or without music; RMS 0.05-0.12
+on the music gain. World changes, timed from the moment the groove modifier
+went to +1 (MusicThread's state 5; for `:EGYPT` that was 1.9 s after the keys):
+
+| cheat | lead-in pattern (next downbeat) | transition starts (the bar after) | groove back to 0 (beat 3 of its bar 1) | destination starts |
+| --- | --- | --- | --- | --- |
+| `:EGYPT` from theme bar 5 | +2.3 s `LLbar7t1` | +6.1 s `LEtran2` | +13.2 s | +14.2 s `SegEgypt2` |
+| `:INCA` from SegEgypt2 bar 7 | +2.0 s `Ebar26t1` | +6.1 s `IEtran2` | +13.2 s | +14.2 s `SegInca2` |
+
+**Offline.** `legoland_dmusic` links only the engine: `render` writes WAV
+(each segment once, chained the way MusicThread chains a world's segments), and
+`selftest` is the ctest `dmusic_selftest` -- MusicToMIDI against the twelve
+pitch classes, all files parse and resolve, a world segment's notification
+timeline, measure-aligned transitions including the last-bar abort, and with a
+DLS collection an audible, finite render of the theme.
+
+```
+ninja -C portable/build-wasm legoland_dmusic
+node portable/build-wasm/legoland_dmusic.js render --dir gamedata/main \
+    --dls <collection.dls> --repeats 1 --out theme.wav gamedata/main/Segtheme1.sgt
+```
+
+**Shipped-data facts, played as shipped.** The Egypt-to-Inca transition plays
+the Inca-to-Egypt segment: musicthread.c's slot 7 reads `ietran2.sgt` while
+asking for `eitran2`, a memory load ignores the name, and the disc has no
+`EItran2.sgt` to fix it to (docs/QUIRKS.md Q6). `ELtran2.sgt` plays the
+`EItran2` styles, so `ELtran2.sty` and `ELtran2a.sty` are never heard.
+MusicThread never downloads the theme or its outbound transitions; on Windows
+those still sounded through instruments the other worlds' bands had
+downloaded, and here the whole collection is always present.
+
+**This machine (2026-09-17).** macOS 27's SDK stubs name `arm64e.x1`, which the
+installed Command Line Tools `ld` cannot read, so a native link fails until the
+tools are updated; configure native trees with
+`-DCMAKE_OSX_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`
+meanwhile, and run ctest with `SDKROOT` set to the same SDK, because
+`bvstruct_sweep_selftest`'s ABI repros link small native programs of their own
+(with it: native 22/22, wasm 30/30). Homebrew's emscripten 6.0.9_1 moved its
+Cellar path, so a wasm tree configured before has to be reconfigured from a
+clean directory.
+
 ## Next
 
 0. **The prototype conflicts** are the frontier, ahead of everything below, and
@@ -2300,5 +2433,6 @@ port or cache-bust it: the browser keeps the previous `legoland.data`.
 3. **Emscripten job** mirroring isle-portable's CI row: `emcmake`,
    pthreads, WASMFS fetch backend streaming assets from a host URL, OPFS
    saves, COOP/COEP on the host.
-4. **Fill the rest**: ADPCM in C, a soft synth for the DirectMusic
-   styles/segments, Indeo 5 for the AVI intros.
+4. **Fill the rest**: Indeo 5 for the AVI intros. (ADPCM in C landed with
+   PORT-B11; the DirectMusic styles and segments play through the DirectMusic
+   lane's synth.)

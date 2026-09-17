@@ -279,6 +279,10 @@ static double g_last_yield_ms;
 void ll_host_yield(unsigned int ms)
 {
 #ifdef __EMSCRIPTEN__
+    /* The DirectMusic lane: top the music up before the tab gets control, from
+     * C on the main stack -- the only place its notifications may run
+     * MusicThread's fiber (ll_dmusic.c, kernel32.c). */
+    ll_dmusic_pump();
     g_last_yield_ms = emscripten_get_now();
     emscripten_sleep(ms);
     g_last_yield_ms = emscripten_get_now();
