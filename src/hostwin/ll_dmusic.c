@@ -1843,6 +1843,15 @@ static float dm_knee(float x)
     return x;
 }
 
+/* kernel32.c answers whether MusicThread's routine is running, and its
+ * definition replaces this one wherever it is linked (legoland_core has it).
+ * The shim is also linked without kernel32.c -- legoland_shimtest is the shim
+ * and nothing else -- and there no thread can be running. */
+__attribute__((weak)) int ll_host_in_thread(void)
+{
+    return 0;
+}
+
 static void dm_publish(DmPerformance* p)
 {
     LLDmPerfStats st;

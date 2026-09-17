@@ -2299,8 +2299,9 @@ and SegEgypt2 adds a mute track. The styles hold 475 patterns (groove ranges 1,
 2, 3 and 1-100; most bars have two groove-1 patterns and a groove-2 "t1"
 lead-in), 3,002 parts and 57,798 notes, 48,805 of them chord-relative music
 values, plus pitch-bend, CC7 and channel-pressure curves. The game ships no
-instruments: its bands name programs of the Roland GS Sound Set that Windows
-kept in `drivers\gm.dls`.
+instruments of its own: its bands name GM/GS programs, which DirectMusic plays
+from the collection the registry's `GMFilePath` names -- and the CD brings that
+along, as `gm16.dls` in its DirectX 7 redistributable (below).
 
 **The engine**, four host files (`ll_dmusic.h` is their shared interface):
 
@@ -2350,14 +2351,27 @@ ahead of the context's clock; notifications fire as the render head passes them.
 The music gain is the DirectMusic port's DirectSound buffer volume, which is
 what `UpdateSoundVols` sets from the music slider.
 
-**Instruments.** `LL_MUSIC_DLS` names the DLS collection; left empty,
-browser.cmake uses `gamedata/dls/gm.dls`, then the GS collection macOS ships in
-`CoreAudio.component` (235 instruments, 495 waves -- the same GS set lineage as
-`gm.dls`). It is preloaded at `/gamedata/dls/gm.dls` with the music files at
-`/gamedata/imusic` (+4.6 MB of `legoland.data`; the engine adds 87 KB of wasm).
-Either instrument file is somebody else's copyright, exactly like `gamedata/`:
-**a page built with one is for this machine, never for publishing.** Without a
-collection or the music files the page builds and runs as before, silently.
+**Instruments: from the CD, like the music.** The disc's `directx.cab` is the
+DirectX 7 redistributable, and it holds `gm16.dls`: the Roland GS Sound Set,
+235 instruments over 495 16-bit waves, which the disc's `directx.inf` installs
+as DirectMusic's `GMFilePath` on Windows 95 -- what the bands played through on
+a PC set up from this CD. browser.cmake runs `tools/mscab.py` to extract it from
+`LL_DIRECTX_CAB` (`gamedata/disc/directx.cab` unless set; a mounted CD's
+`directx.cab` works too) into the build tree as `dls/gm.dls`, and preloads it at
+`/gamedata/dls/gm.dls` with the 243 music files at `/gamedata/imusic` (+6.0 MB
+of `legoland.data`; the engine adds 87 KB of wasm). A reader of our own because
+libarchive -- `bsdtar`, `cmake -E tar` -- stops on that cabinet with "Invalid
+CFDATA" and writes zeros, although all 476 of its data blocks carry good
+checksums; `mscab.py` checks every one, so a damaged disc image fails the build
+rather than playing noise. `LL_MUSIC_DLS` plays the music with another GM/GS DLS
+Level 1 collection instead. macOS's `CoreAudio.component` `gs_instruments.dls`
+is a derivative of the same set: its waves are 8-bit and 37 of its 235
+instruments are split into more regions (1,544 against 1,498), while the drum
+kits and the Egypt band's programs match region for region, and a render of the
+theme agrees with the disc's pitch class by pitch class (0.97, against 0.10 a
+semitone off).
+Nothing the build reads from the disc is committed, and without `directx.cab` or
+the music files the page builds and runs as before, silently.
 
 **On the page.** `?music=0` switches the music off (MusicThread then takes its
 no-DirectMusic path); `?args=-nointro+-nomusic` still does what it always did.
@@ -2377,6 +2391,12 @@ went to +1 (MusicThread's state 5; for `:EGYPT` that was 1.9 s after the keys):
 | `:EGYPT` from theme bar 5 | +2.3 s `LLbar7t1` | +6.1 s `LEtran2` | +13.2 s | +14.2 s `SegEgypt2` |
 | `:INCA` from SegEgypt2 bar 7 | +2.0 s `Ebar26t1` | +6.1 s `IEtran2` | +13.2 s | +14.2 s `SegInca2` |
 
+Those were played through macOS's GS set. Again with the disc's `gm16.dls`
+(same day, same tab): 35.7 fps, 0 underruns, a 0.26 s lead, 11-23 voices, no
+program without an instrument; `:EGYPT` from theme bar 44, timed from the keys,
+lead-in `LLbar33t1` +2.4 s, `LEtran2` +6.5 s, groove back to 0 +13.4 s,
+`SegEgypt2` +14.2 s.
+
 **Offline.** `legoland_dmusic` links only the engine: `render` writes WAV
 (each segment once, chained the way MusicThread chains a world's segments), and
 `selftest` is the ctest `dmusic_selftest` -- MusicToMIDI against the twelve
@@ -2387,7 +2407,8 @@ DLS collection an audible, finite render of the theme.
 ```
 ninja -C portable/build-wasm legoland_dmusic
 node portable/build-wasm/legoland_dmusic.js render --dir gamedata/main \
-    --dls <collection.dls> --repeats 1 --out theme.wav gamedata/main/Segtheme1.sgt
+    --dls portable/build-wasm/dls/gm.dls --repeats 1 --out theme.wav \
+    gamedata/main/Segtheme1.sgt
 ```
 
 **Shipped-data facts, played as shipped.** The Egypt-to-Inca transition plays

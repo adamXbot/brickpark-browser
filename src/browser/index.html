@@ -281,7 +281,8 @@
   // into the lpCmdLine it hands WinMain, and startup.c's GameMain parses the
   // switches out of it with FindCommandSwitch, so anything the original
   // accepted works: -nointro, -nomusic, WINDEBUG, -nocd. With the parameter
-  // absent main.c applies its own default ("-nointro -nomusic"), which is why
+  // absent main.c applies its own default ("-nointro"; the music plays -- the
+  // DirectMusic lane -- and ?music=0 is its off switch), which is why
   // this is not filled in with one here: an empty ?args= has to mean "no
   // switches at all" and not "the default".
   //
@@ -294,7 +295,7 @@
     gameArgs = decodeURIComponent(argsParam[1].replace(/\+/g, ' '))
                  .split(/\s+/).filter(function (s) { return s.length > 0; });
   }
-  argsEl.textContent = gameArgs ? gameArgs.join(' ') : '-nointro -nomusic (default)';
+  argsEl.textContent = gameArgs ? gameArgs.join(' ') : '-nointro (default)';
 
   // ---- P3-7: the hidden tab, and why this page runs at full rate in one ----
   //

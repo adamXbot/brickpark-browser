@@ -69,26 +69,38 @@ target_compile_options(legoland_hostwin PRIVATE -fno-strict-aliasing -w)
 
 # ---- the DirectMusic lane: which DLS collection plays the music -------------
 #
-# The game ships no instruments. Its bands name General MIDI / GS programs, and
-# on Windows those were the Roland GS Sound Set in %WINDIR%\system32\drivers\
-# gm.dls, played by DirectX's software synth. LL_MUSIC_DLS names the collection
-# to use; left empty, gamedata/dls/gm.dls is tried, then the GS collection macOS
-# ships inside CoreAudio.component. Either file is somebody else's copyright,
-# exactly like gamedata/: it is read where it lies, never committed -- and a
-# page built with one preloaded is a page for this machine, never one to
-# publish. No collection: the page runs as before, silently. Decided here,
-# above the native return, because tests.cmake's dmusic_selftest uses it too.
+# The game ships no instruments of its own. Its bands name General MIDI / GS
+# programs, which DirectMusic plays from the collection the registry's
+# GMFilePath names -- and the LEGOLAND CD brings that collection along: its
+# DirectX 7 redistributable, directx.cab, holds the Roland GS Sound Set as
+# gm16.dls, which its directx.inf installs as GMFilePath on Windows 95. So the
+# instruments come from the disc like everything else: tools/mscab.py extracts
+# gm16.dls from LL_DIRECTX_CAB (gamedata/disc/directx.cab unless set -- a
+# mounted CD's directx.cab works as well) into the build tree as dls/gm.dls.
+# LL_MUSIC_DLS plays the music with another GM/GS DLS Level 1 collection
+# instead. Either is read from the user's own files, exactly like gamedata/, and
+# never committed. No collection: the page runs as before, silently. Decided
+# here, above the native return, because tests.cmake's dmusic_selftest uses it
+# too.
+set(LL_DIRECTX_CAB "${LL_ROOT}/gamedata/disc/directx.cab" CACHE FILEPATH
+    "The LEGOLAND CD's directx.cab: its gm16.dls plays the game's music")
 set(LL_MUSIC_DLS "" CACHE FILEPATH
-    "DLS collection for the game's music (read in place; never commit or publish it)")
+    "A GM/GS DLS collection to play the music with instead of the CD's gm16.dls")
 set(LL_MUSIC_DLS_FILE "")
+set(LL_MUSIC_DLS_TARGET "")
 if(LL_MUSIC_DLS)
   set(LL_MUSIC_DLS_FILE "${LL_MUSIC_DLS}")
-elseif(EXISTS "${LL_ROOT}/gamedata/dls/gm.dls")
-  set(LL_MUSIC_DLS_FILE "${LL_ROOT}/gamedata/dls/gm.dls")
-elseif(CMAKE_HOST_APPLE AND EXISTS
-       "/System/Library/Components/CoreAudio.component/Contents/Resources/gs_instruments.dls")
-  set(LL_MUSIC_DLS_FILE
-      "/System/Library/Components/CoreAudio.component/Contents/Resources/gs_instruments.dls")
+elseif(EXISTS "${LL_DIRECTX_CAB}")
+  set(LL_MUSIC_DLS_FILE "${CMAKE_BINARY_DIR}/dls/gm.dls")
+  add_custom_command(
+    OUTPUT "${LL_MUSIC_DLS_FILE}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/mscab.py"
+            --member gm16.dls --out "${LL_MUSIC_DLS_FILE}" "${LL_DIRECTX_CAB}"
+    DEPENDS "${LL_DIRECTX_CAB}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/mscab.py"
+    COMMENT "dls/gm.dls: the instruments, gm16.dls from the disc's directx.cab"
+    VERBATIM)
+  add_custom_target(legoland_music_dls DEPENDS "${LL_MUSIC_DLS_FILE}")
+  set(LL_MUSIC_DLS_TARGET legoland_music_dls)
 endif()
 
 if(NOT EMSCRIPTEN)
@@ -285,17 +297,19 @@ endif()
 # MusicThread opens "imusic\segtheme1.sgt" and its loader scans imusic\ for
 # *.sgt and *.sty, but gamedata/main is flat (the retail install had IMusic\).
 # The 243 music files are copied into the build tree and preloaded once at
-# /gamedata/imusic, and the DLS collection chosen above lands at
+# /gamedata/imusic, and the instruments chosen above land at
 # /gamedata/dls/gm.dls, where ll_dmusic.c looks. Both or neither: segments with
 # no instruments would play silence.
 set(LL_MUSIC_DIR "${CMAKE_BINARY_DIR}/imusic")
 set(LL_MUSIC_STAMP)
+set(LL_MUSIC_LINK_DEPENDS)
 file(GLOB _ll_music_files "${LL_GAMEDATA}/main/*.sgt" "${LL_GAMEDATA}/main/*.sty"
                           "${LL_GAMEDATA}/main/*.bnd")
 if(_ll_music_files AND LL_MUSIC_DLS_FILE)
   list(REMOVE_DUPLICATES _ll_music_files)
   list(LENGTH _ll_music_files _ll_music_count)
   set(LL_MUSIC_STAMP "${LL_MUSIC_DIR}/.staged")
+  set(LL_MUSIC_LINK_DEPENDS "${LL_MUSIC_STAMP}" "${LL_MUSIC_DLS_FILE}")
   add_custom_command(
     OUTPUT "${LL_MUSIC_STAMP}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${LL_MUSIC_DIR}"
@@ -305,20 +319,26 @@ if(_ll_music_files AND LL_MUSIC_DLS_FILE)
     COMMENT "imusic: the game's ${_ll_music_count} DirectMusic files"
     VERBATIM)
   add_custom_target(legoland_music_data DEPENDS "${LL_MUSIC_STAMP}")
+  if(LL_MUSIC_DLS_TARGET)
+    add_dependencies(legoland_music_data ${LL_MUSIC_DLS_TARGET})
+    set(_ll_music_dls_from "the disc's ${LL_DIRECTX_CAB}")
+  else()
+    set(_ll_music_dls_from "${LL_MUSIC_DLS_FILE}")
+  endif()
   list(APPEND LL_PRELOAD
        "SHELL:--preload-file ${LL_MUSIC_DIR}@/gamedata/imusic"
        "SHELL:--preload-file ${LL_MUSIC_DLS_FILE}@/gamedata/dls/gm.dls")
   message(STATUS "music: ${_ll_music_count} imusic files, instruments from "
-                 "${LL_MUSIC_DLS_FILE} (preloaded into legoland.data: never publish this build)")
+                 "${_ll_music_dls_from}")
 else()
-  message(STATUS "music: not packaged (music files: ${_ll_music_count}, DLS: "
-                 "'${LL_MUSIC_DLS_FILE}'); set LL_MUSIC_DLS to a GM/GS .dls to hear the music")
+  message(STATUS "music: not packaged (music files: ${_ll_music_count}, instruments: "
+                 "'${LL_MUSIC_DLS_FILE}'); put the CD's directx.cab in gamedata/disc "
+                 "(or set LL_DIRECTX_CAB) to hear the music")
 endif()
 
 # file_packager packs the frames and the music into legoland.data AT LINK: they
 # are link inputs.
-set(LL_BROWSER_LINK_DEPENDS ${LL_WASM_LINK_DEPENDS} ${LL_ADVISOR_FRAMES} ${LL_MUSIC_STAMP}
-    ${LL_MUSIC_DLS_FILE})
+set(LL_BROWSER_LINK_DEPENDS ${LL_WASM_LINK_DEPENDS} ${LL_ADVISOR_FRAMES} ${LL_MUSIC_LINK_DEPENDS})
 
 add_executable(legoland_browser EXCLUDE_FROM_ALL
   "${CMAKE_CURRENT_SOURCE_DIR}/src/browser/main.c")

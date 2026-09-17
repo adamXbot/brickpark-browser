@@ -5,21 +5,24 @@
  * -------------------------------------------------------------------------
  * The game's music is not audio. imusic\ holds DirectMusic segments and styles
  * whose bands name General MIDI / GS programs ("patch 0x49 on PChannel 2"), and
- * the game ships no .dls of its own: on Windows those programs were the Roland
- * GS Sound Set in %WINDIR%\system32\drivers\gm.dls, played by the Microsoft
- * Software Synthesizer that DirectX 6.1 installed -- a DLS Level 1 synth. So
- * the thing that makes the tunes audible is a DLS1 synth over a GS collection.
+ * the game ships no instruments of its own: on Windows those programs were the
+ * Roland GS Sound Set that the registry's GMFilePath names, played by
+ * DirectX's Microsoft Software Synthesizer -- a DLS Level 1 synth. So the thing
+ * that makes the tunes audible is a DLS1 synth over a GS collection.
  *
  * WHICH COLLECTION
  * -------------------------------------------------------------------------
- * Any DLS Level 1 or 2 file works; only Level 1 articulation is honoured,
- * which is all the DirectX 6 synth had. macOS carries a GS collection at
- * /System/Library/Components/CoreAudio.component/Contents/Resources/
- * gs_instruments.dls (235 instruments -- 226 melodic including the GS
- * variations and 9 drum kits, the same count as Windows' gm.dls -- 495 waves,
- * 8-bit 22 kHz). browser.cmake preloads whichever file LL_MUSIC_DLS names. The
- * file is somebody else's copyright, exactly like gamedata/: it is used where
- * it is, never committed.
+ * The one on the game's CD. Its DirectX 7 redistributable, directx.cab, holds
+ * gm16.dls -- 235 instruments (226 melodic including the GS variations, 9 drum
+ * kits) over 495 16-bit waves, all but three at 22 kHz -- and its directx.inf
+ * installs that as GMFilePath on Windows 95. browser.cmake extracts it from the
+ * user's disc (tools/mscab.py) and preloads it; LL_MUSIC_DLS swaps in another
+ * collection.
+ * Any DLS Level 1 or 2 file works, and only Level 1 articulation is honoured,
+ * which is all the DirectX synth had. macOS's CoreAudio.component
+ * gs_instruments.dls is a derivative of the same set (8-bit waves, 37
+ * instruments split into more regions). Either file is somebody else's
+ * copyright, exactly like gamedata/: it is used where it is, never committed.
  *
  * UNITS (DLS Level 1, every connection's lScale >> 16)
  * -------------------------------------------------------------------------

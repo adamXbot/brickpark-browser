@@ -276,11 +276,12 @@ ll_add_test(avifile       "${CMAKE_BINARY_DIR}/test-avifile" TRUE)
 # code, no host shim -- so it builds and runs on both toolchains. `selftest`
 # checks MusicToMIDI against the twelve pitch classes the game's notes use;
 # with the music files it parses all 30 segments and 212 styles, runs a world
-# segment's notification timeline and a measure-aligned transition; with a DLS
-# collection (browser.cmake's LL_MUSIC_DLS_FILE) it renders the theme and
+# segment's notification timeline and a measure-aligned transition; with the
+# instruments (browser.cmake's LL_MUSIC_DLS_FILE: gm16.dls from the disc's
+# directx.cab, extracted when this tool is built) it renders the theme and
 # checks it is audible. `render` writes WAV:
 #   ninja -C portable/build legoland_dmusic
-#   portable/build/legoland_dmusic render --dir gamedata/main --dls <file.dls> \
+#   portable/build/legoland_dmusic render --dir gamedata/main --dls portable/build/dls/gm.dls \
 #       --repeats 1 --out theme.wav gamedata/main/Segtheme1.sgt
 add_executable(legoland_dmusic EXCLUDE_FROM_ALL
   "${CMAKE_CURRENT_SOURCE_DIR}/src/tools/dmusic_tool.c"
@@ -301,6 +302,9 @@ if(EXISTS "${LL_ROOT}/gamedata/main/Segtheme1.sgt")
   if(LL_MUSIC_DLS_FILE)
     list(APPEND _ll_dmusic_args --dls "${LL_MUSIC_DLS_FILE}")
   endif()
+endif()
+if(LL_MUSIC_DLS_TARGET)
+  add_dependencies(legoland_dmusic ${LL_MUSIC_DLS_TARGET})
 endif()
 add_test(NAME dmusic_selftest COMMAND legoland_dmusic ${_ll_dmusic_args})
 set_tests_properties(dmusic_selftest PROPERTIES
