@@ -1,20 +1,20 @@
-# LEGOLAND browser
+# BrickPark browser
 
-The matching decompilation of **LEGOLAND** (Windows, 2000) running natively and
-in the browser, modelled on
+BrickPark browser is the matching decompilation of **LEGOLAND** (Windows, 2000)
+running natively and in the browser, modelled on
 [isle-portable](https://github.com/isledecomp/isle-portable): the same
 recovered C compiled with a modern compiler, Win32 and DirectX replaced by a
 host shim, and Emscripten for the web build. The front end, all five tutorial
 lessons, free play and campaign levels run, with music.
 
 The game code comes from
-[legoland-decomp](https://github.com/adamXbot/legoland-decomp), checked out
+[brickpark-decomp](https://github.com/adamXbot/brickpark-decomp), checked out
 here as the `decomp` submodule. Every change the portable build needs there sits
 under `#ifdef LEGOLAND_PORTABLE` (or `#ifndef`), which the VC6 build does not
 define, so its matching gate sees the original text. A short, documented list of
 the shipped game's own bugs is fixed in portable-only code; `-DLL_FAITHFUL=ON`
 builds without those fixes (see
-[decomp/docs/QUIRKS.md](https://github.com/adamXbot/legoland-decomp/blob/main/docs/QUIRKS.md)).
+[decomp/docs/QUIRKS.md](https://github.com/adamXbot/brickpark-decomp/blob/main/docs/QUIRKS.md)).
 
 ## Quick start
 
@@ -22,8 +22,8 @@ You need your own copy of LEGOLAND. No game data or binaries are in either
 repository.
 
 ```bash
-git clone --recurse-submodules https://github.com/adamXbot/legoland-browser.git
-cd legoland-browser
+git clone --recurse-submodules https://github.com/adamXbot/brickpark-browser.git
+cd brickpark-browser
 # original/legoland.exe, and the extracted install under gamedata/main and gamedata/disc
 # (see the decomp README: python3 decomp/tools/iscab.py extract ...)
 emcmake cmake -S . -B build-wasm -G Ninja -DCMAKE_BUILD_TYPE=Release -DLL_ILP32=ON
@@ -39,8 +39,10 @@ with links to both repositories.
 game data into `legoland.data` and the player page's data pack. Run it locally;
 never host or share a build directory.
 
-LEGO and LEGOLAND are trademarks of the LEGO Group. This project is not
-affiliated with or endorsed by the LEGO Group, LEGO Media, or Krisalis Software.
+BrickPark is an independent, unofficial project, not affiliated with, sponsored
+by or endorsed by the LEGO Group, LEGO Media or Krisalis Software. LEGO and
+LEGOLAND are trademarks of the LEGO Group; they appear here only to identify
+the program being reconstructed, and the project carries no LEGO branding.
 
 The rest of this file is the development log of the port, lane by lane.
 

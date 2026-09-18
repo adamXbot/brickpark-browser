@@ -13,8 +13,8 @@ import json
 import os
 import subprocess
 
-BROWSER_URL = 'https://github.com/adamXbot/legoland-browser'
-DECOMP_URL = 'https://github.com/adamXbot/legoland-decomp'
+BROWSER_URL = 'https://github.com/adamXbot/brickpark-browser'
+DECOMP_URL = 'https://github.com/adamXbot/brickpark-decomp'
 
 
 def git(repo, *args):
@@ -41,8 +41,8 @@ def describe(repo, url):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--root', required=True, help='the legoland-browser checkout')
-    ap.add_argument('--decomp', required=True, help='the legoland-decomp checkout')
+    ap.add_argument('--root', required=True, help='the brickpark-browser checkout')
+    ap.add_argument('--decomp', required=True, help='the brickpark-decomp checkout')
     ap.add_argument('--out', required=True)
     args = ap.parse_args()
 

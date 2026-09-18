@@ -15,11 +15,11 @@ project(legoland_portable C)
 
 set(LL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # The matching decompilation (LEGOLAND/, tools/, docs/) is the `decomp` submodule:
-# https://github.com/adamXbot/legoland-decomp. original/ and gamedata/ stay here.
-set(LL_DECOMP "${LL_ROOT}/decomp" CACHE PATH "Checkout of legoland-decomp")
+# https://github.com/adamXbot/brickpark-decomp. original/ and gamedata/ stay here.
+set(LL_DECOMP "${LL_ROOT}/decomp" CACHE PATH "Checkout of brickpark-decomp")
 if(NOT EXISTS "${LL_DECOMP}/LEGOLAND")
   message(FATAL_ERROR "${LL_DECOMP}/LEGOLAND is missing: run `git submodule update --init`, "
-                      "or pass -DLL_DECOMP=<path to a legoland-decomp checkout>")
+                      "or pass -DLL_DECOMP=<path to a brickpark-decomp checkout>")
 endif()
 file(GLOB LL_CORE_SOURCES CONFIGURE_DEPENDS "${LL_DECOMP}/LEGOLAND/*.c")
 
