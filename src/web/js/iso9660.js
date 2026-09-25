@@ -7,7 +7,7 @@
 // The images people actually have of this game come in two geometries:
 //
 //   .iso / .img   2048-byte ("cooked") sectors -- all four LEGOLAND images
-//                 checked while writing this (docs: README.md, "The
+//                 checked while writing this (docs: docs/DEVELOPMENT.md, "The
 //                 player page") are this, with a Joliet supplementary volume
 //                 descriptor next to the primary one
 //   .bin (+.cue)  2352-byte raw sectors. The CUE sheets that travel with the

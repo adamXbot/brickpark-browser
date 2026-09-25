@@ -3,7 +3,7 @@
  * ====================== READ THIS BEFORE MERGING =========================
  * This file is a STOPGAP owned by PORT-C and it is meant to disappear.
  * PORT-A owns the real shim (`src/hostwin/kernel32.c`, brief
- * deliverable 3, plus the CRT-range wrappers README.md's census
+ * deliverable 3, plus the CRT-range wrappers docs/DEVELOPMENT.md's census
  * files as "game-fn"). cmake/tests.cmake compiles this file ONLY
  * while that file does not exist:
  *
@@ -53,7 +53,7 @@
 extern int stricmp(const char*, const char*);   /* src/hostwin/portable.c */
 
 /* -------------------------------------------------------------------------
- * The CRT-range wrappers (README.md's census calls these 12
+ * The CRT-range wrappers (docs/DEVELOPMENT.md's census calls these 12
  * "game-fn"; they are libc under another name).
  * ------------------------------------------------------------------------- */
 void* MemAlloc(unsigned int size)            { return malloc(size); }

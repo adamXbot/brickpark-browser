@@ -57,7 +57,7 @@ file(MAKE_DIRECTORY "${LL_ORACLE_DIR}")
 
 # ---- the stopgap host slice ------------------------------------------------
 # The asset loaders need a handful of KERNEL32 calls and the CRT-range wrappers
-# README.md's census files as "game-fn". Those are PORT-A's to own
+# docs/DEVELOPMENT.md's census files as "game-fn". Those are PORT-A's to own
 # (brief deliverable 3, src/hostwin/kernel32.c). Until that file exists, this
 # lane compiles its own minimal version INTO legoland_core -- which is what
 # stops gen_link.py emitting a trap for the same names (it reads the defined
@@ -365,7 +365,7 @@ endif()
 # The disc reader, the main.z extractor, the zip/tar readers, the install layout
 # and the save-file names, over inputs the test synthesises -- asset-free, so CI
 # runs it. The same code against real disc images is
-# `node tools/web_disc_check.mjs IMAGE` (README.md, "The player
+# `node tools/web_disc_check.mjs IMAGE` (docs/DEVELOPMENT.md, "The player
 # page").
 find_program(LL_NODE node)
 if(LL_NODE)
@@ -373,7 +373,7 @@ if(LL_NODE)
            COMMAND "${LL_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/web/test_web_libs.mjs")
   # The narration stream: ll_audio.c's own EM_JS scheduler, read out of the
   # source and run against a model of the game's ring writer, checked sample
-  # for sample (README.md, "Narration reads ahead of the cursor").
+  # for sample (docs/DEVELOPMENT.md, "Narration reads ahead of the cursor").
   add_test(NAME narration_feed
            COMMAND "${LL_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/web/test_narration_feed.mjs")
 endif()

@@ -398,7 +398,7 @@ if(EMSCRIPTEN)
   #
   # ASYNCIFY is what makes this cheap: the browser target cannot be linked at
   # -O0 (unoptimised ASYNCIFY of RunAppraisalScreen exceeds wasm's per-function
-  # local limit, see README.md), and the headless harness has no
+  # local limit, see docs/DEVELOPMENT.md), and the headless harness has no
   # ASYNCIFY at all.
   ll_headless_target(legoland_headless_debug)
   target_link_options(legoland_headless_debug PRIVATE -O0 -g2)

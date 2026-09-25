@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   # The native build: every game source compiles with clang and the whole
-  # archive links against the generated closure (README.md). The original
+  # archive links against the generated closure (docs/DEVELOPMENT.md). The original
   # binary is not available in CI, so globals are zero-initialised.
   native:
     runs-on: ubuntu-latest
@@ -46,7 +46,7 @@ jobs:
 
   # The wasm32 tree, which is the one that can actually RUN the game: wasm32 is
   # the only ILP32 target available, and every serialised layout in the
-  # recovered code assumes 4-byte pointers and longs (README.md, "ILP32 is the
+  # recovered code assumes 4-byte pointers and longs (docs/DEVELOPMENT.md, "ILP32 is the
   # real target"). This job links the closure the browser and the headless
   # harness use, and runs the tests that need no game data.
   #

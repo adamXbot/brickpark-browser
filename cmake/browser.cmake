@@ -439,7 +439,7 @@ endif()
 # installs the game's files into the browser -- downloaded from the site's data
 # pack, or read out of the player's own disc image or install folder -- manages
 # the saves, runs the same game module, and has somewhere to go when the game
-# exits. README.md, "The player page", has the whole story.
+# exits. docs/DEVELOPMENT.md, "The player page", has the whole story.
 #
 # It is one static directory that any web server can host, build-wasm/web/:
 #
